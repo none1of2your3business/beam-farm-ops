@@ -1,0 +1,23 @@
+{# Crop identity helpers — maize amber = Corn, indigo = Soybeans #}
+{% macro crop_tone(crop) -%}
+{%- if crop == 'Corn' -%}crop-corn
+{%- elif crop in ['Soybeans', 'Soy'] -%}crop-soy
+{%- else -%}crop-none
+{%- endif -%}
+{%- endmacro %}
+
+{% macro crop_badge(crop, short=false) -%}
+{%- set tone = crop_tone(crop) -%}
+{%- if short and crop == 'Corn' -%}
+<span class="crop-badge {{ tone }}">Corn</span>
+{%- elif short and crop in ['Soybeans', 'Soy'] -%}
+<span class="crop-badge {{ tone }}">Soy</span>
+{%- else -%}
+<span class="crop-badge {{ tone }}">{{ crop or '—' }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro crop_chip(crop) -%}
+{%- set tone = crop_tone(crop) -%}
+<span class="crop-chip {{ tone }}">{% if crop in ['Soybeans', 'Soy'] %}Soy{% else %}{{ crop or '—' }}{% endif %}</span>
+{%- endmacro %}

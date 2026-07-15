@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Banker pack — {{ farm_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    body { background: #fff; }
+    @media print { .no-print { display: none !important; } }
+    .print-wrap { max-width: 900px; margin: 1.5rem auto; padding: 1rem; }
+  </style>
+</head>
+<body>
+<div class="print-wrap">
+  <div class="no-print form-actions" style="margin-bottom:1rem">
+    <button class="btn primary" onclick="window.print()">Print / Save PDF</button>
+    <a class="btn ghost" href="/balance?as_of={{ as_of_date.isoformat() }}">Back</a>
+  </div>
+  <h1 style="font-family:var(--display)">{{ farm_name }} — Banker pack</h1>
+  <p class="muted">As of {{ as_of_date }}</p>
+  <section class="stat-grid">
+    <div class="stat"><span class="stat-label">Assets</span><span class="stat-value">${{ "{:,.0f}".format(assets_total) }}</span></div>
+    <div class="stat"><span class="stat-label">Liabilities</span><span class="stat-value">${{ "{:,.0f}".format(liabilities_total) }}</span></div>
+    <div class="stat"><span class="stat-label">Equity</span><span class="stat-value">${{ "{:,.0f}".format(equity) }}</span></div>
+    <div class="stat"><span class="stat-label">Working capital</span><span class="stat-value">${{ "{:,.0f}".format(working_capital) }}</span></div>
+  </section>
+  <h2>Balance sheet</h2>
+  <div class="split">
+    <div>
+      <h3>Assets</h3>
+      <ul class="simple-list">
+        <li><span>Machinery (market)</span><strong>${{ "{:,.0f}".format(equip_market) }}</strong></li>
+        {% for a in assets %}<li><span>{{ a.label }}</span><strong>${{ "{:,.0f}".format(a.amount) }}</strong></li>{% endfor %}
+      </ul>
+    </div>
+    <div>
+      <h3>Liabilities</h3>
+      <ul class="simple-list">
+        <li><span>Equipment loans</span><strong>${{ "{:,.0f}".format(equip_loans) }}</strong></li>
+        {% for l in liabilities %}<li><span>{{ l.label }}</span><strong>${{ "{:,.0f}".format(l.amount) }}</strong></li>{% endfor %}
+      </ul>
+    </div>
+  </div>
+  <h2>Equipment schedule</h2>
+  <div class="table-wrap"><table><thead><tr><th>Unit</th><th>Finance</th><th>Market</th><th>Loan</th></tr></thead><tbody>
+  {% for e in equip %}<tr><td>{{ e.name }}</td><td>{{ e.finance_status }}</td><td>${{ "{:,.0f}".format(e.market_value or 0) }}</td><td>${{ "{:,.0f}".format(e.loan_balance or 0) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  <h2>Grain position</h2>
+  <p>Total bin shares on hand: <strong>{{ "{:,.0f}".format(grain_bu) }} bu</strong> (add price assumptions on Risk for $ inventory).</p>
+  {% if snapshots %}
+  <h2>Snapshot history</h2>
+  <ul class="simple-list">{% for s in snapshots %}<li><span>{{ s.as_of_date }} · {{ s.label }}</span><strong>Equity ${{ "{:,.0f}".format(s.equity) }}</strong></li>{% endfor %}</ul>
+  {% endif %}
+</div>
+</body>
+</html>

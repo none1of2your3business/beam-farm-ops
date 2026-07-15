@@ -1,0 +1,54 @@
+{# Multi-field picker behind a button → modal. Pass fields explicitly. #}
+{% from "_crop.html" import crop_tone %}
+{% macro field_picker(fields, name='field_ids', label='Fields') -%}
+{% set crops = [] %}
+{% for f in fields %}
+  {% if f.crop and f.crop not in crops %}
+    {% if crops.append(f.crop) %}{% endif %}
+  {% endif %}
+{% endfor %}
+<div class="full field-picker" data-field-picker>
+  <div class="field-picker-summary">
+    <button type="button" class="btn field-picker-open">Choose fields…</button>
+    <span class="field-picker-summary-text muted" data-empty="No fields selected yet">No fields selected yet</span>
+  </div>
+
+  <div class="field-picker-modal" hidden data-field-modal>
+    <div class="field-picker-modal-backdrop" data-field-modal-close></div>
+    <div class="field-picker-modal-panel" role="dialog" aria-modal="true" aria-label="{{ label }}">
+      <div class="field-picker-head">
+        <strong>{{ label }}</strong>
+        <span class="field-picker-actions">
+          <button type="button" class="btn field-picker-all" title="Select all fields currently shown">Select shown</button>
+          <button type="button" class="btn field-picker-none">Clear</button>
+        </span>
+      </div>
+      <div class="field-picker-filters" role="tablist" aria-label="Filter by crop">
+        <button type="button" class="btn field-picker-filter is-active" data-crop-filter="all">All crops</button>
+        {% for crop in ['Corn', 'Soybeans'] %}
+          {% if crop in crops %}
+          <button type="button" class="btn field-picker-filter {{ crop_tone(crop) }}" data-crop-filter="{{ crop }}">{% if crop == 'Soybeans' %}Soy{% else %}{{ crop }}{% endif %}</button>
+          {% endif %}
+        {% endfor %}
+        {% for crop in crops if crop not in ['Corn', 'Soybeans'] %}
+        <button type="button" class="btn field-picker-filter" data-crop-filter="{{ crop }}">{{ crop }}</button>
+        {% endfor %}
+      </div>
+      <div class="field-picker-grid" role="group" aria-label="{{ label }}">
+        {% for f in fields %}
+        <label class="field-picker-item {{ crop_tone(f.crop) }}" data-crop="{{ f.crop or '' }}">
+          <input type="checkbox" name="{{ name }}" value="{{ f.id }}" class="field-picker-check">
+          <span class="field-picker-name">{{ f.name }}{% if f.crop %} · {{ f.crop }}{% endif %}</span>
+        </label>
+        {% else %}
+        <p class="muted" style="margin:0">No fields in this crop year.</p>
+        {% endfor %}
+        <p class="muted field-picker-empty-filter" hidden>No fields for this crop.</p>
+      </div>
+      <div class="field-picker-modal-foot">
+        <button type="button" class="btn primary field-picker-done" data-field-modal-close>Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+{%- endmacro %}

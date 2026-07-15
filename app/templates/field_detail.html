@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}{{ field.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head crop-panel {{ crop_tone(field.crop) }}">
+  <div>
+    <p class="eyebrow">{{ crop_chip(field.crop) }} · {{ field.ownership_mode }}{% if field.lease_type %} · {{ field.lease_type }}{% endif %}</p>
+    <h1>{{ field.name }}</h1>
+  </div>
+  <div class="form-actions">
+    <a class="btn primary" href="/fields/{{ field.id }}/operations">Operations ledger</a>
+    <a class="btn" href="/inputs/assign">Assign inputs</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}/edit">Edit</a>
+    <a class="btn ghost" href="/fields">All fields</a>
+  </div>
+</section>
+
+<section class="stat-grid compact">
+  <div class="stat"><span class="stat-label">My acres</span><span class="stat-value">{{ field.acres_mine }}</span></div>
+  <div class="stat"><span class="stat-label">Ops $</span><span class="stat-value">${{ "{:,.0f}".format(op_cost) }}</span></div>
+  <div class="stat"><span class="stat-label">Inputs $</span><span class="stat-value">${{ "{:,.0f}".format(assign_cost) }}</span></div>
+  <div class="stat"><span class="stat-label">$/acre</span><span class="stat-value">{% if cost_ac %}${{ cost_ac }}{% else %}—{% endif %}</span></div>
+</section>
+<p class="muted">Total tracked cost ${{ "{:,.0f}".format(total_cost) }} (ops + assigned inputs + rent ${{ "{:,.0f}".format(rent) }}). Expected yield {{ field.expected_yield or '—' }} bu/ac{% if field.expected_bushels %} · {{ field.expected_bushels }} bu{% endif %}.</p>
+
+{% if shares %}
+<section class="panel share-summary">
+  <h2 style="margin:0 0 0.55rem;font-family:var(--display)">Share partners</h2>
+  <ul class="simple-list">
+    {% for s in shares %}
+    <li>
+      <strong>{{ s.display_name }}</strong>
+      <span class="muted">{% if s.is_me %}My share{% elif s.party %}{{ s.party.party_type }}{% else %}partner{% endif %}</span>
+      <strong>{{ '%.1f'|format(s.share_pct) }}%</strong>
+      {% if field.acres_total %}
+      <span class="muted">· {{ '%.2f'|format(field.acres_total * s.share_pct / 100) }} ac</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% set tot = shares|sum(attribute='share_pct') %}
+  <p class="muted" style="margin:0.5rem 0 0">Total {{ '%.1f'|format(tot) }}%{% if (tot - 100)|abs > 0.05 %} — should add to 100%{% endif %} · <a href="/fields/{{ field.id }}/edit">Edit partners</a></p>
+</section>
+{% elif field.ownership_mode == 'on_shares' %}
+<p class="banner-warn">This field is on shares but no partners are listed yet. <a href="/fields/{{ field.id }}/edit">Add partners</a></p>
+{% endif %}
+
+<form method="post" action="/fields/{{ field.id }}/yield" class="form-grid panel panel-accent">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Expected yield → production</h2>
+  <p class="full muted" style="margin:0">My acres × yield feeds Grain Marketing % sold. Current: {% if field.expected_bushels %}{{ "{:,.0f}".format(field.expected_bushels) }} bu{% else %}not set{% endif %}.</p>
+  <label>Expected yield (bu/ac)<input name="expected_yield" inputmode="decimal" value="{{ field.expected_yield if field.expected_yield is not none else '' }}" placeholder="e.g. 210"></label>
+  <div class="form-actions" style="align-items:end"><button class="btn primary" type="submit">Save yield</button></div>
+</form>
+
+<div class="split">
+  <div class="panel">
+    <h2>Plans</h2>
+    <ul class="simple-list">
+      {% for p in plans %}
+      <li>
+        <span><strong>{{ p.title }}</strong><span class="muted">{{ p.plan_type }} · {{ p.status }}</span></span>
+        {% if p.status != 'done' %}
+        <form method="post" action="/fields/{{ field.id }}/plan-done"><input type="hidden" name="plan_id" value="{{ p.id }}"><button class="linkish" type="submit">Done</button></form>
+        {% endif %}
+      </li>
+      {% else %}<li>No plans — <a href="/inputs/assign">assign from Inputs</a></li>{% endfor %}
+    </ul>
+  </div>
+  <div class="panel">
+    <h2>Hybrids / sprays</h2>
+    <ul class="simple-list">
+      {% for link, h in hybrids %}{% if h %}<li><span>{{ h.name }}{% if link.applied_date %} · {{ link.applied_date }}{% endif %}</span><strong>{{ link.rate or '—' }}</strong></li>{% endif %}{% else %}<li>No hybrids — <a href="/inputs/assign">assign</a></li>{% endfor %}
+      {% for link, s in sprays %}{% if s %}<li><span>{{ s.name }}{% if link.applied_date %} · {{ link.applied_date }}{% endif %}</span><strong>{{ link.timing_label or s.timing or '—' }}</strong></li>{% endif %}{% endfor %}
+    </ul>
+  </div>
+</div>
+<p class="muted">Log expenses and review the full year history on the <a href="/fields/{{ field.id }}/operations">operations ledger</a>.</p>
+
+<form method="post" action="/fields/{{ field.id }}/soil" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Soil test</h2>
+  <label>Date<input type="date" name="test_date" value="{{ today }}"></label>
+  <label>Lab<input name="lab"></label>
+  <label>pH<input name="ph"></label>
+  <label>P<input name="p"></label>
+  <label>K<input name="k"></label>
+  <label>OM %<input name="om"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <label class="full">Fert recommendations (creates fert plan)<textarea name="recommendations" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save soil test</button></div>
+</form>
+{% if soils %}
+<ul class="simple-list">{% for s in soils %}<li><span>{{ s.test_date }} · pH {{ s.ph or '—' }} · P {{ s.p or '—' }} · K {{ s.k or '—' }}</span><strong>{{ s.lab or '' }}</strong></li>{% endfor %}</ul>
+{% endif %}
+
+{% if prior %}
+<div class="panel"><h2>Crop rotation history</h2>
+<ul class="simple-list">{% for p in prior %}<li><span>{{ p.crop_year.year if p.crop_year else '?' }}</span><strong>{{ p.crop }}</strong></li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% endblock %}

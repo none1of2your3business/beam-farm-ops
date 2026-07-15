@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Invoices — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Custom work</p>
+    <h1>Invoices</h1>
+    <p class="lede">Bill customers and track paid vs unpaid.</p>
+  </div>
+  <img src="/static/img/farm-elevator.jpg" alt="Elevator">
+</section>
+<form method="post" action="/invoices/create" class="form-grid panel">
+  <label>Customer<select name="party_id"><option value="">—</option>{% for p in parties %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></label>
+  <label>Date<input type="date" name="invoice_date" value="{{ today }}" required></label>
+  <label class="full">Description<input name="description" required></label>
+  <label>Qty<input name="quantity" value="1"></label>
+  <label>Rate $<input name="rate" value="0"></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Create invoice</button></div>
+</form>
+{% if invoices %}
+<div class="table-wrap"><table><thead><tr><th>Date</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>
+{% for i in invoices %}<tr><td>{{ i.invoice_date }}</td><td>${{ '%.2f'|format(i.total) }}</td><td>{{ i.status }}</td>
+<td>{% if i.status != 'paid' %}<form method="post" action="/invoices/{{ i.id }}/paid"><button class="linkish" type="submit">Mark paid</button></form>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+{% endblock %}

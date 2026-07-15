@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Scan — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner scan-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Phone capture</p>
+    <h1>Scan</h1>
+    <p class="lede">Take a photo of a receipt or statement. The farm PC will try to read it — then you confirm where it goes.</p>
+  </div>
+</section>
+
+{% if msg %}<p class="banner-warn">{{ msg }}</p>{% endif %}
+
+<form method="post" action="/scan" enctype="multipart/form-data" class="panel scan-capture">
+  <label class="scan-kind">What is it?
+    <select name="doc_kind">
+      <option value="receipt">Receipt</option>
+      <option value="statement">Statement</option>
+      <option value="ticket">Scale ticket</option>
+      <option value="contract">Contract</option>
+      <option value="other">Other</option>
+    </select>
+  </label>
+  <label class="scan-caption">Note (optional)<input name="caption" placeholder="Co-op invoice, May fill…"></label>
+  <label class="scan-file-btn">
+    <span class="scan-file-label">Take photo or choose image</span>
+    <input type="file" name="file" accept="image/*" capture="environment" required>
+  </label>
+  <button class="btn primary scan-submit" type="submit">Upload &amp; read</button>
+  <p class="muted scan-hint">On iPhone: use Safari → this page on your farm PC’s Wi‑Fi address (not localhost). Camera photos work best as JPEG.</p>
+</form>
+
+{% if pending %}
+<section class="panel" style="margin-top:1rem">
+  <h2 style="margin:0 0 0.75rem;font-family:var(--display)">Needs review</h2>
+  <ul class="simple-list">
+    {% for s in pending %}
+    <li>
+      <strong>Scan #{{ s.id }}</strong>
+      <span class="muted">{{ s.doc_kind }} · {{ s.created_at }}</span>
+      <a class="btn" href="/scan/{{ s.id }}">Continue</a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<p class="muted" style="margin-top:1rem"><a href="/photos">All photos</a> · <a href="/upload">Master Upload</a></p>
+{% endblock %}

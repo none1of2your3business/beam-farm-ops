@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Carry cost — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set mode = (settings.carry_mark_mode if settings else 'cash') or 'cash' %}
+{% set corn_q = board.get('Corn') if board else none %}
+{% set soy_q = board.get('Soybeans') if board else none %}
+{% set corn_cc = carry.by_crop.get('Corn', {}) %}
+{% set soy_cc = carry.by_crop.get('Soybeans', {}) %}
+{% set quotes_status = request.query_params.get('quotes') %}
+
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">Grain · storage</p>
+    <h1>Carry cost</h1>
+    <p class="lede">Edit any box — the monthly rate recalculates. Formula: <strong>(mark × APR ÷ 12) + storage + shrink</strong>.</p>
+  </div>
+</section>
+
+<section class="carry-rate-strip" aria-label="Current monthly carry rates">
+  <div class="carry-rate-pill crop-corn">
+    <span class="carry-rate-label">{{ crop_badge('Corn', short=true) }}</span>
+    <strong id="strip-rate-Corn">{% if corn_cc.rate is not none %}${{ "%.4f"|format(corn_cc.rate) }}{% else %}—{% endif %}</strong>
+    <span class="muted">/ bu / mo</span>
+  </div>
+  <div class="carry-rate-pill crop-soy">
+    <span class="carry-rate-label">{{ crop_badge('Soybeans', short=true) }}</span>
+    <strong id="strip-rate-Soybeans">{% if soy_cc.rate is not none %}${{ "%.4f"|format(soy_cc.rate) }}{% else %}—{% endif %}</strong>
+    <span class="muted">/ bu / mo</span>
+  </div>
+  <div class="carry-rate-pill carry-rate-farm">
+    <span class="carry-rate-label">Farm</span>
+    <strong id="strip-farm-total">${{ "{:,.2f}".format(carry.farm_total_mo) }}</strong>
+    <span class="muted">/ month on bins</span>
+  </div>
+</section>
+
+{% if quotes_status == 'ok' %}
+<p class="banner-ok">Futures boxes updated from a fresh delayed quote.</p>
+{% elif quotes_status == 'stored' %}
+<p class="banner-ok">Live feed busy — futures boxes reset to the latest quote already on the Marketing board.</p>
+{% elif quotes_status == 'fail' %}
+<p class="banner-warn">No quote available to load. Try Marketing → Refresh delayed quotes when online, or type futures manually.</p>
+{% endif %}
+
+<form method="post" action="/risk/carry" class="mkt-carry-form carry-worksheet panel" id="carry-calc"
+      data-corn-bin="{{ bin_bu.Corn }}" data-soy-bin="{{ bin_bu.Soybeans }}">
+
+  <div class="carry-worksheet-toolbar">
+    <label class="carry-inline-field">
+      <span>Interest APR % / yr</span>
+      <input name="carry_interest_apr" id="carry-apr" inputmode="decimal"
+             value="{{ settings.carry_interest_apr if settings else 7 }}">
+    </label>
+    <label class="carry-inline-field">
+      <span>Mark used for interest</span>
+      <select name="carry_mark_mode" id="carry-mode">
+        <option value="futures" {% if mode == 'futures' %}selected{% endif %}>Futures only</option>
+        <option value="cash" {% if mode != 'futures' %}selected{% endif %}>Futures + local basis</option>
+      </select>
+    </label>
+    <div class="carry-worksheet-actions">
+      <button class="btn primary" type="submit">Save all</button>
+    </div>
+  </div>
+
+  <p class="muted carry-quote-note">
+    {% if quote_updated and quote_updated.when %}
+    Quotes: {{ quote_updated.label }} · {{ quote_updated.source_label }}
+    {% else %}
+    Quotes never refreshed — type futures/basis below or refresh.
+    {% endif %}
+    Shrink is holding/quality only (drying is separate — add it into shrink if you want it in the monthly rate).
+  </p>
+
+  <div class="table-wrap">
+    <table class="carry-calc-table">
+      <thead>
+        <tr>
+          <th>Crop</th>
+          <th>Futures $/bu</th>
+          <th>Basis $/bu</th>
+          <th>Mark</th>
+          <th>Interest $/bu/mo</th>
+          <th>Storage $/bu/mo</th>
+          <th>Shrink $/bu/mo</th>
+          <th>= Rate</th>
+          <th>× Bin bu</th>
+          <th>= $/month</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="crop-row crop-corn" data-crop="Corn">
+          <td>{{ crop_badge('Corn', short=true) }} Corn</td>
+          <td>
+            <input name="corn_futures" id="corn-futures" class="sheet-num" inputmode="decimal"
+                   value="{% if corn_q and corn_q.price is not none %}{{ '%.4f'|format(corn_q.price) }}{% elif corn_cc.futures is not none %}{{ '%.4f'|format(corn_cc.futures) }}{% endif %}">
+            {% if corn_q and corn_q.ticker %}<span class="field-hint">{{ corn_q.ticker }}</span>{% endif %}
+          </td>
+          <td>
+            <input name="corn_local_basis" id="corn-basis" class="sheet-num" inputmode="decimal"
+                   value="{% if settings and settings.corn_local_basis is not none %}{{ '%.2f'|format(settings.corn_local_basis) }}{% endif %}">
+          </td>
+          <td class="sheet-calc"><strong id="mark-Corn">{% if corn_cc.mark is not none %}${{ "%.4f"|format(corn_cc.mark) }}{% else %}—{% endif %}</strong></td>
+          <td class="sheet-calc" id="interest-Corn">{% if corn_cc.interest_mo is not none %}${{ "%.4f"|format(corn_cc.interest_mo) }}{% else %}—{% endif %}</td>
+          <td>
+            <input name="corn_storage_per_bu_mo" id="corn-storage" class="sheet-num" inputmode="decimal"
+                   value="{{ settings.corn_storage_per_bu_mo if settings else 0.03 }}">
+            <span class="field-hint">typ. 0.03</span>
+          </td>
+          <td>
+            <input name="corn_shrink_per_bu_mo" id="corn-shrink" class="sheet-num" inputmode="decimal"
+                   value="{{ settings.corn_shrink_per_bu_mo if settings else 0.003 }}">
+            <span class="field-hint">typ. 0.003</span>
+          </td>
+          <td class="sheet-calc"><strong id="rate-Corn">{% if corn_cc.rate is not none %}${{ "%.4f"|format(corn_cc.rate) }}{% else %}—{% endif %}</strong></td>
+          <td class="sheet-calc" id="bin-Corn">{{ "{:,.0f}".format(bin_bu.Corn) }}</td>
+          <td class="sheet-calc"><strong id="farm-Corn">{% if corn_cc.farm_mo is not none %}${{ "{:,.2f}".format(corn_cc.farm_mo) }}{% else %}—{% endif %}</strong></td>
+        </tr>
+        <tr class="crop-row crop-soy" data-crop="Soybeans">
+          <td>{{ crop_badge('Soybeans', short=true) }} Soy</td>
+          <td>
+            <input name="soy_futures" id="soy-futures" class="sheet-num" inputmode="decimal"
+                   value="{% if soy_q and soy_q.price is not none %}{{ '%.4f'|format(soy_q.price) }}{% elif soy_cc.futures is not none %}{{ '%.4f'|format(soy_cc.futures) }}{% endif %}">
+            {% if soy_q and soy_q.ticker %}<span class="field-hint">{{ soy_q.ticker }}</span>{% endif %}
+          </td>
+          <td>
+            <input name="soy_local_basis" id="soy-basis" class="sheet-num" inputmode="decimal"
+                   value="{% if settings and settings.soy_local_basis is not none %}{{ '%.2f'|format(settings.soy_local_basis) }}{% endif %}">
+          </td>
+          <td class="sheet-calc"><strong id="mark-Soybeans">{% if soy_cc.mark is not none %}${{ "%.4f"|format(soy_cc.mark) }}{% else %}—{% endif %}</strong></td>
+          <td class="sheet-calc" id="interest-Soybeans">{% if soy_cc.interest_mo is not none %}${{ "%.4f"|format(soy_cc.interest_mo) }}{% else %}—{% endif %}</td>
+          <td>
+            <input name="soy_storage_per_bu_mo" id="soy-storage" class="sheet-num" inputmode="decimal"
+                   value="{{ settings.soy_storage_per_bu_mo if settings else 0.04 }}">
+            <span class="field-hint">typ. 0.04</span>
+          </td>
+          <td>
+            <input name="soy_shrink_per_bu_mo" id="soy-shrink" class="sheet-num" inputmode="decimal"
+                   value="{{ settings.soy_shrink_per_bu_mo if settings else 0.004 }}">
+            <span class="field-hint">typ. 0.004</span>
+          </td>
+          <td class="sheet-calc"><strong id="rate-Soybeans">{% if soy_cc.rate is not none %}${{ "%.4f"|format(soy_cc.rate) }}{% else %}—{% endif %}</strong></td>
+          <td class="sheet-calc" id="bin-Soybeans">{{ "{:,.0f}".format(bin_bu.Soybeans) }}</td>
+          <td class="sheet-calc"><strong id="farm-Soybeans">{% if soy_cc.farm_mo is not none %}${{ "{:,.2f}".format(soy_cc.farm_mo) }}{% else %}—{% endif %}</strong></td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr class="sheet-totals-row">
+          <td colspan="9">Farm total carry on current bin inventory</td>
+          <td><strong id="farm-total">${{ "{:,.2f}".format(carry.farm_total_mo) }}</strong> / mo</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</form>
+
+<form method="post" action="/risk/quotes/refresh" class="carry-refresh-form panel">
+  <input type="hidden" name="next" value="/risk/carry">
+  <button class="btn primary" type="submit">Refresh quotes</button>
+  <span class="muted">Loads the latest delayed CME price into Futures $/bu. If the live feed is busy, uses the last quote already on the Marketing board.</span>
+</form>
+
+<script>
+(function () {
+  const form = document.querySelector('.mkt-carry-form');
+  if (!form) return;
+  function num(id) {
+    const el = document.getElementById(id);
+    if (!el) return 0;
+    const v = parseFloat(String(el.value || '').replace(',', ''));
+    return isFinite(v) ? v : 0;
+  }
+  function money(n, digits) {
+    return '$' + n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
+  function markFor(crop) {
+    const fut = num(crop === 'Corn' ? 'corn-futures' : 'soy-futures');
+    const basis = num(crop === 'Corn' ? 'corn-basis' : 'soy-basis');
+    const mode = (document.getElementById('carry-mode') || {}).value || 'cash';
+    return mode === 'futures' ? fut : fut + basis;
+  }
+  function previewCarry() {
+    const apr = num('carry-apr');
+    const crops = [
+      { key: 'Corn', bin: parseFloat(form.dataset.cornBin) || 0,
+        storage: num('corn-storage'), shrink: num('corn-shrink') },
+      { key: 'Soybeans', bin: parseFloat(form.dataset.soyBin) || 0,
+        storage: num('soy-storage'), shrink: num('soy-shrink') },
+    ];
+    let total = 0;
+    crops.forEach((c) => {
+      const mark = markFor(c.key);
+      const interestMo = mark * (apr / 100) / 12;
+      const rate = interestMo + c.storage + c.shrink;
+      const farm = rate * c.bin;
+      total += farm;
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      set('mark-' + c.key, '$' + mark.toFixed(4));
+      set('interest-' + c.key, '$' + interestMo.toFixed(4));
+      set('rate-' + c.key, '$' + rate.toFixed(4));
+      set('farm-' + c.key, money(farm, 2));
+      set('strip-rate-' + c.key, '$' + rate.toFixed(4));
+    });
+    const tot = money(total, 2);
+    const tEl = document.getElementById('farm-total');
+    const stEl = document.getElementById('strip-farm-total');
+    if (tEl) tEl.textContent = tot;
+    if (stEl) stEl.textContent = tot;
+  }
+  form.querySelectorAll('input, select').forEach((inp) => {
+    inp.addEventListener('input', previewCarry);
+    inp.addEventListener('change', previewCarry);
+  });
+})();
+</script>
+{% endblock %}

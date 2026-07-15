@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ settlement.title }} — {{ farm_name }}{% endblock %}
+{% block content %}
+{% if print %}<style>@media print { .topbar, .form-grid, .no-print { display:none !important; } }</style>{% endif %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Settlement · {{ settlement.status }}</p>
+    <h1>{{ settlement.title }}</h1>
+  </div>
+  <div class="form-actions no-print">
+    <a class="btn ghost" href="/settlements/{{ settlement.id }}?print=1" onclick="setTimeout(()=>window.print(),200)">Print / PDF</a>
+    <a class="btn ghost" href="/settlements">Back</a>
+  </div>
+</section>
+<p class="muted">Date {{ settlement.settlement_date }}{% if party %} · {{ party.name }}{% endif %} · Total due <strong>${{ "{:,.2f}".format(settlement.total_due) }}</strong></p>
+{% if settlement.notes %}<p>{{ settlement.notes }}</p>{% endif %}
+
+{% if not print %}
+<form method="post" action="/settlements/{{ settlement.id }}/line" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Add line</h2>
+  <label class="full">Description<input name="description" required></label>
+  <label>Amount $<input name="amount" required></label>
+  <label>Field<select name="field_id"><option value="">—</option>{% for f in fields %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Add</button></div>
+</form>
+<div class="form-actions no-print" style="margin-bottom:1rem">
+  <form method="post" action="/settlements/{{ settlement.id }}/autofill-rent"><button class="btn ghost" type="submit">Autofill rent from party fields</button></form>
+  <form method="post" action="/settlements/{{ settlement.id }}/finalize"><button class="btn primary" type="submit">Mark final &amp; print</button></form>
+</div>
+{% endif %}
+
+<div class="table-wrap"><table><thead><tr><th>Description</th><th>Amount</th></tr></thead><tbody>
+{% for l in lines %}<tr><td>{{ l.description }}</td><td>${{ "{:,.2f}".format(l.amount) }}</td></tr>
+{% else %}<tr><td colspan="2">No lines yet</td></tr>{% endfor %}
+<tr><td><strong>Total</strong></td><td><strong>${{ "{:,.2f}".format(settlement.total_due) }}</strong></td></tr>
+</tbody></table></div>
+{% endblock %}

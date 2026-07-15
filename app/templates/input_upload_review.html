@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Review import — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set step = payload.step or 'type' %}
+{% set headers = (payload.active_sheet.headers if payload.active_sheet else []) or [] %}
+{% set cmap = payload.column_map or {} %}
+
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Guided import · step
+      {% if step == 'type' %}1 of 4{% elif step == 'map' %}2 of 4{% elif step == 'rows' %}3 of 4{% else %}4 of 4{% endif %}
+    </p>
+    <h1>{{ payload.original_filename or batch.filename }}</h1>
+    <p class="lede muted">
+      {{ payload.source_kind or 'file' }}
+      {% if payload.ocr_note %} · {{ payload.ocr_note }}{% endif %}
+    </p>
+  </div>
+  <div class="form-actions">
+    <a class="btn ghost" href="/inputs/upload">All uploads</a>
+    {% if step != 'done' %}
+    <form method="post" action="/inputs/upload/{{ batch.id }}/discard" onsubmit="return confirm('Discard this import?');">
+      <button class="btn" type="submit">Discard</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+{% if message %}<p class="banner-ok">{{ message }}</p>{% endif %}
+
+<nav class="filters" aria-label="Import steps" style="gap:0.5rem">
+  <span class="chip {% if step == 'type' %}is-on{% endif %}">1 · Type</span>
+  <span class="chip {% if step == 'map' %}is-on{% endif %}">2 · Columns</span>
+  <span class="chip {% if step == 'rows' %}is-on{% endif %}">3 · Rows</span>
+  <span class="chip {% if step == 'done' %}is-on{% endif %}">4 · Saved</span>
+</nav>
+
+{% if step == 'type' %}
+<form method="post" action="/inputs/upload/{{ batch.id }}/type" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">What is this file?</h2>
+  <p class="full muted" style="margin:0">
+    Guessed: <strong>{{ type_labels.get(payload.guessed_type, payload.guessed_type) }}</strong>
+  </p>
+  <label class="full">Confirm type
+    <select name="confirmed_type">
+      {% for key, label in type_labels.items() %}
+      <option value="{{ key }}" {% if (payload.confirmed_type or payload.guessed_type) == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% if payload.ocr_text %}
+  <label class="full">OCR text (read-only)
+    <textarea rows="8" readonly>{{ payload.ocr_text }}</textarea>
+  </label>
+  {% endif %}
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Next · map columns</button>
+  </div>
+</form>
+{% endif %}
+
+{% if step == 'map' %}
+<form method="post" action="/inputs/upload/{{ batch.id }}/map" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">How should we read it?</h2>
+  {% if payload.sheets and payload.sheets|length > 1 %}
+  <label>Sheet
+    <select name="sheet_index" onchange="this.form.sheet_only.value='1'; this.form.submit()">
+      {% for s in payload.sheets %}
+      <option value="{{ loop.index0 }}" {% if payload.sheet_index == loop.index0 %}selected{% endif %}>
+        {{ s.name }} ({{ s.row_count }} rows)
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  <input type="hidden" name="sheet_only" value="0">
+  <p class="full muted" style="margin:0">Changing sheet reloads headers — map columns again, then continue.</p>
+  {% endif %}
+
+  <p class="full muted">Match each field to a column. Leave unused fields on “— ignore —”.</p>
+  {% for key in field_keys %}
+  <label>{{ key.replace('_', ' ') | title }}
+    <select name="map_{{ key }}">
+      <option value="-1">— ignore —</option>
+      {% for h in headers %}
+      <option value="{{ loop.index0 }}" {% if cmap.get(key) == loop.index0 %}selected{% endif %}>{{ h }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+
+  {% if headers %}
+  <div class="full table-wrap" style="margin-top:0.5rem">
+    <p class="muted">Preview (first rows)</p>
+    <table>
+      <thead><tr>{% for h in headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in (payload.active_sheet.rows or [])[:6] %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="full banner-warn">No columns detected — go back and confirm type, or use a clearer spreadsheet / photo.</p>
+  {% endif %}
+
+  <div class="form-actions full">
+    <button class="btn ghost" type="submit" formaction="/inputs/upload/{{ batch.id }}/back" name="to_step" value="type">Back</button>
+    <button class="btn primary" type="submit">Next · review rows</button>
+  </div>
+</form>
+{% endif %}
+
+{% if step == 'rows' %}
+<form method="post" action="/inputs/upload/{{ batch.id }}/rows" class="panel">
+  <h2 style="margin:0 0 0.5rem;font-family:var(--display)">Review each line</h2>
+  <p class="muted">Uncheck rows to skip. Edit names, prices, mix, and action before saving.</p>
+  {% set rows = payload.rows or [] %}
+  {% if not rows %}
+  <p class="banner-warn">No data rows after mapping. Go back and adjust columns.</p>
+  {% else %}
+  <div class="table-wrap sheet-wrap" style="max-height:min(65vh,760px)">
+    <table class="sheet-table">
+      <thead>
+        <tr>
+          <th>Keep</th>
+          <th>Action</th>
+          <th>Product</th>
+          <th>Unit</th>
+          <th>$/unit</th>
+          <th>Rate</th>
+          <th>Rate unit</th>
+          <th>$/ac</th>
+          <th>Mix / program</th>
+          <th>Timing</th>
+          <th>Crop</th>
+          <th>Match</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="sheet-row">
+          <td>
+            <input type="checkbox" name="include_{{ r.id }}" value="1" {% if r.include %}checked{% endif %}>
+          </td>
+          <td>
+            <select name="action_{{ r.id }}">
+              <option value="create_product" {% if r.action == 'create_product' %}selected{% endif %}>Create product</option>
+              <option value="update_product" {% if r.action == 'update_product' %}selected{% endif %}>Update product $</option>
+              <option value="mix_line" {% if r.action == 'mix_line' %}selected{% endif %}>Mix line</option>
+              <option value="mix_header" {% if r.action == 'mix_header' %}selected{% endif %}>Mix header</option>
+              <option value="skip" {% if r.action == 'skip' %}selected{% endif %}>Skip</option>
+            </select>
+          </td>
+          <td><input name="product_{{ r.id }}" value="{{ r.product_name or '' }}" class="sheet-notes"></td>
+          <td><input name="unit_{{ r.id }}" value="{{ r.unit or 'gal' }}" class="sheet-num" style="min-width:4rem"></td>
+          <td><input name="price_{{ r.id }}" value="{{ r.cost_per_unit if r.cost_per_unit is not none else '' }}" class="sheet-num"></td>
+          <td><input name="rate_{{ r.id }}" value="{{ r.rate if r.rate is not none else '' }}" class="sheet-num"></td>
+          <td><input name="rate_unit_{{ r.id }}" value="{{ r.rate_unit or '' }}" class="sheet-notes" style="min-width:5rem"></td>
+          <td><input name="cpa_{{ r.id }}" value="{{ r.cost_per_acre if r.cost_per_acre is not none else '' }}" class="sheet-num"></td>
+          <td><input name="mix_{{ r.id }}" value="{{ r.mix_name or '' }}" class="sheet-notes"></td>
+          <td><input name="timing_{{ r.id }}" value="{{ r.timing or '' }}" class="sheet-notes" style="min-width:5rem"></td>
+          <td><input name="crop_{{ r.id }}" value="{{ r.crop or '' }}" class="sheet-notes" style="min-width:5rem"></td>
+          <td class="muted" style="font-size:0.78rem">
+            {% if r.match_product_name %}Prod: {{ r.match_product_name }}{% endif %}
+            {% if r.match_mix_name %}{% if r.match_product_name %}<br>{% endif %}Mix: {{ r.match_mix_name }}{% endif %}
+            {% if not r.match_product_name and not r.match_mix_name %}— {{ r.confidence }}{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <div class="sheet-save-bar" style="margin-top:0.75rem">
+    <button class="btn ghost" type="submit" formaction="/inputs/upload/{{ batch.id }}/back" name="to_step" value="map">Back</button>
+    <button class="btn" type="submit" name="go" value="save">Save edits</button>
+    <button class="btn primary" type="submit" name="go" value="commit">Commit to Buys &amp; Inputs</button>
+  </div>
+</form>
+{% endif %}
+
+{% if step == 'done' %}
+<section class="panel">
+  <h2 style="margin:0 0 0.5rem;font-family:var(--display)">Import complete</h2>
+  {% set s = payload.commit_summary or {} %}
+  {% if s %}
+  <ul class="simple-list">
+    <li><span>New products</span><strong>{{ s.created_products or 0 }}</strong></li>
+    <li><span>Updated product prices</span><strong>{{ s.updated_products or 0 }}</strong></li>
+    <li><span>Mix programs touched</span><strong>{{ s.mixes_updated or 0 }}</strong></li>
+    <li><span>Mix lines written</span><strong>{{ s.lines_written or 0 }}</strong></li>
+    <li><span>Skipped</span><strong>{{ s.skipped or 0 }}</strong></li>
+  </ul>
+  {% else %}
+  <p class="muted">{{ batch.notes or 'Done.' }}</p>
+  {% endif %}
+  <div class="form-actions" style="margin-top:1rem">
+    <a class="btn primary" href="/library">View Inputs</a>
+    <a class="btn ghost" href="/purchases">View Buys</a>
+    <a class="btn ghost" href="/inputs/upload">Upload another</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

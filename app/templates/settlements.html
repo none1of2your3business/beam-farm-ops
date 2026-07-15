@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Settlements — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">{% if year %}{{ year.year }}{% endif %}</p><h1>Landlord / partner settlements</h1></div></section>
+<form method="post" action="/settlements/create" class="form-grid panel">
+  <label>Title<input name="title" required placeholder="2026 landlord settle — Smith"></label>
+  <label>Party<select name="party_id"><option value="">—</option>{% for p in parties %}<option value="{{ p.id }}">{{ p.name }} ({{ p.party_type }})</option>{% endfor %}</select></label>
+  <label>Date<input type="date" name="settlement_date" value="{{ today }}"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Create settlement</button></div>
+</form>
+{% if settlements %}
+<div class="table-wrap"><table><thead><tr><th>Title</th><th>Date</th><th>Status</th><th>Total</th><th></th></tr></thead><tbody>
+{% for s in settlements %}<tr><td><a href="/settlements/{{ s.id }}"><strong>{{ s.title }}</strong></a></td><td>{{ s.settlement_date }}</td><td>{{ s.status }}</td><td>${{ "{:,.0f}".format(s.total_due) }}</td><td><a href="/settlements/{{ s.id }}?print=1">Print</a></td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="empty">No settlements yet.</p>{% endif %}
+{% endblock %}

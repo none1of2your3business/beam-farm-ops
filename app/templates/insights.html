@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Insights — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Analysis</p><h1>Insights &amp; AI briefing</h1></div>
+<a class="btn primary" href="/insights/ai-briefing" target="_blank">Download AI briefing</a></section>
+<p class="lede">Compare trial winners, then paste the AI briefing into ChatGPT/Claude/Cursor to hunt trends. Suggestions are advisory — you and your agronomist decide.</p>
+{% for card in trial_cards %}
+<div class="panel"><h2>{{ card.trial.name }}</h2>
+<ul class="simple-list">{% for row in card.summary %}<li><span>{{ row.treatment.name }}{% if row.treatment.is_control %} (control){% endif %}</span><strong>{{ row.avg_yield or '—' }} bu · Δ {{ row.yield_delta if row.yield_delta is not none else '—' }}</strong></li>{% else %}<li>No results yet</li>{% endfor %}</ul>
+</div>
+{% else %}<p class="empty">Add crop trials to unlock comparisons.</p>{% endfor %}
+
+<div class="panel">
+  <h2>What-if / breakeven</h2>
+  <div class="form-grid">
+    <label>Yield bu/ac<input id="wi_yield" type="number" step="0.1" value="200"></label>
+    <label>Price $/bu<input id="wi_price" type="number" step="0.01" value="4.50"></label>
+    <label>Cost $/ac<input id="wi_cost" type="number" step="1" value="900"></label>
+  </div>
+  <p style="margin-top:1rem">Revenue/ac = <strong id="wi_rev">—</strong> · Profit/ac ≈ <strong id="wi_profit">—</strong> · BE price = <strong id="wi_be">—</strong></p>
+  <p class="muted">For farm COP assumptions and marketing %, use Grain Marketing.</p>
+</div>
+<script>
+function wi(){
+  const y=+document.getElementById('wi_yield').value||0;
+  const p=+document.getElementById('wi_price').value||0;
+  const c=+document.getElementById('wi_cost').value||0;
+  const rev=y*p, profit=rev-c, be=y? (c/y) : 0;
+  document.getElementById('wi_rev').textContent='$'+rev.toFixed(2);
+  document.getElementById('wi_profit').textContent='$'+profit.toFixed(2);
+  document.getElementById('wi_be').textContent=y? ('$'+be.toFixed(2)) : '—';
+}
+['wi_yield','wi_price','wi_cost'].forEach(id=>document.getElementById(id).addEventListener('input',wi));
+wi();
+</script>
+{% endblock %}

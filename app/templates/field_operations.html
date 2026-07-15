@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Operations — {{ field.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set L = ledger %}
+{% set M = L.marks %}
+
+<section class="page-head crop-panel {{ crop_tone(field.crop) }}">
+  <div>
+    <p class="eyebrow">{{ crop_chip(field.crop) }} · {{ field.ownership_mode }} · year ledger</p>
+    <h1>{{ field.name }} — Operations</h1>
+    <p class="lede muted" style="margin:0.35rem 0 0">Everything logged on this field for the working year, with running cost and break-even.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/inputs/assign">Assign inputs</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}">Field detail</a>
+    <a class="btn ghost" href="/fields">All fields</a>
+  </div>
+</section>
+
+<form method="post" action="/fields/{{ field.id }}/operation" class="form-grid panel" id="ops-quick-add">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Quick add operation</h2>
+  <label>Date<input type="date" name="op_date" value="{{ today }}"></label>
+  <label>Type<input name="op_type" placeholder="plant, spray, till, other" value="other"></label>
+  <label>Cost $<input name="cost" value="0"></label>
+  <label>Billable<input type="checkbox" name="billable" value="1"></label>
+  <label class="full">Description<textarea name="description" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Add to ledger</button></div>
+</form>
+
+<section class="ops-econ-strip" aria-label="Field economics">
+  <div class="ops-econ-card">
+    <span class="ops-econ-label">Running cost</span>
+    <strong>${{ "{:,.0f}".format(L.running_cost) }}</strong>
+    <span class="muted">{% if L.cost_ac is not none %}${{ "%.2f"|format(L.cost_ac) }}/ac{% else %}—{% endif %} · rent ${{ "{:,.0f}".format(L.rent) }}</span>
+  </div>
+  <div class="ops-econ-card">
+    <span class="ops-econ-label">Expected</span>
+    <strong>{% if L.expected_yield is not none %}{{ L.expected_yield }}{% else %}—{% endif %}</strong>
+    <span class="muted">bu/ac{% if L.expected_bu is not none %} · {{ "{:,.0f}".format(L.expected_bu) }} bu{% endif %}</span>
+  </div>
+  <div class="ops-econ-card">
+    <span class="ops-econ-label">Projected @ contracted</span>
+    <strong>{% if L.projected_contracted is not none %}${{ "{:,.0f}".format(L.projected_contracted) }}{% else %}—{% endif %}</strong>
+    <span class="muted">
+      {% if M.contracted is not none %}${{ "%.2f"|format(M.contracted) }}/bu avg
+      {% if L.gap_contracted is not none %} · {% if L.gap_contracted >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_contracted) }} vs cost{% endif %}
+      {% else %}no open contracts{% endif %}
+    </span>
+  </div>
+  <div class="ops-econ-card">
+    <span class="ops-econ-label">Projected @ {{ M.futures_label|lower }}</span>
+    <strong>{% if L.projected_futures is not none %}${{ "{:,.0f}".format(L.projected_futures) }}{% else %}—{% endif %}</strong>
+    <span class="muted">
+      {% if M.futures is not none %}${{ "%.2f"|format(M.futures) }}/bu
+      {% if L.gap_futures is not none %} · {% if L.gap_futures >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_futures) }} vs cost{% endif %}
+      {% else %}no board quote{% endif %}
+    </span>
+  </div>
+  <div class="ops-econ-card ops-econ-be">
+    <span class="ops-econ-label">Break-even yield</span>
+    <p class="ops-econ-be-row">
+      <span>Contracted</span>
+      <strong>{% if L.be_yield_contracted is not none %}{{ L.be_yield_contracted }}{% else %}—{% endif %}</strong>
+      <em class="muted">bu/ac{% if L.vs_be_contracted is not none %} · {% if L.vs_be_contracted >= 0 %}+{% endif %}{{ L.vs_be_contracted }} vs expected{% endif %}</em>
+    </p>
+    <p class="ops-econ-be-row">
+      <span>Futures</span>
+      <strong>{% if L.be_yield_futures is not none %}{{ L.be_yield_futures }}{% else %}—{% endif %}</strong>
+      <em class="muted">bu/ac{% if L.vs_be_futures is not none %} · {% if L.vs_be_futures >= 0 %}+{% endif %}{{ L.vs_be_futures }} vs expected{% endif %}</em>
+    </p>
+  </div>
+</section>
+
+<section class="panel ops-ledger-panel">
+  <div class="ops-ledger-toolbar">
+    <h2 style="margin:0;font-family:var(--display)">Activity ledger</h2>
+    <div class="ops-type-filters" role="tablist" aria-label="Filter by type">
+      <button type="button" class="btn ops-type-filter is-active" data-ops-filter="all">All</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="op">Ops</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="input">Inputs</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="spray">Spray</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="hybrid">Hybrid</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="plan">Plan</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="soil">Soil</button>
+      <button type="button" class="btn ops-type-filter" data-ops-filter="rent">Rent</button>
+    </div>
+  </div>
+  <p class="muted ops-ledger-note">Plans show estimated $ only — they are not added to running cost. Running $ is computed from the full year (filter only hides rows).</p>
+
+  {% if L.events %}
+  <div class="table-wrap ops-ledger-wrap">
+    <table class="ops-ledger-table" id="ops-ledger-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>What</th>
+          <th>$</th>
+          <th>Running $</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in L.events %}
+        <tr class="ops-ledger-row" data-ops-type="{{ e.type }}">
+          <td class="ops-ledger-date">
+            {% if e.undated %}<span class="muted">Season</span>{% else %}{{ e.date }}{% endif %}
+          </td>
+          <td><span class="ops-type-pill ops-type-{{ e.type }}">{{ e.type_label }}</span></td>
+          <td>
+            <strong>{{ e.title }}</strong>
+            {% if e.detail %}<div class="muted ops-ledger-detail">{{ e.detail }}</div>{% endif %}
+          </td>
+          <td class="ops-ledger-amt">
+            {% if e.amount is not none and e.counts %}${{ "{:,.2f}".format(e.amount) }}
+            {% elif e.est_amount is not none %}<span class="muted">est ${{ "{:,.2f}".format(e.est_amount) }}</span>
+            {% elif e.amount is not none %}${{ "{:,.2f}".format(e.amount) }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="ops-ledger-run">{% if e.running is not none %}${{ "{:,.2f}".format(e.running) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="ops-ledger-total">
+          <td colspan="3">Running cost (counted activity)</td>
+          <td></td>
+          <td><strong>${{ "{:,.2f}".format(L.running_cost) }}</strong></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  <p class="muted ops-filter-empty" id="ops-filter-empty" hidden>No rows for this filter.</p>
+  {% else %}
+  <p class="muted">Nothing logged on this field yet. Assign sprays/hybrids from Inputs, log ops on Field detail, or buy-assign from Buys.</p>
+  {% endif %}
+</section>
+
+<script src="/static/field-ops.js"></script>
+{% endblock %}

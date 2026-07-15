@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Parties — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">People & companies</p>
+    <h1>Parties</h1>
+  </div>
+</section>
+
+<p class="lede">Landlords, share partners, custom-work customers, and grain buyers.</p>
+
+<form method="post" action="/parties/save" class="form-grid panel">
+  <label>Name
+    <input type="text" name="name" required>
+  </label>
+  <label>Type
+    <select name="party_type">
+      <option value="landlord">Landlord</option>
+      <option value="partner">Partner</option>
+      <option value="customer">Customer (custom work)</option>
+      <option value="buyer">Grain buyer</option>
+      <option value="other">Other</option>
+    </select>
+  </label>
+  <label>Phone
+    <input type="text" name="phone">
+  </label>
+  <label>Email
+    <input type="email" name="email">
+  </label>
+  <label class="full">Notes
+    <textarea name="notes" rows="2"></textarea>
+  </label>
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Add party</button>
+  </div>
+</form>
+
+{% if parties %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Type</th><th>Phone</th><th>Email</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for p in parties %}
+      <tr>
+        <td><strong>{{ p.name }}</strong>{% if p.notes %}<div class="muted">{{ p.notes }}</div>{% endif %}</td>
+        <td>{{ p.party_type }}</td>
+        <td>{{ p.phone or "—" }}</td>
+        <td>{{ p.email or "—" }}</td>
+        <td class="actions">
+          <form method="post" action="/parties/{{ p.id }}/delete" onsubmit="return confirm('Delete {{ p.name }}?')">
+            <button type="submit" class="linkish">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No parties yet. Add landlords, partners, or customers above.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,68 @@
+{# Hub navigation + secondary tabs. Pass `active` from the page context. #}
+{% macro resolve_hub(active) -%}
+{%- if active == 'dashboard' -%}home
+{%- elif active in ['fields', 'parties', 'trials', 'insights'] -%}fields
+{%- elif active in ['library', 'library_assign', 'purchases', 'input_upload', 'tools'] -%}inputs
+{%- elif active in ['risk', 'risk_contracts', 'risk_settings', 'carry', 'bins', 'bins_ticket', 'bins_sheet', 'trucking'] -%}grain
+{%- elif active in ['settlements', 'invoices', 'balance', 'equipment'] -%}money
+{%- elif active in ['scan', 'upload', 'export', 'panorama', 'photos'] -%}capture
+{%- elif active in ['settings', 'team', 'activity'] -%}admin
+{%- else -%}home
+{%- endif -%}
+{%- endmacro %}
+
+{% macro hub_tabs(active) -%}
+{%- set hub = resolve_hub(active) -%}
+{%- if hub == 'fields' -%}
+  <a class="hub-tab {% if active == 'fields' %}active{% endif %}" href="/fields">Overview</a>
+  <a class="hub-tab {% if active == 'parties' %}active{% endif %}" href="/parties">Parties</a>
+  <a class="hub-tab {% if active == 'trials' %}active{% endif %}" href="/trials">Trials</a>
+  <a class="hub-tab {% if active == 'insights' %}active{% endif %}" href="/insights">Insights</a>
+{%- elif hub == 'inputs' -%}
+  <a class="hub-tab {% if active == 'library' %}active{% endif %}" href="/inputs">Catalog</a>
+  <a class="hub-tab {% if active == 'library_assign' %}active{% endif %}" href="/inputs/assign">Assign</a>
+  <a class="hub-tab {% if active == 'purchases' %}active{% endif %}" href="/purchases">Inventory</a>
+  <a class="hub-tab {% if active == 'input_upload' %}active{% endif %}" href="/inputs/upload">Upload</a>
+  <a class="hub-tab {% if active == 'tools' %}active{% endif %}" href="/tools">Tools</a>
+{%- elif hub == 'grain' -%}
+  <a class="hub-tab {% if active == 'risk' %}active{% endif %}" href="/risk">Board</a>
+  <a class="hub-tab {% if active == 'risk_contracts' %}active{% endif %}" href="/risk/contracts">Contracts</a>
+  <a class="hub-tab {% if active == 'risk_settings' %}active{% endif %}" href="/risk/settings">Risk settings</a>
+  <a class="hub-tab {% if active == 'carry' %}active{% endif %}" href="/risk/carry">Carry</a>
+  <a class="hub-tab {% if active == 'bins' %}active{% endif %}" href="/bins">Bins</a>
+  <a class="hub-tab {% if active == 'bins_ticket' %}active{% endif %}" href="/bins/ticket">Ticket</a>
+  <a class="hub-tab {% if active == 'bins_sheet' %}active{% endif %}" href="/bins/sheet">Sheet</a>
+  <a class="hub-tab {% if active == 'trucking' %}active{% endif %}" href="/trucking">Truck</a>
+{%- elif hub == 'money' -%}
+  <a class="hub-tab {% if active == 'settlements' %}active{% endif %}" href="/settlements">Settle</a>
+  <a class="hub-tab {% if active == 'invoices' %}active{% endif %}" href="/invoices">Invoices</a>
+  <a class="hub-tab {% if active == 'balance' %}active{% endif %}" href="/balance">Balance</a>
+  <a class="hub-tab {% if active == 'equipment' %}active{% endif %}" href="/equipment">Equip</a>
+{%- elif hub == 'capture' -%}
+  <a class="hub-tab {% if active == 'scan' %}active{% endif %}" href="/scan">Scan</a>
+  <a class="hub-tab {% if active == 'upload' %}active{% endif %}" href="/upload">Upload</a>
+  <a class="hub-tab {% if active == 'export' %}active{% endif %}" href="/export">Reports</a>
+  <a class="hub-tab {% if active == 'panorama' %}active{% endif %}" href="/panorama">Panorama</a>
+  <a class="hub-tab {% if active == 'photos' %}active{% endif %}" href="/photos">Photos</a>
+{%- elif hub == 'admin' -%}
+  <a class="hub-tab {% if active == 'settings' %}active{% endif %}" href="/settings">Settings</a>
+  <a class="hub-tab {% if active == 'team' %}active{% endif %}" href="/team">Team</a>
+  <a class="hub-tab {% if active == 'activity' %}active{% endif %}" href="/activity">Log</a>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro top_hubs(active, user) -%}
+{%- set hub = resolve_hub(active) -%}
+<nav class="nav hub-nav" aria-label="Main">
+  <a href="/" class="{% if hub == 'home' %}active{% endif %}">Home</a>
+  <a href="/fields" class="{% if hub == 'fields' %}active{% endif %}">Fields</a>
+  <a href="/inputs" class="{% if hub == 'inputs' %}active{% endif %}">Inputs</a>
+  <a href="/risk" class="{% if hub == 'grain' %}active{% endif %}">Grain</a>
+  <a href="/settlements" class="{% if hub == 'money' %}active{% endif %}">Money</a>
+  <a href="/scan" class="{% if hub == 'capture' %}active{% endif %}">Capture</a>
+  {% if user and user.role == 'owner' %}
+  <a href="/settings" class="{% if hub == 'admin' %}active{% endif %}">Admin</a>
+  {% endif %}
+  <a href="/logout">Out</a>
+</nav>
+{%- endmacro %}

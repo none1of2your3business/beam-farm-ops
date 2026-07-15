@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Bins Sheet — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">Inventory · Spreadsheet</p>
+    <h1>Bins Sheet</h1>
+    <p class="lede">Edit name, crop, capacity, and Me on-hand across every bin — click a column header to sort. Save all when ready.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <a class="btn" href="/bins">Bins overview</a>
+    <a class="btn" href="/bins/ticket">Ticket / move</a>
+    <form method="post" action="/bins/carry-toggle" class="bins-carry-toggle">
+      <input type="hidden" name="next" value="/bins/sheet">
+      <input type="hidden" name="bins_show_carry" value="{% if bins_show_carry %}0{% else %}1{% endif %}">
+      <button class="btn {% if bins_show_carry %}primary{% endif %}" type="submit" title="Uses rates from Carry cost">
+        {% if bins_show_carry %}Hide monthly carry ${% else %}Show monthly carry ${% endif %}
+      </button>
+    </form>
+  </div>
+</section>
+
+{% if saved is not none and saved != '' %}
+<p class="banner-ok">Saved {{ saved }} bin{% if saved != '1' %}s{% endif %}.</p>
+{% endif %}
+{% if request.query_params.get('error') == 'bin_name_taken' %}
+<p class="banner-warn">A bin name conflict stopped the save — names must be unique.</p>
+{% endif %}
+
+{% if bin_cards %}
+<form method="post" action="/bins/sheet/save" id="bin-sheet-form" class="sheet-form">
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table" id="bin-sheet-table" data-sortable>
+      <thead>
+        <tr>
+          <th class="sheet-name">Bin</th>
+          <th>Crop</th>
+          <th>Capacity bu</th>
+          <th>On hand (Me)</th>
+          <th>Other owners</th>
+          <th>Total bu</th>
+          <th>% full</th>
+          {% if bins_show_carry %}<th>Carry $/mo</th>{% endif %}
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for card in bin_cards %}
+        {% set b = card.bin %}
+        <tr class="sheet-row crop-row {{ crop_tone(b.crop) }}">
+          <td class="sheet-name">
+            <input type="hidden" name="bin_id" value="{{ b.id }}">
+            <input name="name" value="{{ b.name }}" class="sheet-notes" required>
+          </td>
+          <td>
+            <select name="crop" class="sheet-crop">
+              <option value="Corn" {% if b.crop == 'Corn' %}selected{% endif %}>Corn</option>
+              <option value="Soybeans" {% if b.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+            </select>
+            {{ crop_badge(b.crop, short=true) }}
+          </td>
+          <td><input name="capacity_bu" type="number" step="1" min="0" value="{{ b.capacity_bu if b.capacity_bu is not none else '' }}" class="sheet-num sheet-cap" placeholder="—"></td>
+          <td><input name="on_hand_bu" type="number" step="0.1" min="0" value="{{ card.me_bu }}" class="sheet-num sheet-onhand"></td>
+          <td class="sheet-calc muted">
+            {% for s in card.shares if (s.owner_name or '')|lower != 'me' %}
+              {{ s.owner_name }} {{ "{:,.0f}".format(s.bushels) }}{% if not loop.last %}; {% endif %}
+            {% else %}
+              —
+            {% endfor %}
+          </td>
+          <td class="sheet-calc sheet-total" data-other="{{ (card.total_bu - card.me_bu)|round(1) }}">{{ "{:,.0f}".format(card.total_bu) }}</td>
+          <td class="sheet-calc sheet-pct">{{ card.pct if card.has_cap else '—' }}{% if card.has_cap %}%{% endif %}</td>
+          {% if bins_show_carry %}
+          <td class="sheet-calc bin-carry-cell {{ crop_tone(b.crop) }}">
+            {% if card.carry_mo is defined and card.carry_mo is not none %}~${{ "{:,.2f}".format(card.carry_mo) }}{% else %}—{% endif %}
+          </td>
+          {% endif %}
+          <td><input name="notes" type="text" value="{{ b.notes or '' }}" class="sheet-notes"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="sheet-totals-row">
+          <td colspan="{% if bins_show_carry %}9{% else %}8{% endif %}">
+            <div class="sheet-totals" id="bin-sheet-totals">
+              <span>Bins <strong>{{ stats.bin_count }}</strong></span>
+              <span>On hand <strong id="tot-bu">—</strong></span>
+              <span>Capacity <strong id="tot-cap">—</strong></span>
+              {% if bins_show_carry %}
+              <span>Carry / mo <strong>${{ "{:,.2f}".format(stats.carry_total_mo or 0) }}</strong></span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div class="sheet-save-bar">
+    <button class="btn primary" type="submit">Save all</button>
+    <span class="muted" id="bin-sheet-dirty">No unsaved changes</span>
+  </div>
+</form>
+{% else %}
+<p class="empty">No bins yet. <a href="/bins">Add one on Overview</a>.</p>
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById("bin-sheet-form");
+  if (!form) return;
+  var dirty = false;
+
+  function num(el) {
+    if (!el) return 0;
+    var v = parseFloat(String(el.value || "").replace(",", ""));
+    return isFinite(v) ? v : 0;
+  }
+
+  function recalc() {
+    var totBu = 0, totCap = 0;
+    form.querySelectorAll(".sheet-row").forEach(function (row) {
+      var on = num(row.querySelector(".sheet-onhand"));
+      var cap = num(row.querySelector(".sheet-cap"));
+      var other = parseFloat(row.querySelector(".sheet-total").getAttribute("data-other") || "0") || 0;
+      var total = on + other;
+      var totEl = row.querySelector(".sheet-total");
+      var pctEl = row.querySelector(".sheet-pct");
+      if (totEl) totEl.textContent = Math.round(total).toLocaleString("en-US");
+      if (pctEl) {
+        if (cap > 0) pctEl.textContent = (Math.round(1000 * total / cap) / 10) + "%";
+        else pctEl.textContent = "—";
+      }
+      totBu += total;
+      totCap += cap;
+    });
+    var a = document.getElementById("tot-bu");
+    var b = document.getElementById("tot-cap");
+    if (a) a.textContent = Math.round(totBu).toLocaleString("en-US");
+    if (b) b.textContent = Math.round(totCap).toLocaleString("en-US");
+  }
+
+  function markDirty() {
+    dirty = true;
+    var hint = document.getElementById("bin-sheet-dirty");
+    if (hint) hint.textContent = "Unsaved changes";
+  }
+
+  form.addEventListener("input", function () { markDirty(); recalc(); });
+  form.addEventListener("change", function () { markDirty(); recalc(); });
+  form.addEventListener("submit", function () { dirty = false; });
+  window.addEventListener("beforeunload", function (e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  recalc();
+})();
+</script>
+<script src="/static/sheet-sort.js?v=2"></script>
+{% endblock %}

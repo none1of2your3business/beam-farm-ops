@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Balance sheet — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Banker pack</p>
+    <h1>Balance sheet</h1>
+  </div>
+  <form method="get" action="/balance" class="inline-form">
+    <label>As of
+      <input type="date" name="as_of" value="{{ as_of_date.isoformat() }}" onchange="this.form.submit()">
+    </label>
+  </form>
+</section>
+
+<section class="stat-grid">
+  <div class="stat"><span class="stat-label">Assets</span><span class="stat-value">${{ "{:,.0f}".format(assets_total) }}</span></div>
+  <div class="stat"><span class="stat-label">Liabilities</span><span class="stat-value">${{ "{:,.0f}".format(liabilities_total) }}</span></div>
+  <div class="stat"><span class="stat-label">Equity</span><span class="stat-value">${{ "{:,.0f}".format(equity) }}</span></div>
+  <div class="stat"><span class="stat-label">Working capital</span><span class="stat-value">${{ "{:,.0f}".format(working_capital) }}</span></div>
+</section>
+<p class="muted">Equipment market value (${{ "{:,.0f}".format(equip_market) }} across {{ equip_count }} machines) and equipment loan balances (${{ "{:,.0f}".format(equip_loans) }}) pull in automatically. Add cash, land, grain, notes, and other lines below.</p>
+<div class="form-actions" style="margin-bottom:1rem">
+  <a class="btn primary" href="/balance/print?as_of={{ as_of_date.isoformat() }}">Banker pack (print/PDF)</a>
+  {% if can_edit %}
+  <form method="post" action="/balance/snapshot" style="display:inline">
+    <input type="hidden" name="as_of_date" value="{{ as_of_date.isoformat() }}">
+    <input type="hidden" name="assets_total" value="{{ assets_total }}">
+    <input type="hidden" name="liabilities_total" value="{{ liabilities_total }}">
+    <input type="hidden" name="equity" value="{{ equity }}">
+    <input type="hidden" name="working_capital" value="{{ working_capital }}">
+    <input type="hidden" name="label" value="Snapshot {{ as_of_date.isoformat() }}">
+    <button class="btn ghost" type="submit">Save snapshot</button>
+  </form>
+  {% endif %}
+</div>
+{% if snapshots %}
+<ul class="simple-list">{% for s in snapshots %}<li><span>{{ s.as_of_date }} · {{ s.label }}</span><strong>Equity ${{ "{:,.0f}".format(s.equity) }}</strong></li>{% endfor %}</ul>
+{% endif %}
+
+<div class="split">
+  <div>
+    <h2>Assets</h2>
+    <ul class="simple-list">
+      <li><span><strong>Machinery &amp; equipment (market)</strong><span class="muted">Auto from equipment</span></span><strong>${{ "{:,.0f}".format(equip_market) }}</strong></li>
+      {% for a in assets %}
+      <li>
+        <span><strong>{{ a.label }}</strong><span class="muted">{{ a.category }}{% if a.is_current %} · current{% else %} · long-term{% endif %}</span></span>
+        <span>
+          <strong>${{ "{:,.0f}".format(a.amount) }}</strong>
+          {% if can_edit %}
+          <form method="post" action="/balance/item/{{ a.id }}/delete" style="display:inline" onsubmit="return confirm('Delete line?')">
+            <button type="submit" class="linkish">Delete</button>
+          </form>
+          {% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div>
+    <h2>Liabilities</h2>
+    <ul class="simple-list">
+      <li><span><strong>Equipment loans</strong><span class="muted">Auto from equipment</span></span><strong>${{ "{:,.0f}".format(equip_loans) }}</strong></li>
+      {% for l in liabilities %}
+      <li>
+        <span><strong>{{ l.label }}</strong><span class="muted">{{ l.category }}{% if l.is_current %} · current{% else %} · long-term{% endif %}</span></span>
+        <span>
+          <strong>${{ "{:,.0f}".format(l.amount) }}</strong>
+          {% if can_edit %}
+          <form method="post" action="/balance/item/{{ l.id }}/delete" style="display:inline" onsubmit="return confirm('Delete line?')">
+            <button type="submit" class="linkish">Delete</button>
+          </form>
+          {% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+{% if can_edit %}
+<form method="post" action="/balance/item" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Add line</h2>
+  <input type="hidden" name="as_of_date" value="{{ as_of_date.isoformat() }}">
+  <label>Side
+    <select name="side">
+      <option value="asset">Asset</option>
+      <option value="liability">Liability</option>
+    </select>
+  </label>
+  <label>Category
+    <select name="category">
+      <option value="cash">Cash</option>
+      <option value="grain">Grain inventory</option>
+      <option value="receivables">Receivables</option>
+      <option value="prepaid">Prepaid inputs</option>
+      <option value="land">Land</option>
+      <option value="other_asset">Other asset</option>
+      <option value="operating_note">Operating note</option>
+      <option value="land_loan">Land loan</option>
+      <option value="payables">Payables</option>
+      <option value="other_liability">Other liability</option>
+    </select>
+  </label>
+  <label>Label<input type="text" name="label" required placeholder="e.g. Operating account"></label>
+  <label>Amount<input type="text" inputmode="decimal" name="amount" value="0"></label>
+  <label>Current?
+    <select name="is_current">
+      <option value="1">Current</option>
+      <option value="0">Long-term</option>
+    </select>
+  </label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Add to balance sheet</button></div>
+</form>
+{% endif %}
+{% endblock %}

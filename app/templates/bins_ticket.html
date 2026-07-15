@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Ticket / move — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Grain · Storage</p>
+    <h1>Ticket / move</h1>
+    <p class="lede">Pick how grain moved. Scale tickets update inventory and contracts; other moves cover fill, transfer, and simple delivery.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/bins">Back to bins</a>
+    <a class="btn" href="/trucking">Truck rates &amp; loads</a>
+  </div>
+</section>
+
+{% if request.query_params.get('error') == 'ticket_source' %}
+<p class="banner-warn">Ticket needs a source: pick at least one bin and/or a field, with bushels.</p>
+{% endif %}
+{% if request.query_params.get('error') == 'ticket_mismatch' %}
+<p class="banner-warn">Source bushels must add up to the ticket net bushels (within 0.5 bu).</p>
+{% endif %}
+
+<section class="panel bin-entry-chooser">
+  <h2 style="margin:0 0 0.65rem;font-family:var(--display)">What are you recording?</h2>
+  <div class="home-actions">
+    <a class="btn primary" href="#scale-ticket">Scale ticket → buyer</a>
+    <a class="btn" href="#other-move">Fill / transfer / simple delivery</a>
+  </div>
+  <ul class="simple-list" style="margin-top:0.85rem">
+    <li><strong>Scale ticket</strong><span class="muted"> — elevator/buyer load with ticket #; one or more bins and/or a field must total the ticket. Prefer this for outbound sales.</span></li>
+    <li><strong>Other move</strong><span class="muted"> — harvest into a bin, bin-to-bin transfer, or a one-bin delivery without splitting sources.</span></li>
+    <li><strong>Freight</strong><span class="muted"> — rates and loads live on <a href="/trucking">Truck</a> (cross-link only; tickets still update bins here).</span></li>
+  </ul>
+</section>
+
+<form method="post" action="/bins/ticket" class="form-grid panel bin-ticket" id="scale-ticket">
+  <h2 class="full" style="margin:0;font-family:var(--display)">1. Scale ticket</h2>
+  <p class="full muted" style="margin:0">Enter the ticket total, then where the grain came from. Source bushels must add up to the ticket. For hauling cost, open <a href="/trucking">Truck</a> after saving.</p>
+
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Ticket #<input name="ticket_number" placeholder="scale ticket #"></label>
+  <label>Date<input type="date" name="move_date" value="{{ today }}"></label>
+  <label>Destination<input name="destination" placeholder="Cargill, ethanol…"></label>
+  <label>Wet bu<input name="wet_bu" placeholder="optional"></label>
+  <label>Moisture %<input name="moisture"></label>
+  <label>Net bu (ticket)<input name="net_bu" id="ticket-net" placeholder="required unless wet+moist"></label>
+  <label>Owner share<input name="owner_name" value="Me"></label>
+  <label>Contract<select name="contract_id"><option value="">—</option>{% for c in contracts %}<option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }} ({{ "{:,.0f}".format(c.bushels - c.delivered_bu) }} left)</option>{% endfor %}</select></label>
+
+  <div class="full bin-sources">
+    <h3>Came from bin(s)</h3>
+    <p class="muted">Add a row per bin. One bin with blank bu uses the full ticket. Multiple bins: enter bu from each (must total the ticket).</p>
+    <div id="alloc-rows" class="bin-alloc-rows">
+      <div class="bin-alloc-row">
+        <label>Bin
+          <select name="alloc_bin_id">
+            <option value="">—</option>
+            {% for b in bins %}<option value="{{ b.id }}">{{ b.name }} ({{ b.crop }})</option>{% endfor %}
+          </select>
+        </label>
+        <label>Bu from this bin<input name="alloc_bu" type="number" step="0.1" min="0" placeholder="bu"></label>
+      </div>
+    </div>
+    <button type="button" class="btn" id="add-alloc">+ Another bin</button>
+  </div>
+
+  <div class="full bin-field-source">
+    <h3>And / or from a field</h3>
+    <p class="muted">Field → elevator (no bin). Use alone or with bin rows for a split load.</p>
+    <div class="bin-alloc-row">
+      <label>Field
+        <select name="field_id">
+          <option value="">— none —</option>
+          {% for f in fields %}<option value="{{ f.id }}">{{ f.name }} ({{ f.crop }})</option>{% endfor %}
+        </select>
+      </label>
+      <label>Bu from field<input name="field_bu" type="number" step="0.1" min="0" placeholder="bu"></label>
+    </div>
+  </div>
+
+  <p class="full bin-ticket-sum muted">Sources total: <strong id="sources-total">0</strong> bu · Ticket: <strong id="ticket-show">—</strong> bu <span id="sources-match"></span></p>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save scale ticket</button></div>
+</form>
+
+<template id="alloc-row-template">
+  <div class="bin-alloc-row">
+    <label>Bin
+      <select name="alloc_bin_id">
+        <option value="">—</option>
+        {% for b in bins %}<option value="{{ b.id }}">{{ b.name }} ({{ b.crop }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Bu from this bin<input name="alloc_bu" type="number" step="0.1" min="0" placeholder="bu"></label>
+    <button type="button" class="btn bin-alloc-remove" title="Remove row">×</button>
+  </div>
+</template>
+
+<form method="post" action="/bins/move" class="form-grid panel" id="other-move">
+  <h2 class="full" style="margin:0;font-family:var(--display)">2. Other movement</h2>
+  <p class="full muted" style="margin:0">Use when you are not splitting a scale ticket across sources. For a full scale ticket with ticket # and multiple sources, use section 1 above.</p>
+  <label>Type<select name="move_type"><option value="fill">Fill / harvest to bin</option><option value="delivery">Delivery from one bin</option><option value="elevator">Field → elevator (no bin)</option><option value="transfer">Bin transfer</option></select></label>
+  <label>Bin<select name="bin_id"><option value="">—</option>{% for b in bins %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}</select></label>
+  <label>To bin (transfer)<select name="to_bin_id"><option value="">—</option>{% for b in bins %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}</select></label>
+  <label>Field<select name="field_id"><option value="">—</option>{% for f in fields %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select></label>
+  <label>Owner share<input name="owner_name" value="Me"></label>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Wet bu<input name="wet_bu"></label>
+  <label>Moisture %<input name="moisture"></label>
+  <label>Net bu<input name="net_bu"></label>
+  <label>Ticket #<input name="ticket_number" placeholder="optional"></label>
+  <label>Destination<input name="destination"></label>
+  <label>Contract<select name="contract_id"><option value="">—</option>{% for c in contracts %}<option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}</option>{% endfor %}</select></label>
+  <label>Date<input type="date" name="move_date" value="{{ today }}"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save movement</button></div>
+</form>
+<p class="muted">Moisture shrink: net = wet × (100 − moist) / (100 − 15 corn or 13 soy).</p>
+
+{% if moves %}
+<h2>Recent tickets / moves</h2>
+<div class="table-wrap"><table><thead><tr><th>Date</th><th>Crop</th><th>Type</th><th>Bin</th><th>Field</th><th>Bu</th><th>M%</th><th>Ticket</th><th>Owner</th></tr></thead><tbody>
+{% for m in moves %}<tr class="crop-row {{ crop_tone(m.crop) }}">
+  <td>{{ m.move_date }}</td>
+  <td>{{ crop_badge(m.crop, short=true) }}</td>
+  <td>{{ m.move_type }}</td>
+  <td>{% if m.bin_id %}{{ bin_name.get(m.bin_id, m.bin_id) }}{% else %}—{% endif %}</td>
+  <td>{% if m.field_id %}{{ field_name.get(m.field_id, m.field_id) }}{% else %}—{% endif %}</td>
+  <td>{{ m.net_bu }}{% if m.wet_bu %} (wet {{ m.wet_bu }}){% endif %}</td>
+  <td>{{ m.moisture or '—' }}</td>
+  <td>{{ m.ticket_number or '—' }}</td>
+  <td>{{ m.owner_name }}</td>
+</tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+
+<style>
+.bin-entry-chooser .home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.bin-entry-chooser .simple-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: baseline;
+}
+</style>
+<script>
+(function () {
+  const rows = document.getElementById('alloc-rows');
+  const tpl = document.getElementById('alloc-row-template');
+  const addBtn = document.getElementById('add-alloc');
+  if (addBtn && tpl && rows) {
+    addBtn.addEventListener('click', () => {
+      const node = tpl.content.cloneNode(true);
+      rows.appendChild(node);
+      bindRemove();
+      sumSources();
+    });
+  }
+  function bindRemove() {
+    rows.querySelectorAll('.bin-alloc-remove').forEach((btn) => {
+      btn.onclick = () => {
+        btn.closest('.bin-alloc-row')?.remove();
+        sumSources();
+      };
+    });
+  }
+  function num(el) {
+    if (!el) return 0;
+    const v = parseFloat(el.value);
+    return isNaN(v) ? 0 : v;
+  }
+  function sumSources() {
+    let total = 0;
+    rows.querySelectorAll('input[name="alloc_bu"]').forEach((inp) => { total += num(inp); });
+    const fieldBu = document.querySelector('#scale-ticket input[name="field_bu"]');
+    total += num(fieldBu);
+    const ticket = num(document.getElementById('ticket-net'));
+    const st = document.getElementById('sources-total');
+    const ts = document.getElementById('ticket-show');
+    const match = document.getElementById('sources-match');
+    if (st) st.textContent = total.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    if (ts) ts.textContent = ticket ? ticket.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—';
+    if (match) {
+      if (!ticket && !total) match.textContent = '';
+      else if (!ticket) match.textContent = '(ticket will use sources total)';
+      else if (Math.abs(total - ticket) <= 0.5) match.textContent = '✓ matches';
+      else match.textContent = '✗ does not match ticket';
+      match.className = (!ticket || Math.abs(total - ticket) <= 0.5) ? 'ok' : 'bad';
+    }
+  }
+  document.getElementById('scale-ticket')?.addEventListener('input', sumSources);
+  sumSources();
+})();
+</script>
+{% endblock %}

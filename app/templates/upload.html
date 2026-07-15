@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Master Upload — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Import hub</p><h1>Master Upload</h1></div>
+<div class="form-actions"><a class="btn ghost" href="/photos">Photos</a><a class="btn ghost" href="/export">Excel export</a></div></section>
+{% if message %}<p class="panel" style="border-color:var(--accent)">{{ message }}</p>{% endif %}
+<p class="lede">Drop Cargill CSVs, crop-acres Excel, Panorama files, or chem / mix sheets. Spray and chem files open a guided review so you confirm before anything is saved.</p>
+<form method="post" action="/upload/file" enctype="multipart/form-data" class="form-grid panel">
+  <label>Type
+    <select name="import_type">
+      <option value="cargill_csv">Cargill / elevator CSV (auto)</option>
+      <option value="fields_excel">Crop acres Excel (auto)</option>
+      <option value="panorama_file">Panorama / 20|20 file</option>
+      <option value="spray_mix">Chem prices / spray mix (guided)</option>
+      <option value="generic">Generic / store only</option>
+    </select>
+  </label>
+  <label class="full">File<input type="file" name="file" required></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Upload</button></div>
+</form>
+<p class="muted"><a href="/inputs/upload">Or open Inputs guided upload →</a></p>
+<form method="post" action="/upload/save-mapping" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Save column mapping template</h2>
+  <label>Name<input name="name" required placeholder="My Cargill layout"></label>
+  <label>Type<input name="import_type" value="cargill_csv"></label>
+  <label class="full">Mapping JSON<textarea name="mapping_json" rows="3" placeholder='{"bushels":"Net Bu","ticket":"Ticket #"}'></textarea></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn ghost" type="submit">Save template</button></div>
+</form>
+{% if mapping_templates %}
+<ul class="simple-list">{% for t in mapping_templates %}<li><span><strong>{{ t.name }}</strong><span class="muted">{{ t.import_type }} · {{ t.mapping_json }}</span></span></li>{% endfor %}</ul>
+{% endif %}
+<p class="muted">Panorama live API configured: {% if live_ready %}yes{% else %}no — on hold / see /panorama{% endif %}</p>
+{% if batches %}
+<ul class="simple-list">{% for b in batches %}<li><span><strong>{{ b.filename }}</strong><span class="muted">{{ b.import_type }} · {{ b.status }} · {{ b.row_count }} rows · {{ b.notes }}</span></span></li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

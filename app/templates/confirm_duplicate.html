@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Possible duplicate — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="panel panel-warn confirm-dup">
+  <p class="eyebrow" style="margin:0">Heads up</p>
+  <h1 style="margin:0.2rem 0 0.35rem;font-family:var(--display);font-size:1.65rem">{{ heading }}</h1>
+  <p class="lede" style="margin:0 0 0.85rem">{{ lede }}</p>
+
+  <ul class="confirm-dup-list">
+    {% for hit in hits %}
+    <li>{{ hit }}</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="{{ action }}" class="confirm-dup-actions">
+    {% for name, value in form_pairs %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    <a class="btn" href="{{ cancel_url }}">Cancel</a>
+    <button class="btn primary" type="submit">Proceed anyway</button>
+  </form>
+</section>
+
+<style>
+.confirm-dup { max-width: 42rem; }
+.confirm-dup-list {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem 0.65rem 1.4rem;
+  border: 1px solid color-mix(in srgb, var(--clay, #b34a2e) 35%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--clay, #b34a2e) 6%, var(--card));
+  display: grid;
+  gap: 0.35rem;
+}
+.confirm-dup-list li { margin: 0; }
+.confirm-dup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+</style>
+{% endblock %}

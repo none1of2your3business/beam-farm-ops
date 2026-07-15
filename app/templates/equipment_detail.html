@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}{{ eq.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{{ eq.category }} · {{ finance_labels.get(eq.finance_status, eq.finance_status) }}</p>
+    <h1>{{ eq.name }}</h1>
+  </div>
+  <div class="form-actions">
+    {% if can_edit %}<a class="btn ghost" href="/equipment/{{ eq.id }}/edit">Edit</a>{% endif %}
+    <a class="btn ghost" href="/equipment">All equipment</a>
+  </div>
+</section>
+
+<section class="stat-grid compact">
+  <div class="stat"><span class="stat-label">Market value</span><span class="stat-value">{% if eq.market_value %}${{ "{:,.0f}".format(eq.market_value) }}{% else %}—{% endif %}</span></div>
+  <div class="stat"><span class="stat-label">Cash cost / yr</span><span class="stat-value">${{ "{:,.0f}".format(costs.cash_cost) }}</span></div>
+  <div class="stat"><span class="stat-label">Cash $/acre</span><span class="stat-value">{% if cpa_cash %}${{ cpa_cash }}{% else %}—{% endif %}</span></div>
+  <div class="stat"><span class="stat-label">w/ dep $/acre</span><span class="stat-value">{% if cpa_total %}${{ cpa_total }}{% else %}—{% endif %}</span></div>
+</section>
+
+<div class="split">
+  <div class="panel">
+    <h2>Cost breakdown (annual)</h2>
+    <ul class="simple-list">
+      <li><span>Payments</span><strong>${{ "{:,.0f}".format(costs.payments) }}</strong></li>
+      <li><span>Insurance</span><strong>${{ "{:,.0f}".format(costs.insurance) }}</strong></li>
+      <li><span>Taxes</span><strong>${{ "{:,.0f}".format(costs.taxes) }}</strong></li>
+      <li><span>Housing / storage</span><strong>${{ "{:,.0f}".format(costs.housing) }}</strong></li>
+      <li><span>Maintenance (this year)</span><strong>${{ "{:,.0f}".format(costs.maintenance) }}</strong></li>
+      <li><span>Fuel (this year)</span><strong>${{ "{:,.0f}".format(fuel_cost_yr) }}</strong></li>
+      <li><span>Economic depreciation</span><strong>${{ "{:,.0f}".format(costs.depreciation) }}</strong></li>
+    </ul>
+    <p class="muted">Based on {{ acres }} crop acres. Loan balance: {% if eq.loan_balance %}${{ "{:,.0f}".format(eq.loan_balance) }}{% else %}—{% endif %}{% if eq.lender_name %} ({{ eq.lender_name }}){% endif %}</p>
+  </div>
+
+  {% if can_edit %}
+  <div>
+    <form method="post" action="/equipment/{{ eq.id }}/maintenance" class="form-grid panel">
+      <h2 class="full" style="margin:0;font-family:var(--display)">Add maintenance</h2>
+      <label>Date<input type="date" name="service_date" required value="{{ today }}"></label>
+      <label>Cost<input type="text" inputmode="decimal" name="cost" value="0"></label>
+      <label class="full">Description<input type="text" name="description" required></label>
+      <label>Hours at service<input type="text" inputmode="decimal" name="hours_at_service"></label>
+      <label>Vendor<input type="text" name="vendor"></label>
+      <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+      <div class="form-actions full"><button class="btn primary" type="submit">Save maintenance</button></div>
+    </form>
+
+    <form method="post" action="/equipment/{{ eq.id }}/event" class="form-grid panel">
+      <h2 class="full" style="margin:0;font-family:var(--display)">Buy / sell / trade event</h2>
+      <label>Type
+        <select name="event_type">
+          <option value="buy">Buy</option>
+          <option value="sell">Sell</option>
+          <option value="trade_in">Trade-in received</option>
+          <option value="trade_out">Trade away</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Date<input type="date" name="event_date" required value="{{ today }}"></label>
+      <label>Amount<input type="text" inputmode="decimal" name="amount" value="0"></label>
+      <label>Counterparty<input type="text" name="counterparty"></label>
+      <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+      <div class="form-actions full"><button class="btn primary" type="submit">Record event</button></div>
+    </form>
+
+    <form method="post" action="/equipment/{{ eq.id }}/fuel" class="form-grid panel">
+      <h2 class="full" style="margin:0;font-family:var(--display)">Fuel fill</h2>
+      <label>Date<input type="date" name="fill_date" value="{{ today }}"></label>
+      <label>Gallons<input name="gallons" required></label>
+      <label>Cost $<input name="cost" value="0"></label>
+      <label>Hours<input name="hours_at_fill"></label>
+      <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+      <div class="form-actions full"><button class="btn primary" type="submit">Save fuel</button></div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<section class="section-block">
+  <h2>Maintenance log</h2>
+  {% if eq.maintenance %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Description</th><th>Cost</th><th>Hours</th><th>Vendor</th></tr></thead>
+      <tbody>
+        {% for m in eq.maintenance|sort(attribute='service_date', reverse=true) %}
+        <tr>
+          <td>{{ m.service_date }}</td>
+          <td>{{ m.description }}</td>
+          <td>${{ "{:,.0f}".format(m.cost) }}</td>
+          <td>{{ m.hours_at_service if m.hours_at_service is not none else "—" }}</td>
+          <td>{{ m.vendor or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No maintenance recorded yet.</p>
+  {% endif %}
+</section>
+
+<section class="section-block">
+  <h2>Buy / sell / trade history</h2>
+  {% if eq.events %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Party</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for e in eq.events|sort(attribute='event_date', reverse=true) %}
+        <tr>
+          <td>{{ e.event_date }}</td>
+          <td>{{ e.event_type }}</td>
+          <td>${{ "{:,.0f}".format(e.amount) }}</td>
+          <td>{{ e.counterparty or "—" }}</td>
+          <td>{{ e.notes or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No events yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

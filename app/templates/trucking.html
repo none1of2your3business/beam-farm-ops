@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Trucking — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Hauling</p><h1>Trucking rates &amp; loads</h1></div></section>
+<p class="muted" style="margin:0 0 1rem">Freight rates and loads. Scale tickets that update bin inventory are under Grain → <a href="/bins/ticket">Ticket</a>.</p>
+<form method="post" action="/trucking/rate" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Rate table</h2>
+  <label>Destination<input name="destination" required></label>
+  <label>Hauler<input name="hauler"></label>
+  <label>$/bu<input name="rate_per_bu"></label>
+  <label>$/load<input name="rate_per_load"></label>
+  <label>Miles<input name="miles"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save rate</button></div>
+</form>
+{% if rates %}
+<div class="table-wrap"><table><thead><tr><th>Destination</th><th>Hauler</th><th>$/bu</th><th>$/load</th><th>Miles</th></tr></thead><tbody>
+{% for r in rates %}<tr><td>{{ r.destination }}</td><td>{{ r.hauler or '—' }}</td><td>{{ r.rate_per_bu or '—' }}</td><td>{{ r.rate_per_load or '—' }}</td><td>{{ r.miles or '—' }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+<form method="post" action="/trucking/load" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Load log</h2>
+  <label>Date<input type="date" name="load_date" value="{{ today }}"></label>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Destination<input name="destination" required></label>
+  <label>Hauler<input name="hauler"></label>
+  <label>Bushels<input name="bushels" required></label>
+  <label>Rate paid<input name="rate_paid"></label>
+  <label>Ticket #<input name="ticket_number"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Log load</button></div>
+</form>
+{% if loads %}
+{% for group_crop in ['Corn', 'Soybeans'] %}
+{% set group = loads|selectattr('crop', 'equalto', group_crop)|list %}
+{% if group %}
+<section class="crop-section {{ crop_tone(group_crop) }}">
+  <h2 class="crop-section-head">{{ crop_badge(group_crop) }} {{ group_crop }} loads <span class="muted">({{ group|length }})</span></h2>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Crop</th><th>Dest</th><th>Bu</th><th>Paid</th><th>Ticket</th></tr></thead><tbody>
+  {% for l in group %}<tr class="crop-row {{ crop_tone(l.crop) }}">
+    <td>{{ l.load_date }}</td>
+    <td>{{ crop_chip(l.crop) }}</td>
+    <td>{{ l.destination }}</td>
+    <td>{{ l.bushels }}</td>
+    <td>{{ l.rate_paid or '—' }}</td>
+    <td>{{ l.ticket_number or '—' }}</td>
+  </tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endblock %}

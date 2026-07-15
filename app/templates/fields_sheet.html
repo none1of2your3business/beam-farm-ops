@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone %}
+{% block title %}Fields Sheet — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">{% if year %}{{ year.year }}{% endif %} · Spreadsheet</p>
+    <h1>Fields Sheet</h1>
+    <p class="lede">Edit crop, acres, base yield, and rent in one grid — click a column header to sort. Save all when ready.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <div class="view-switch" role="tablist" aria-label="Fields view">
+      <a class="view-switch-btn" href="/fields?view=overview&crop={{ filter_crop }}&ownership={{ filter_ownership }}">Overview</a>
+      <a class="view-switch-btn active" href="/fields/sheet?crop={{ filter_crop }}&ownership={{ filter_ownership }}">Sheet</a>
+    </div>
+    <a class="btn ghost" href="/fields/new">Add field</a>
+  </div>
+</section>
+
+{% if saved is not none and saved != '' %}
+<p class="banner-ok">Saved {{ saved }} field{% if saved != '1' %}s{% endif %}.</p>
+{% endif %}
+{% if msg %}<p class="banner-warn">{{ msg }}</p>{% endif %}
+
+<form method="get" action="/fields/sheet" class="filters">
+  <label>Crop
+    <select name="crop" onchange="this.form.submit()">
+      <option value="all" {% if filter_crop == 'all' %}selected{% endif %}>All</option>
+      <option value="Corn" {% if filter_crop == 'Corn' %}selected{% endif %}>Corn</option>
+      <option value="Soybeans" {% if filter_crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+      <option value="None" {% if filter_crop == 'None' %}selected{% endif %}>None</option>
+    </select>
+  </label>
+  <label>Ownership
+    <select name="ownership" onchange="this.form.submit()">
+      <option value="all" {% if filter_ownership == 'all' %}selected{% endif %}>All</option>
+      {% for key, label in ownership_labels.items() %}
+      <option value="{{ key }}" {% if filter_ownership == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+</form>
+
+{% if fields %}
+<form method="post" action="/fields/sheet/save" id="sheet-form" class="sheet-form">
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table" id="sheet-table" data-sortable>
+      <thead>
+        <tr>
+          <th class="sheet-name">Field</th>
+          <th>Crop</th>
+          <th>Acres</th>
+          <th>My acres</th>
+          <th>Base yield</th>
+          <th>Exp. bu</th>
+          <th>Rent $/ac</th>
+          <th>Rent $</th>
+          <th>COP $/ac</th>
+          <th>Plan cost $</th>
+          <th>Ownership</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in fields %}
+        <tr class="sheet-row crop-row {{ crop_tone(f.crop) }}" data-id="{{ f.id }}">
+          <td class="sheet-name">
+            <input type="hidden" name="field_id" value="{{ f.id }}">
+            <a href="/fields/{{ f.id }}">{{ f.name }}</a>
+          </td>
+          <td>
+            <select name="crop" class="sheet-crop">
+              <option value="Corn" {% if f.crop == 'Corn' %}selected{% endif %}>Corn</option>
+              <option value="Soybeans" {% if f.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+              <option value="None" {% if f.crop not in ['Corn','Soybeans'] %}selected{% endif %}>None</option>
+            </select>
+          </td>
+          <td><input name="acres_total" type="number" step="0.1" min="0" value="{{ f.acres_total }}" class="sheet-num sheet-acres-total"></td>
+          <td><input name="acres_mine" type="number" step="0.1" min="0" value="{{ f.acres_mine }}" class="sheet-num sheet-acres-mine"></td>
+          <td><input name="expected_yield" type="number" step="0.1" min="0" value="{% if f.expected_yield is not none %}{{ f.expected_yield }}{% endif %}" class="sheet-num sheet-yield" placeholder="—"></td>
+          <td class="sheet-calc sheet-bu">—</td>
+          <td><input name="rent_per_acre" type="number" step="0.01" min="0" value="{{ f.rent_per_acre }}" class="sheet-num sheet-rent-ac"></td>
+          <td class="sheet-calc sheet-rent">—</td>
+          <td class="sheet-calc sheet-cop-ac">—</td>
+          <td class="sheet-calc sheet-cop">—</td>
+          <td>
+            <select name="ownership_mode" class="sheet-own">
+              {% for key, label in ownership_labels.items() %}
+              <option value="{{ key }}" {% if f.ownership_mode == key %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td><input name="notes" type="text" value="{{ f.notes or '' }}" class="sheet-notes"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="sheet-totals-row">
+          <td colspan="12">
+            <div class="sheet-totals" id="sheet-totals">
+              <span>My acres <strong id="tot-acres">—</strong></span>
+              <span>Exp. bu <strong id="tot-bu">—</strong></span>
+              <span>Rent <strong id="tot-rent">—</strong></span>
+              <span>Plan COP <strong id="tot-cop">—</strong></span>
+            </div>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div class="sheet-save-bar">
+    <button class="btn primary" type="submit" id="sheet-save">Save all</button>
+    <span class="muted" id="sheet-dirty-hint">No unsaved changes</span>
+  </div>
+</form>
+{% else %}
+<p class="empty">No fields match. <a href="/fields/new">Add one</a>.</p>
+{% endif %}
+
+<script>
+(function () {
+  var cornCop = {{ corn_cop|default(0) }};
+  var soyCop = {{ soy_cop|default(0) }};
+  var form = document.getElementById("sheet-form");
+  if (!form) return;
+  var dirty = false;
+
+  function num(el) {
+    if (!el) return 0;
+    var v = parseFloat(String(el.value || "").replace(",", ""));
+    return isFinite(v) ? v : 0;
+  }
+
+  function money(n) {
+    return "$" + Math.round(n).toLocaleString("en-US");
+  }
+
+  function copFor(crop) {
+    if (crop === "Corn") return cornCop;
+    if (crop === "Soybeans") return soyCop;
+    return 0;
+  }
+
+  function recalc() {
+    var acres = 0, bu = 0, rent = 0, cop = 0;
+    document.querySelectorAll(".sheet-row").forEach(function (row) {
+      var crop = (row.querySelector(".sheet-crop") || {}).value || "None";
+      var mine = num(row.querySelector(".sheet-acres-mine"));
+      var yld = num(row.querySelector(".sheet-yield"));
+      var rentAc = num(row.querySelector(".sheet-rent-ac"));
+      var expBu = mine * yld;
+      var rent$ = mine * rentAc;
+      var cpa = copFor(crop);
+      var plan = mine * cpa;
+      var buEl = row.querySelector(".sheet-bu");
+      var rentEl = row.querySelector(".sheet-rent");
+      var cpaEl = row.querySelector(".sheet-cop-ac");
+      var copEl = row.querySelector(".sheet-cop");
+      if (buEl) buEl.textContent = expBu ? Math.round(expBu).toLocaleString("en-US") : "—";
+      if (rentEl) rentEl.textContent = money(rent$);
+      if (cpaEl) cpaEl.textContent = cpa ? ("$" + cpa.toFixed(0)) : "—";
+      if (copEl) copEl.textContent = money(plan);
+      acres += mine;
+      bu += expBu;
+      rent += rent$;
+      cop += plan;
+    });
+    var a = document.getElementById("tot-acres");
+    var b = document.getElementById("tot-bu");
+    var r = document.getElementById("tot-rent");
+    var c = document.getElementById("tot-cop");
+    if (a) a.textContent = acres.toLocaleString("en-US", { maximumFractionDigits: 1 });
+    if (b) b.textContent = Math.round(bu).toLocaleString("en-US");
+    if (r) r.textContent = money(rent);
+    if (c) c.textContent = money(cop);
+  }
+
+  function markDirty() {
+    dirty = true;
+    var hint = document.getElementById("sheet-dirty-hint");
+    if (hint) hint.textContent = "Unsaved changes";
+  }
+
+  form.addEventListener("input", function () { markDirty(); recalc(); });
+  form.addEventListener("change", function () { markDirty(); recalc(); });
+  form.addEventListener("submit", function () { dirty = false; });
+
+  window.addEventListener("beforeunload", function (e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+
+  recalc();
+})();
+</script>
+<script src="/static/sheet-sort.js?v=2"></script>
+{% endblock %}

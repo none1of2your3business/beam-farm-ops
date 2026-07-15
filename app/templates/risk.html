@@ -1,0 +1,345 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Grain board — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="mkt-hero reveal">
+  <div class="mkt-hero-media">
+    <img src="/static/img/farm-marketing.jpg" alt="Grain marketing" class="mkt-parallax" data-speed="0.12">
+    <img src="/static/img/farm-elevator.jpg" alt="Elevator" class="mkt-hero-float" data-speed="-0.08">
+  </div>
+  <div class="mkt-hero-copy">
+    <p class="eyebrow">{{ year.year if year else "" }} · grain</p>
+    <h1>Grain board</h1>
+    <p class="lede">Quotes · position · money at risk.</p>
+  </div>
+</section>
+
+{# —— CME board + risk snapshot (first viewport) —— #}
+<section class="mkt-top reveal" id="board">
+  <div class="mkt-board">
+    <div class="mkt-board-head">
+      <div>
+        <p class="eyebrow">CME nearby</p>
+        <h2>Futures board</h2>
+      </div>
+      <div class="mkt-board-head-meta">
+        <p class="mkt-delayed">Delayed · not for trading</p>
+        <p class="mkt-updated" title="When board and strip prices were last saved">
+          {% if quote_updated and quote_updated.when %}
+          <strong>{{ quote_updated.label }}</strong>
+          <span>via {{ quote_updated.source_label }}</span>
+          {% else %}
+          <strong>Last updated —</strong>
+          <span>never — refresh or enter manually</span>
+          {% endif %}
+        </p>
+      </div>
+    </div>
+    <div class="mkt-board-quotes">
+      {% for crop in ["Corn", "Soybeans"] %}
+      {% set q = board.get(crop) if board else none %}
+      <div class="mkt-quote-card {{ crop_tone(crop) }}">
+        <span class="mkt-quote-crop">{{ crop_badge(crop, short=true) }} {{ crop }}{% if q and q.label %} · {{ q.label }}{% endif %}</span>
+        {% if q and q.price is not none %}
+        <strong class="mkt-quote-price">${{ "%.2f"|format(q.price) }}</strong>
+        <span class="mkt-quote-chg {% if q.change is not none and q.change < 0 %}down{% elif q.change is not none and q.change > 0 %}up{% endif %}">
+          {% if q.change is not none %}{{ "%+.2f"|format(q.change) }} today{% else %}change —{% endif %}
+        </span>
+        <div class="mkt-quote-stats">
+          <div class="mkt-quote-stat"><span>Current</span><strong>${{ "%.2f"|format(q.price) }}</strong></div>
+          <div class="mkt-quote-stat"><span>Open</span><strong>{% if q.open is not none %}${{ "%.2f"|format(q.open) }}{% else %}—{% endif %}</strong></div>
+          <div class="mkt-quote-stat"><span>Change</span><strong class="{% if q.change is not none and q.change < 0 %}mkt-quote-chg down{% elif q.change is not none and q.change > 0 %}mkt-quote-chg up{% endif %}">{% if q.change is not none %}{{ "%+.2f"|format(q.change) }}{% else %}—{% endif %}</strong></div>
+          <div class="mkt-quote-stat"><span>Prev close</span><strong>{% if q.prev_close is not none %}${{ "%.2f"|format(q.prev_close) }}{% else %}—{% endif %}</strong></div>
+          <div class="mkt-quote-stat"><span>52w low</span><strong>{% if q.low_52w is not none %}${{ "%.2f"|format(q.low_52w) }}{% else %}—{% endif %}</strong></div>
+          <div class="mkt-quote-stat"><span>52w high</span><strong>{% if q.high_52w is not none %}${{ "%.2f"|format(q.high_52w) }}{% else %}—{% endif %}</strong></div>
+        </div>
+        {% else %}
+        <strong class="mkt-quote-price muted">—</strong>
+        <span class="mkt-quote-chg">no quote</span>
+        <div class="mkt-quote-stats">
+          <div class="mkt-quote-stat"><span>Current</span><strong>—</strong></div>
+          <div class="mkt-quote-stat"><span>Open</span><strong>—</strong></div>
+          <div class="mkt-quote-stat"><span>Change</span><strong>—</strong></div>
+          <div class="mkt-quote-stat"><span>Prev close</span><strong>—</strong></div>
+          <div class="mkt-quote-stat"><span>52w low</span><strong>—</strong></div>
+          <div class="mkt-quote-stat"><span>52w high</span><strong>—</strong></div>
+        </div>
+        {% endif %}
+        <span class="mkt-quote-meta">{{ q.ticker if q else ("ZC=F" if crop == "Corn" else "ZS=F") }} · delayed</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="mkt-board-asof">
+      {% if quote_updated and quote_updated.when %}
+      Futures prices last updated <strong>{{ quote_updated.stamp }}{{ quote_updated.age_txt }}</strong>
+      ({{ quote_updated.source_label }}). Auto-refresh about every 30 minutes while you use this page; or hit Refresh.
+      {% else %}
+      No board price yet — refresh delayed quotes or enter manually.
+      {% endif %}
+    </p>
+    <div class="mkt-board-actions">
+      <form method="post" action="/risk/quotes/refresh"><button class="btn primary" type="submit">Refresh delayed quotes</button></form>
+      <form method="post" action="/risk/quotes" class="mkt-manual-quote form-grid">
+        <label>Corn $/bu<input name="corn_futures" value="{{ settings.corn_futures if settings and settings.corn_futures is not none else '' }}" placeholder="4.55"></label>
+        <label>Soy $/bu<input name="soy_futures" value="{{ settings.soy_futures if settings and settings.soy_futures is not none else '' }}" placeholder="11.20"></label>
+        <label>Corn basis<input name="corn_local_basis" value="{{ settings.corn_local_basis if settings and settings.corn_local_basis is not none else '' }}" placeholder="-0.25"></label>
+        <label>Soy basis<input name="soy_local_basis" value="{{ settings.soy_local_basis if settings and settings.soy_local_basis is not none else '' }}" placeholder="-0.40"></label>
+        <div class="form-actions"><button class="btn" type="submit">Save override</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="mkt-risk-tracker" id="risk-tracker">
+    <div class="mkt-board-head">
+      <div>
+        <p class="eyebrow">Risk tracker</p>
+        <h2>Money &amp; stress</h2>
+      </div>
+    </div>
+    <div class="mkt-risk-heroes">
+      <div class="mkt-risk-hero stress">
+        <span>Stress dollars</span>
+        <strong>${{ "{:,.0f}".format(risk_tracker.stress_total) }}</strong>
+        <em>Hit if futures-open grain drops by your shock</em>
+      </div>
+      <div class="mkt-risk-hero at-risk">
+        <span>Money at risk</span>
+        <strong>${{ "{:,.0f}".format(risk_tracker.money_at_risk_total) }}</strong>
+        <em>Bin + unsold valued at board / local cash</em>
+      </div>
+    </div>
+    <div class="mkt-risk-grid">
+      {% for crop in ["Corn", "Soybeans"] %}
+      {% set r = risk_tracker.by_crop.get(crop, {}) %}
+      <div class="mkt-risk-crop {{ crop_tone(crop) }}">
+        <h3>{{ crop_badge(crop, short=true) }} {{ crop }}</h3>
+        <ul>
+          <li><span>Unsold</span><strong>{{ "{:,.0f}".format(r.unsold or 0) }} bu</strong></li>
+          <li><span>Futures open</span><strong>{{ "{:,.0f}".format(r.futures_open or 0) }} bu</strong></li>
+          <li><span>Basis open</span><strong>{{ "{:,.0f}".format(r.basis_open or 0) }} bu</strong></li>
+          <li><span>In bins</span><strong>{{ "{:,.0f}".format(r.bin_bu or 0) }} bu</strong></li>
+          <li><span>Stress (−${{ "%.2f"|format(r.shock or 0) }})</span><strong>${{ "{:,.0f}".format(r.stress or 0) }}</strong></li>
+          <li><span>At risk $</span><strong>{% if r.money_at_risk is not none %}${{ "{:,.0f}".format(r.money_at_risk) }}{% else %}—{% endif %}</strong></li>
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+    <form method="post" action="/risk/stress" class="form-grid mkt-stress-form">
+      <label>Corn stress $/bu<input name="corn_stress_shock" value="{{ settings.corn_stress_shock if settings else 0.5 }}"></label>
+      <label>Soy stress $/bu<input name="soy_stress_shock" value="{{ settings.soy_stress_shock if settings else 1.0 }}"></label>
+      <div class="form-actions"><button class="btn" type="submit">Update stress</button></div>
+    </form>
+  </div>
+</section>
+
+{# —— Position bars (right under board + money/stress) —— #}
+<section class="mkt-chart-panel reveal" id="mkt-chart">
+  <div class="mkt-chart-head">
+    <div>
+      <p class="eyebrow">Farm total</p>
+      <h2>Futures vs basis sold</h2>
+    </div>
+    <p class="muted">{% if marketing_summary.has_expected %}{{ "{:,.0f}".format(marketing_summary.expected) }} bu expected{% else %}Set field yields to unlock %{% endif %}</p>
+  </div>
+  <div class="mkt-bars" role="img" aria-label="Futures and basis percent sold">
+    <div class="mkt-bar-row">
+      <div class="mkt-bar-label"><span class="mkt-dot futures"></span><strong>Futures</strong><em>{{ "{:,.0f}".format(marketing_summary.futures_bu) }} bu</em></div>
+      <div class="mkt-bar-track"><div class="mkt-bar-fill futures" style="--w: {{ marketing_summary.futures_width }}%" data-animate-bar><span class="mkt-bar-pct">{% if marketing_summary.has_expected %}{{ marketing_summary.futures_pct }}%{% else %}—{% endif %}</span></div></div>
+    </div>
+    <div class="mkt-bar-row">
+      <div class="mkt-bar-label"><span class="mkt-dot basis"></span><strong>Basis</strong><em>{{ "{:,.0f}".format(marketing_summary.basis_bu) }} bu</em></div>
+      <div class="mkt-bar-track"><div class="mkt-bar-fill basis" style="--w: {{ marketing_summary.basis_width }}%" data-animate-bar><span class="mkt-bar-pct">{% if marketing_summary.has_expected %}{{ marketing_summary.basis_pct }}%{% else %}—{% endif %}</span></div></div>
+    </div>
+  </div>
+  <div class="mkt-crop-charts">
+    {% for b in marketing_bars %}
+    <div class="mkt-crop-card {{ crop_tone(b.label) }}">
+      <h3>{{ crop_badge(b.label, short=true) }} {{ b.label }}</h3>
+      <p class="muted">{{ "{:,.0f}".format(b.expected) }} bu expected</p>
+      <div class="mkt-mini-bars">
+        <div class="mkt-mini"><span>Futures</span><div class="mkt-bar-track short"><div class="mkt-bar-fill futures" style="--w: {{ b.futures_width }}%" data-animate-bar></div></div><strong>{{ b.futures_pct }}%</strong></div>
+        <div class="mkt-mini"><span>Basis</span><div class="mkt-bar-track short"><div class="mkt-bar-fill basis" style="--w: {{ b.basis_width }}%" data-animate-bar></div></div><strong>{{ b.basis_pct }}%</strong></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="stat-grid reveal">{% for c in cards %}
+<div class="stat mkt-stat {{ crop_tone(c.crop) }}">
+  <span class="stat-label">{{ crop_chip(c.crop) }} total sold</span>
+  <span class="stat-value">{% if c.pct is not none %}{{ c.pct }}%{% else %}—{% endif %}</span>
+  <div class="muted">{{ "{:,.0f}".format(c.sold) }} / {{ "{:,.0f}".format(c.expected) }} bu · F {{ c.futures_pct if c.futures_pct is not none else '—' }}% · B {{ c.basis_pct if c.basis_pct is not none else '—' }}%</div>
+</div>
+{% endfor %}</section>
+
+<section class="mkt-strip-panel reveal" id="futures-strip">
+  <div class="mkt-strip-head">
+    <div>
+      <p class="eyebrow">CME listed months</p>
+      <h2>Full-year futures strip</h2>
+      {% if quote_updated and quote_updated.when %}
+      <p class="mkt-updated mkt-updated-inline">{{ quote_updated.label }} — {{ quote_updated.source_label }}</p>
+      {% endif %}
+    </div>
+    <p class="muted">From the current unexpired contract through the same month next year. Between months: calendar spread (next − this). <strong class="spread-pos">Green = carry</strong>, <strong class="spread-neg">red = inverse</strong>.</p>
+  </div>
+  {% for crop in ["Corn", "Soybeans"] %}
+  {% set months = (futures_strip or {}).get(crop, []) %}
+  {% set spreads = (strip_spreads or {}).get(crop, []) %}
+  <div class="mkt-strip-crop {{ crop_tone(crop) }}">
+    <h3>{{ crop_badge(crop, short=true) }} {{ crop }}</h3>
+    <div class="mkt-strip-scroll">
+      <div class="mkt-strip-row" role="list">
+        {% for row in months %}
+        <div class="mkt-strip-month {% if row.is_front %}is-front{% endif %}" role="listitem">
+          <span class="mkt-strip-month-label">{{ row.label }}{% if row.is_front %} <span class="mkt-front-tag">front</span>{% endif %}</span>
+          {% if row.price is not none %}
+          <strong class="mkt-strip-price">${{ "%.2f"|format(row.price) }}</strong>
+          {% if row.change is not none %}
+          <span class="mkt-quote-chg {% if row.change < 0 %}down{% elif row.change > 0 %}up{% endif %}">{{ "%+.2f"|format(row.change) }}</span>
+          {% endif %}
+          {% else %}
+          <strong class="mkt-strip-price muted">—</strong>
+          {% endif %}
+          <em>{{ row.short }}</em>
+        </div>
+        {% if not loop.last %}
+        {% set sp = spreads[loop.index0] if loop.index0 < spreads|length else none %}
+        <div class="mkt-strip-spread {% if sp and sp.is_carry %}is-carry{% elif sp and sp.is_inverse %}is-inverse{% elif sp and sp.is_flat %}is-flat{% endif %}"
+             role="listitem"
+             title="{% if sp %}{{ sp.from_label }} → {{ sp.to_label }}: next month minus this month{% endif %}">
+          <span class="mkt-spread-arrow" aria-hidden="true">→</span>
+          {% if sp and sp.cents is not none %}
+          <strong class="mkt-spread-val">{{ "%+.1f"|format(sp.cents) }}¢</strong>
+          <em>{% if sp.is_carry %}carry{% elif sp.is_inverse %}inverse{% else %}flat{% endif %}</em>
+          {% else %}
+          <strong class="mkt-spread-val muted">—</strong>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <p class="muted">Click Refresh delayed quotes to load the strip</p>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+
+<section class="panel reveal" id="carry-link">
+  <p class="eyebrow">Storage</p>
+  <h2 style="margin:0.2rem 0 0.4rem">Cost of carry</h2>
+  <p class="muted" style="margin:0 0 0.75rem">Interest, storage, and shrink on grain still in the bin — full calculator with mark mode and research defaults.</p>
+  <a class="btn primary" href="/risk/carry">Full carry calculator →</a>
+</section>
+
+<section class="scene-strip reveal">
+  <a class="scene-card" href="/fields">
+    <img src="/static/img/farm-fields.jpg" alt="Fields">
+    <span>Set field yields →</span>
+  </a>
+  <a class="scene-card" href="/bins">
+    <img src="/static/img/farm-bins.jpg" alt="Grain bins">
+    <span>Bins &amp; tickets →</span>
+  </a>
+</section>
+
+<div class="panel panel-accent reveal">
+  <h2>Expected production (from fields)</h2>
+  <p class="muted">Each corn/soy field: <strong>my acres × expected yield (bu/ac)</strong>.</p>
+  {% if prod_rows %}
+  <div class="table-wrap" style="margin-top:0.75rem"><table><thead><tr><th>Field</th><th>Crop</th><th>My ac</th><th>Yield</th><th>Expected bu</th><th></th></tr></thead><tbody>
+  {% for r in prod_rows %}<tr><td><a href="/fields/{{ r.field.id }}">{{ r.field.name }}</a></td><td>{{ r.field.crop }}</td><td>{{ r.acres }}</td><td>{{ r.yield }}</td><td>{{ "{:,.0f}".format(r.bu) }}</td><td><a href="/fields/{{ r.field.id }}/edit">Edit</a></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No field yields yet.</p>
+  {% endif %}
+  {% if missing_yield %}
+  <div class="callout warn" style="margin-top:1rem">
+    <strong>{{ missing_yield|length }} field(s) missing yield</strong>
+    <ul class="chip-list">{% for f in missing_yield %}<li><a href="/fields/{{ f.id }}">{{ f.name }}</a> ({{ f.crop }}, {{ f.acres_mine }} ac)</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</div>
+
+{% if due_soon %}
+<div class="panel panel-warn reveal">
+  <h2>Delivery deadlines</h2>
+  <ul class="simple-list">{% for d in due_soon %}<li><span>{{ d.contract.crop }} · {{ d.contract.buyer or '—' }} · {{ d.contract.bushels }} bu</span><strong>{% if d.days < 0 %}{{ -d.days }}d overdue{% else %}{{ d.days }}d{% endif %} ({{ d.contract.delivery_end }})</strong></li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<script>
+(function () {
+  const reveals = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) {
+          e.target.classList.add('is-in');
+          e.target.querySelectorAll('[data-animate-bar]').forEach((bar) => {
+            bar.style.width = getComputedStyle(bar).getPropertyValue('--w') || '0%';
+          });
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    reveals.forEach((el) => io.observe(el));
+  } else {
+    reveals.forEach((el) => el.classList.add('is-in'));
+  }
+
+  const parallax = document.querySelectorAll('.mkt-parallax, .mkt-hero-float');
+  let ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      const y = window.scrollY || 0;
+      parallax.forEach((img) => {
+        const speed = parseFloat(img.dataset.speed || '0.1');
+        img.style.transform = 'translate3d(0,' + (y * speed) + 'px,0) scale(1.08)';
+      });
+      ticking = false;
+    });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  document.querySelectorAll('.mkt-expand').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = document.getElementById(btn.dataset.target);
+      if (!row) return;
+      const open = row.hasAttribute('hidden');
+      if (open) row.removeAttribute('hidden'); else row.setAttribute('hidden', '');
+      btn.textContent = open ? '−' : '+';
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  });
+
+  const filters = document.querySelectorAll('.mkt-filter');
+  const rows = document.querySelectorAll('.mkt-desk-row');
+  filters.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      filters.forEach((b) => b.classList.remove('is-on'));
+      btn.classList.add('is-on');
+      const f = btn.dataset.filter;
+      rows.forEach((tr) => {
+        const crop = tr.dataset.crop;
+        const status = tr.dataset.status;
+        let show = true;
+        if (f === 'Corn' || f === 'Soybeans') show = crop === f;
+        if (f === 'open') show = status === 'open';
+        tr.style.display = show ? '' : 'none';
+        const ev = document.getElementById('ev-' + tr.cells[1].textContent.trim());
+        if (ev && !show) ev.setAttribute('hidden', '');
+      });
+    });
+  });
+
+})();
+</script>
+
+{% endblock %}

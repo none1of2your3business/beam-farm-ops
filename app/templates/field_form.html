@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{% if field %}Edit{% else %}New{% endif %} field — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{{ year.year if year else "" }}</p>
+    <h1>{% if field %}Edit field{% else %}Add field{% endif %}</h1>
+  </div>
+  <a class="btn ghost" href="/fields">Back</a>
+</section>
+
+{% if error %}<p class="flash error">{{ error }}</p>{% endif %}
+{% if request.query_params.get('msg') == 'name_required' %}
+<p class="banner-warn">Field name is required.</p>
+{% endif %}
+{% if request.query_params.get('msg') == 'totals_not_a_field' %}
+<p class="banner-warn">“Totals” is a spreadsheet summary — pick a real field name.</p>
+{% endif %}
+
+<form method="post" action="/fields/save" class="form-grid" id="field-form">
+  {% if field %}<input type="hidden" name="field_id" value="{{ field.id }}">{% endif %}
+
+  <label class="full">Field name
+    <input type="text" name="name" required value="{{ field.name if field else '' }}">
+  </label>
+
+  <label>Acres total
+    <input type="text" inputmode="decimal" name="acres_total" id="acres_total" value="{{ field.acres_total if field else '0' }}">
+  </label>
+  <label>My acres
+    <input type="text" inputmode="decimal" name="acres_mine" id="acres_mine" value="{{ field.acres_mine if field else '0' }}">
+  </label>
+
+  <label>Crop
+    <select name="crop">
+      {% for c in ['Corn', 'Soybeans', 'None'] %}
+      <option value="{{ c }}" {% if field and field.crop == c %}selected{% elif not field and c == 'None' %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>Ownership
+    <select name="ownership_mode" id="ownership_mode">
+      {% for key, label in ownership_labels.items() %}
+      <option value="{{ key }}" {% if field and field.ownership_mode == key %}selected{% elif not field and key == 'operated_by_me' %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>Primary landlord / customer (optional)
+    <select name="party_id">
+      <option value="">—</option>
+      {% for p in parties %}
+      <option value="{{ p.id }}" {% if field and field.party_id == p.id %}selected{% endif %}>{{ p.name }} ({{ p.party_type }})</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>My share % <span class="muted">(legacy · synced from partners below)</span>
+    <input type="text" inputmode="decimal" name="my_share_pct" id="my_share_pct" placeholder="e.g. 50" value="{{ field.my_share_pct if field and field.my_share_pct is not none else '' }}">
+  </label>
+
+  <label>Lease type
+    <select name="lease_type">
+      {% for key, label in [('cash_rent','Cash rent'),('flex_rent','Flex rent'),('crop_share','Crop share'),('none','None')] %}
+      <option value="{{ key }}" {% if field and field.lease_type == key %}selected{% elif not field and key == 'cash_rent' %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>Rent $/acre
+    <input type="text" inputmode="decimal" name="rent_per_acre" value="{{ field.rent_per_acre if field else '0' }}">
+  </label>
+
+  <label>Expected yield (bu/ac)
+    <input type="text" inputmode="decimal" name="expected_yield" value="{{ field.expected_yield if field and field.expected_yield is not none else '' }}">
+  </label>
+
+  <div class="full panel share-panel" id="share-panel">
+    <h2 style="margin:0 0 0.35rem;font-family:var(--display)">Share partners</h2>
+    <p class="muted" style="margin:0 0 0.75rem">Add every partner and their % (example: Me 50 · Mike Palmer 16 · Mike Hurt 34). Total should be 100%.</p>
+    <div class="share-rows" id="share-rows">
+      {% for s in shares %}
+      <div class="share-row">
+        <input type="hidden" name="share_is_me" value="{{ 1 if s.is_me else 0 }}">
+        <label>Partner
+          <input name="share_name" value="{{ s.display_name if s.is_me else (s.partner_name or (s.party.name if s.party else '')) }}" placeholder="Me / Mike Palmer" {% if s.is_me %}data-me="1"{% endif %}>
+        </label>
+        <label>Party (optional)
+          <select name="share_party_id" {% if s.is_me %}disabled{% endif %}>
+            <option value="">—</option>
+            {% for p in parties %}
+            <option value="{{ p.id }}" {% if s.party_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          {% if s.is_me %}<input type="hidden" name="share_party_id" value="">{% endif %}
+        </label>
+        <label>Share %
+          <input name="share_pct" type="number" step="0.01" min="0" max="100" value="{{ s.share_pct }}" class="share-pct-input">
+        </label>
+        <button type="button" class="btn ghost share-remove" title="Remove">×</button>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-actions" style="margin-top:0.65rem">
+      <button type="button" class="btn" id="add-share-row">+ Add partner</button>
+      <span class="muted" id="share-total">Total: —</span>
+    </div>
+  </div>
+
+  <label class="full">Notes
+    <textarea name="notes" rows="3">{{ field.notes if field and field.notes else '' }}</textarea>
+  </label>
+
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Save field</button>
+    {% if field %}
+    <button type="submit" class="btn danger" form="delete-form" onclick="return confirm('Delete this field?')">Delete</button>
+    {% endif %}
+  </div>
+</form>
+
+{% if field %}
+<form id="delete-form" method="post" action="/fields/{{ field.id }}/delete"></form>
+{% endif %}
+
+<template id="share-row-template">
+  <div class="share-row">
+    <input type="hidden" name="share_is_me" value="0">
+    <label>Partner
+      <input name="share_name" placeholder="Partner name">
+    </label>
+    <label>Party (optional)
+      <select name="share_party_id">
+        <option value="">—</option>
+        {% for p in parties %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Share %
+      <input name="share_pct" type="number" step="0.01" min="0" max="100" value="" class="share-pct-input">
+    </label>
+    <button type="button" class="btn ghost share-remove" title="Remove">×</button>
+  </div>
+</template>
+
+<script>
+(function () {
+  var rows = document.getElementById("share-rows");
+  var tpl = document.getElementById("share-row-template");
+  var addBtn = document.getElementById("add-share-row");
+  var totalEl = document.getElementById("share-total");
+  var acresTotal = document.getElementById("acres_total");
+  var acresMine = document.getElementById("acres_mine");
+  var myShare = document.getElementById("my_share_pct");
+
+  function recalc() {
+    var sum = 0;
+    var mePct = null;
+    rows.querySelectorAll(".share-row").forEach(function (row) {
+      var pctInput = row.querySelector(".share-pct-input");
+      var isMe = row.querySelector('input[name="share_is_me"]');
+      var nameInput = row.querySelector('input[name="share_name"]');
+      var pct = parseFloat((pctInput && pctInput.value) || "");
+      if (isFinite(pct)) sum += pct;
+      var me = isMe && isMe.value === "1";
+      if (!me && nameInput && String(nameInput.value || "").trim().toLowerCase() === "me") me = true;
+      if (me && isFinite(pct)) mePct = pct;
+    });
+    if (totalEl) {
+      var ok = Math.abs(sum - 100) < 0.05;
+      totalEl.textContent = "Total: " + (sum ? sum.toFixed(1) : "—") + "%" + (sum && !ok ? " (should be 100%)" : "");
+      totalEl.style.color = !sum || ok ? "" : "#c62828";
+    }
+    if (mePct != null && myShare) myShare.value = String(mePct);
+    if (mePct != null && acresTotal && acresMine) {
+      var tot = parseFloat(String(acresTotal.value || "").replace(",", ""));
+      if (isFinite(tot) && tot > 0) {
+        acresMine.value = (tot * mePct / 100).toFixed(2).replace(/\.00$/, "");
+      }
+    }
+  }
+
+  if (addBtn && tpl && rows) {
+    addBtn.addEventListener("click", function () {
+      rows.appendChild(tpl.content.cloneNode(true));
+      recalc();
+    });
+  }
+  if (rows) {
+    rows.addEventListener("click", function (e) {
+      var btn = e.target.closest(".share-remove");
+      if (!btn) return;
+      var row = btn.closest(".share-row");
+      if (row && rows.querySelectorAll(".share-row").length > 1) row.remove();
+      recalc();
+    });
+    rows.addEventListener("input", recalc);
+    rows.addEventListener("change", recalc);
+  }
+  if (acresTotal) acresTotal.addEventListener("input", recalc);
+  recalc();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_chip %}
+{% block title %}Dashboard — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="hero-band">
+  <img src="/static/img/farm-hero.jpg" alt="Cornfield at golden hour">
+  <div class="hero-copy">
+    <p class="eyebrow">{% if year %}{{ year.label or year.year }}{% else %}No crop year{% endif %}</p>
+    <h1>{{ farm_name }}</h1>
+    <p>Your fields, grain, and inputs — organized by how you work, not a long menu.</p>
+  </div>
+</section>
+
+<section class="page-head" style="margin-top:-0.25rem">
+  <div>
+    <span class="welcome-chip">Ready for the season</span>
+    <h1 style="font-size:1.45rem">Today’s snapshot</h1>
+  </div>
+</section>
+
+<section class="stat-grid">
+  <div class="stat">
+    <span class="stat-label">Fields</span>
+    <span class="stat-value">{{ stats.field_count }}</span>
+  </div>
+  <div class="stat crop-corn">
+    <span class="stat-label">My corn acres</span>
+    <span class="stat-value">{{ stats.corn_acres }}</span>
+  </div>
+  <div class="stat crop-soy">
+    <span class="stat-label">My soy acres</span>
+    <span class="stat-value">{{ stats.soy_acres }}</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Rent (my share)</span>
+    <span class="stat-value">${{ "{:,.0f}".format(stats.rent_total) }}</span>
+  </div>
+</section>
+
+<section class="panel" style="margin-top:0.25rem">
+  <h2 style="margin:0 0 0.65rem;font-family:var(--display)">Next actions</h2>
+  <div class="home-actions">
+    <a class="btn primary" href="/fields">Review fields</a>
+    <a class="btn" href="/inputs/assign">Assign inputs</a>
+    <a class="btn" href="/risk">Grain board</a>
+    <a class="btn" href="/bins/ticket">Grain ticket</a>
+    <a class="btn" href="/scan">Scan a receipt</a>
+  </div>
+</section>
+
+<section class="split">
+  <div>
+    <div class="section-head">
+      <h2>Where to go</h2>
+    </div>
+    <ul class="simple-list home-hubs">
+      <li><a href="/fields"><strong>Fields</strong><span class="muted">Land, parties, trials, yields</span></a></li>
+      <li><a href="/inputs"><strong>Inputs</strong><span class="muted">Catalog, assign, inventory</span></a></li>
+      <li><a href="/risk"><strong>Grain</strong><span class="muted">Board, contracts, carry, bins</span></a></li>
+      <li><a href="/settlements"><strong>Money</strong><span class="muted">Settle, invoices, balance</span></a></li>
+      <li><a href="/scan"><strong>Capture</strong><span class="muted">Scan, upload, reports</span></a></li>
+    </ul>
+  </div>
+  <div>
+    <div class="section-head">
+      <h2>Fields snapshot</h2>
+      <a href="/fields">View all</a>
+    </div>
+    {% if fields %}
+    <ul class="simple-list">
+      {% for f in fields %}
+      <li class="crop-rail {{ crop_tone(f.crop) }}" style="padding-left:0.75rem">
+        <a href="/fields/{{ f.id }}">
+          <strong>{{ f.name }}</strong>
+          <span>{{ crop_chip(f.crop) }} · {{ f.acres_mine }} ac · {{ ownership_labels.get(f.ownership_mode, f.ownership_mode) }}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">No fields yet. <a href="/fields/new">Add a field</a> or import from Capture → Upload.</p>
+    {% endif %}
+  </div>
+</section>
+<style>
+.home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.home-hubs li a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  text-decoration: none;
+}
+.home-hubs li a:hover strong { text-decoration: underline; }
+</style>
+{% endblock %}

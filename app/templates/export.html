@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Reports — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Reports</p>
+    <h1>Excel &amp; PDF reports</h1>
+    <p class="lede">Download any module as a spreadsheet or printable PDF{% if year %} · crop year {{ year.year }}{% endif %}.</p>
+  </div>
+  <img src="/static/img/farm-equip.jpg" alt="Reports">
+</section>
+
+<div class="panel">
+  <h2 style="margin-top:0;font-family:var(--display)">Full backup</h2>
+  <p class="muted">One Excel file with every module as its own sheet.</p>
+  <p><a class="btn primary" href="/export/workbook">Download full Excel workbook</a></p>
+</div>
+
+<section class="report-grid">
+{% for key, title in modules %}
+{% if key != 'all' %}
+<article class="report-card">
+  <h3>{{ title }}</h3>
+  <div class="report-actions">
+    <a class="btn primary" href="/export/report?module={{ key }}&fmt=xlsx">Excel</a>
+    <a class="btn" href="/export/report?module={{ key }}&fmt=pdf">PDF</a>
+  </div>
+</article>
+{% endif %}
+{% endfor %}
+<article class="report-card report-card-all">
+  <h3>All modules (PDF pack)</h3>
+  <p class="muted">One PDF with a section for each module.</p>
+  <div class="report-actions">
+    <a class="btn" href="/export/report?module=all&fmt=pdf">Download PDF pack</a>
+  </div>
+</article>
+</section>
+
+<p class="muted"><a href="/upload">Master Upload</a> · <a href="/photos">Photos</a> · <a href="/balance/print">Banker pack print</a></p>
+{% endblock %}

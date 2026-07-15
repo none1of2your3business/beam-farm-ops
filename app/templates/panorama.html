@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Panorama — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Precision Planting</p><h1>Panorama sync</h1></div>
+<a class="btn ghost" href="/static/../.." style="display:none"></a></section>
+
+{% if message %}<p class="flash" style="background:#e8efe3;padding:.75rem;border-radius:10px">{{ message }}</p>{% endif %}
+{% if error %}<p class="flash error">{{ error }}</p>{% endif %}
+
+<div class="panel" style="border-color:#c45c26">
+  <h2>Live API — on hold</h2>
+  <p>Waiting on Precision Planting to grant partner API access. Code is ready; leave <code>.env</code> blank for now.</p>
+  <p class="muted">You can still <strong>upload 20|20 / Panorama files</strong> below anytime.</p>
+</div>
+
+<div class="panel">
+  <h2>Setup checklist (what’s ready on this PC)</h2>
+  <ul class="simple-list">
+    <li><span>Leaf API token</span><strong>{% if config.leaf_token %}Ready{% else %}Missing{% endif %}</strong></li>
+    <li><span>Panorama Client ID</span><strong>{% if config.panorama_client_id %}Ready{% else %}Missing{% endif %}</strong></li>
+    <li><span>Panorama partner username</span><strong>{% if config.panorama_username %}Ready{% else %}Missing{% endif %}</strong></li>
+    <li><span>Panorama partner password</span><strong>{% if config.panorama_password %}Ready{% else %}Missing{% endif %}</strong></li>
+    <li><span>Environment</span><strong>{{ config.environment }}</strong></li>
+    <li><span>Live sync ready</span><strong>{% if live_ready %}YES{% else %}NO{% endif %}</strong></li>
+  </ul>
+  {% if config.missing %}
+  <p class="muted">Missing in <code>.env</code>: {{ config.missing | join(', ') }}. Full walkthrough: <code>PANORAMA_SETUP.md</code> in the project folder.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Connection</h2>
+  {% if conn %}
+  <ul class="simple-list">
+    <li><span>Status</span><strong>{{ conn.status }}</strong></li>
+    <li><span>Org code</span><strong>{{ conn.organization_code or '—' }}</strong></li>
+    <li><span>Leaf user</span><strong>{{ conn.leaf_user_id or '—' }}</strong></li>
+    <li><span>Last sync</span><strong>{{ conn.last_sync_at or '—' }}</strong></li>
+  </ul>
+  {% if conn.sign_in_url %}<p><a class="btn primary" href="{{ conn.sign_in_url }}" target="_blank" rel="noopener">Open Panorama authorize link</a> <span class="muted">(must finish within 15 minutes)</span></p>{% endif %}
+  {% if conn.last_error %}<p class="flash error">{{ conn.last_error }}</p>{% endif %}
+  {% else %}
+  <p class="muted">Not connected yet.</p>
+  {% endif %}
+</div>
+
+<form method="post" action="/panorama/connect" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Connect live Panorama (via Leaf)</h2>
+  <label>Panorama organization code<input name="organization_code" required placeholder="From your Panorama Portal"></label>
+  <label>Grower name<input name="grower_name" value="{{ farm_name }}"></label>
+  <label class="full">Grower email<input name="grower_email" type="email" value="farm@example.com"></label>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit" {% if not live_ready %}disabled title="Fill .env first"{% endif %}>Start one-click connect</button>
+    <button class="btn ghost" formaction="/panorama/refresh" formmethod="post">Refresh / pull operations</button>
+  </div>
+</form>
+
+<form method="post" action="/panorama/upload" enctype="multipart/form-data" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Use today without partner keys — upload files</h2>
+  <p class="muted full">Export from 20|20 / Panorama and upload here. Files go to <code>data/panorama_uploads/</code>.</p>
+  <label class="full">Upload file<input type="file" name="file" required></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Store file</button></div>
+</form>
+
+<section class="section-block"><h2>Sync log</h2>
+<ul class="simple-list">{% for l in logs %}<li><span><strong>{{ l.created_at }}</strong> {{ l.action }}{% if not l.ok %} (error){% endif %}<span class="muted">{{ l.detail }}</span></span></li>{% else %}<li>No activity yet</li>{% endfor %}</ul>
+</section>
+{% endblock %}

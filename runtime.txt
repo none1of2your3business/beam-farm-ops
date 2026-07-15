@@ -1,0 +1,2 @@
+# Python version for Render / Railway / Nixpacks
+python-3.12.8

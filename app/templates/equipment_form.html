@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{% if eq %}Edit{% else %}Add{% endif %} equipment — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Equipment</p>
+    <h1>{% if eq %}Edit{% else %}Add{% endif %} equipment</h1>
+  </div>
+  <a class="btn ghost" href="/equipment">Back</a>
+</section>
+
+<form method="post" action="/equipment/save" class="form-grid">
+  {% if eq %}<input type="hidden" name="equip_id" value="{{ eq.id }}">{% endif %}
+
+  <label class="full">Name
+    <input type="text" name="name" required value="{{ eq.name if eq else '' }}" placeholder="e.g. JD 8R 370">
+  </label>
+  <label>Category
+    <select name="category">
+      {% for c in categories %}
+      <option value="{{ c }}" {% if eq and eq.category == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Status
+    <select name="status">
+      {% for s in ['active','sold','traded','retired'] %}
+      <option value="{{ s }}" {% if eq and eq.status == s %}selected{% elif not eq and s == 'active' %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Make<input type="text" name="make" value="{{ eq.make if eq and eq.make else '' }}"></label>
+  <label>Model<input type="text" name="model" value="{{ eq.model if eq and eq.model else '' }}"></label>
+  <label>Year<input type="number" name="year" value="{{ eq.year if eq and eq.year else '' }}"></label>
+  <label>Serial #<input type="text" name="serial_number" value="{{ eq.serial_number if eq and eq.serial_number else '' }}"></label>
+
+  <label>Ownership / finance
+    <select name="finance_status">
+      {% for key, label in finance_labels.items() %}
+      <option value="{{ key }}" {% if eq and eq.finance_status == key %}selected{% elif not eq and key == 'owned' %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Hours / acres meter
+    <input type="text" inputmode="decimal" name="hours" value="{{ eq.hours if eq and eq.hours is not none else '' }}">
+  </label>
+
+  <label>Purchase date<input type="date" name="purchase_date" value="{{ eq.purchase_date.isoformat() if eq and eq.purchase_date else '' }}"></label>
+  <label>Purchase price<input type="text" inputmode="decimal" name="purchase_price" value="{{ eq.purchase_price if eq and eq.purchase_price is not none else '' }}"></label>
+  <label>Market value (banker)<input type="text" inputmode="decimal" name="market_value" value="{{ eq.market_value if eq and eq.market_value is not none else '' }}"></label>
+  <label>Salvage value<input type="text" inputmode="decimal" name="salvage_value" value="{{ eq.salvage_value if eq and eq.salvage_value is not none else '' }}"></label>
+  <label>Useful life (years)<input type="text" inputmode="decimal" name="useful_life_years" value="{{ eq.useful_life_years if eq and eq.useful_life_years is not none else '' }}" placeholder="e.g. 10"></label>
+
+  <label>Payment amount<input type="text" inputmode="decimal" name="payment_amount" value="{{ eq.payment_amount if eq and eq.payment_amount is not none else '' }}"></label>
+  <label>Payment frequency
+    <select name="payment_frequency">
+      {% for f in ['monthly','quarterly','annual'] %}
+      <option value="{{ f }}" {% if eq and eq.payment_frequency == f %}selected{% elif not eq and f == 'monthly' %}selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Loan / lease balance<input type="text" inputmode="decimal" name="loan_balance" value="{{ eq.loan_balance if eq and eq.loan_balance is not none else '' }}"></label>
+  <label>Lender / lessor<input type="text" name="lender_name" value="{{ eq.lender_name if eq and eq.lender_name else '' }}"></label>
+  <label>Lease end date<input type="date" name="lease_end_date" value="{{ eq.lease_end_date.isoformat() if eq and eq.lease_end_date else '' }}"></label>
+
+  <label>Annual insurance<input type="text" inputmode="decimal" name="annual_insurance" value="{{ eq.annual_insurance if eq else '0' }}"></label>
+  <label>Annual taxes<input type="text" inputmode="decimal" name="annual_taxes" value="{{ eq.annual_taxes if eq else '0' }}"></label>
+  <label>Annual housing / storage<input type="text" inputmode="decimal" name="annual_housing" value="{{ eq.annual_housing if eq else '0' }}"></label>
+  <label class="full">Notes<textarea name="notes" rows="3">{{ eq.notes if eq and eq.notes else '' }}</textarea></label>
+
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Save</button>
+  </div>
+</form>
+{% endblock %}

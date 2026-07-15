@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Contracts — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Grain · contracts</p>
+    <h1>Contract desk</h1>
+    <p class="lede">Add contracts, log pricing events, and compare vs COP and the board.</p>
+  </div>
+</section>
+{# —— Contract action desk —— #}
+<section class="mkt-desk reveal" id="desk">
+  <div class="mkt-desk-head">
+    <div>
+      <p class="eyebrow">Action</p>
+      <h2>Contract desk</h2>
+    </div>
+    <div class="mkt-desk-filters" role="tablist">
+      <button type="button" class="mkt-filter is-on" data-filter="all">All</button>
+      <button type="button" class="mkt-filter crop-corn" data-filter="Corn">Corn</button>
+      <button type="button" class="mkt-filter crop-soy" data-filter="Soybeans">Soy</button>
+      <button type="button" class="mkt-filter" data-filter="open">Open</button>
+    </div>
+  </div>
+
+  <form method="post" action="/risk/contract" class="form-grid panel mkt-contract-form mkt-desk-add">
+    <h3 class="full" style="margin:0;font-family:var(--display)">Add contract</h3>
+    <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+    <label>Type<select name="contract_type">{% for t in contract_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></label>
+    <label>Buyer<input name="buyer" placeholder="Cargill..."></label>
+    <label>Bushels<input name="bushels" required></label>
+    <label>Cash price<input name="cash_price"></label>
+    <label>Futures<input name="futures_price"></label>
+    <label>Basis<input name="basis"></label>
+    <label>Futures month<input name="futures_month"></label>
+    <label>Delivery end<input type="date" name="delivery_end"></label>
+    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+    <div class="form-actions full"><button class="btn primary" type="submit">Save contract</button></div>
+  </form>
+
+  {% if desk %}
+  <div class="table-wrap mkt-desk-table">
+    <table>
+      <thead>
+        <tr>
+          <th></th><th>ID</th><th>Crop</th><th>Type</th><th>Buyer</th><th>Bu</th><th>Left</th>
+          <th>Fut</th><th>Bas</th><th>Cash</th><th>Equiv</th><th>vs COP</th><th>vs Mkt</th><th>Due</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in desk %}
+      {% set c = row.c %}
+      <tr class="mkt-desk-row crop-row {{ crop_tone(c.crop) }}" data-crop="{{ c.crop }}" data-status="{{ c.status }}">
+        <td><button type="button" class="mkt-expand" aria-expanded="false" data-target="ev-{{ c.id }}">+</button></td>
+        <td>{{ c.id }}</td>
+        <td>{{ crop_badge(c.crop, short=true) }}</td>
+        <td>{{ c.contract_type }}</td>
+        <td>{{ c.buyer or "—" }}</td>
+        <td>{{ "{:,.0f}".format(c.bushels) }}</td>
+        <td>{{ "{:,.0f}".format(row.left) }}</td>
+        <td>{% if c.futures_price is not none %}{{ "%.2f"|format(c.futures_price) }}{% else %}—{% endif %}</td>
+        <td>{% if c.basis is not none %}{{ "%.2f"|format(c.basis) }}{% else %}—{% endif %}</td>
+        <td>{% if c.cash_price is not none %}{{ "%.2f"|format(c.cash_price) }}{% else %}—{% endif %}</td>
+        <td>{% if row.equiv is not none %}<strong>${{ "%.2f"|format(row.equiv) }}</strong>{% else %}—{% endif %}</td>
+        <td class="{% if row.vs_cop is not none and row.vs_cop >= 0 %}pos{% elif row.vs_cop is not none %}neg{% endif %}">{% if row.vs_cop is not none %}{{ "%+.2f"|format(row.vs_cop) }}{% else %}—{% endif %}</td>
+        <td class="{% if row.vs_mkt is not none and row.vs_mkt >= 0 %}pos{% elif row.vs_mkt is not none %}neg{% endif %}">{% if row.vs_mkt is not none %}{{ "%+.2f"|format(row.vs_mkt) }}{% else %}—{% endif %}</td>
+        <td>{{ c.delivery_end or "—" }}</td>
+        <td>{{ c.status }}</td>
+      </tr>
+      <tr class="mkt-desk-events" id="ev-{{ c.id }}" hidden>
+        <td colspan="15">
+          <div class="mkt-events-inner">
+            <strong>Recent events</strong>
+            {% if row.events %}
+            <ul>{% for e in row.events %}<li>{{ e.event_date }} · {{ e.event_type }}{% if e.bushels %} · {{ e.bushels }} bu{% endif %}{% if e.price %} · {{ e.price }}{% endif %}{% if e.notes %} — {{ e.notes }}{% endif %}</li>{% endfor %}</ul>
+            {% else %}
+            <p class="muted">No events yet.</p>
+            {% endif %}
+            <span class="muted">F {{ "locked" if row.futures_ok else "open" }} · B {{ "locked" if row.basis_ok else "open" }}</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No contracts yet — add one above.</p>
+  {% endif %}
+
+  <form method="post" action="/risk/event" class="form-grid panel">
+    <h3 class="full" style="margin:0;font-family:var(--display)">Partial pricing / HTA roll / basis</h3>
+    <label>Contract<select name="contract_id">{% for c in contracts %}<option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}</option>{% endfor %}</select></label>
+    <label>Event<select name="event_type"><option value="partial_price">Partial price</option><option value="hta_roll">HTA roll</option><option value="basis_set">Set basis</option><option value="note">Note</option></select></label>
+    <label>Date<input type="date" name="event_date" value="{{ today }}"></label>
+    <label>Bushels<input name="bushels"></label>
+    <label>Price / basis<input name="price"></label>
+    <label>Futures month<input name="futures_month"></label>
+    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+    <div class="form-actions full"><button class="btn primary" type="submit">Save event</button></div>
+  </form>
+</section>
+
+{# —— Best / worst —— #}
+<section class="mkt-ranks reveal" id="ranks">
+  <div class="mkt-rank-col">
+    <h2>Best / worst vs cost of production</h2>
+    <div class="mkt-rank-pair">
+      <div class="mkt-rank-list best">
+        <h3>Best</h3>
+        {% if ranks.cop_best %}
+        <ol>{% for r in ranks.cop_best %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
+        {% else %}<p class="muted">Need contract prices + COP breakeven.</p>{% endif %}
+      </div>
+      <div class="mkt-rank-list worst">
+        <h3>Worst</h3>
+        {% if ranks.cop_worst %}
+        <ol>{% for r in ranks.cop_worst %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
+        {% else %}<p class="muted">—</p>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="mkt-rank-col">
+    <h2>Best / worst vs today’s market</h2>
+    <div class="mkt-rank-pair">
+      <div class="mkt-rank-list best">
+        <h3>Best</h3>
+        {% if ranks.market_best %}
+        <ol>{% for r in ranks.market_best %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
+        {% else %}<p class="muted">Need board (or price assumption) + contract prices.</p>{% endif %}
+      </div>
+      <div class="mkt-rank-list worst">
+        <h3>Worst</h3>
+        {% if ranks.market_worst %}
+        <ol>{% for r in ranks.market_worst %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
+        {% else %}<p class="muted">—</p>{% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<script>
+(function () {
+  document.querySelectorAll('.mkt-expand').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = document.getElementById(btn.dataset.target);
+      if (!row) return;
+      const open = row.hasAttribute('hidden');
+      if (open) row.removeAttribute('hidden'); else row.setAttribute('hidden', '');
+      btn.textContent = open ? String.fromCharCode(8722) : '+';
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  });
+  const filters = document.querySelectorAll('.mkt-filter');
+  const rows = document.querySelectorAll('.mkt-desk-row');
+  filters.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      filters.forEach((b) => b.classList.remove('is-on'));
+      btn.classList.add('is-on');
+      const f = btn.dataset.filter;
+      rows.forEach((tr) => {
+        const crop = tr.dataset.crop;
+        const status = tr.dataset.status;
+        let show = true;
+        if (f === 'Corn' || f === 'Soybeans') show = crop === f;
+        if (f === 'open') show = status === 'open';
+        tr.style.display = show ? '' : 'none';
+        const ev = document.getElementById('ev-' + tr.cells[1].textContent.trim());
+        if (ev && !show) ev.setAttribute('hidden', '');
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

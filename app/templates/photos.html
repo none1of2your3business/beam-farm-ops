@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Photos — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Attachments</p><h1>Tickets / contracts / photos</h1></div>
+<div class="form-actions">
+  <a class="btn primary" href="/scan">Scan receipt</a>
+  <a class="btn ghost" href="/upload">Master Upload</a>
+</div></section>
+
+{% if pending_scans %}
+<section class="panel" style="margin-bottom:1rem">
+  <h2 style="margin:0 0 0.75rem;font-family:var(--display)">Scans waiting for you</h2>
+  <ul class="simple-list">
+    {% for s in pending_scans %}
+    <li>
+      <strong>Scan #{{ s.id }}</strong>
+      <span class="muted">{{ s.doc_kind }} · {{ s.created_at }}</span>
+      <a href="/scan/{{ s.id }}">Review</a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<form method="post" action="/photos/upload" enctype="multipart/form-data" class="form-grid panel">
+  <label>Type<select name="entity_type"><option value="ticket">Scale ticket</option><option value="contract">Contract</option><option value="receipt">Receipt</option><option value="statement">Statement</option><option value="trial">Trial</option><option value="equipment">Equipment</option><option value="other">Other</option></select></label>
+  <label>Related id (optional)<input name="entity_id" placeholder="contract or ticket id"></label>
+  <label>Caption<input name="caption"></label>
+  <label class="full">File<input type="file" name="file" accept="image/*,.pdf" capture="environment" required></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Upload</button></div>
+</form>
+{% if items %}
+<ul class="simple-list">{% for i in items %}<li><span><strong>{{ i.filename }}</strong><span class="muted">{{ i.entity_type }}{% if i.entity_id %} #{{ i.entity_id }}{% endif %} · {{ i.caption or '' }} · {{ i.created_at }}</span></span><a href="/photos/file/{{ i.id }}">Open</a></li>{% endfor %}</ul>
+{% else %}<p class="empty">No photos yet.</p>{% endif %}
+{% endblock %}

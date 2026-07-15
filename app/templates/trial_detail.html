@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ trial.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">{{ trial.field.name if trial.field else '' }} · {{ trial.status }}</p><h1>{{ trial.name }}</h1></div><a class="btn ghost" href="/trials">All trials</a></section>
+<p class="lede">{{ trial.question or '' }}</p>
+{% if trial.factor_tested %}<p class="muted">Factor: {{ trial.factor_tested }}</p>{% endif %}
+
+<section class="section-block"><h2>Results summary</h2>
+<div class="table-wrap"><table><thead><tr><th>Treatment</th><th>n</th><th>Avg bu/ac</th><th>Δ vs control</th><th>$/ac</th><th>Δ $</th></tr></thead><tbody>
+{% for row in summary %}
+<tr><td>{{ row.treatment.name }}{% if row.treatment.is_control %} (control){% endif %}</td><td>{{ row.n }}</td><td>{{ row.avg_yield or '—' }}</td><td>{{ row.yield_delta if row.yield_delta is not none else '—' }}</td><td>{{ row.revenue_ac if row.revenue_ac is not none else '—' }}</td><td>{{ row.rev_delta if row.rev_delta is not none else '—' }}</td></tr>
+{% else %}<tr><td colspan="6">Add treatments and harvest results.</td></tr>{% endfor %}
+</tbody></table></div></section>
+
+<div class="split">
+<form method="post" action="/trials/{{ trial.id }}/treatment" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Add treatment</h2>
+  <label>Name<input name="name" required></label>
+  <label>Control?<select name="is_control"><option value="0">No</option><option value="1">Yes</option></select></label>
+  <label class="full">Description<textarea name="description" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Add</button></div>
+</form>
+<form method="post" action="/trials/{{ trial.id }}/result" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Add result</h2>
+  <label>Treatment<select name="treatment_id" required>{% for t in trial.treatments %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></label>
+  <label>Rep / strip<input name="rep_label"></label>
+  <label>Harvest date<input type="date" name="harvest_date" value="{{ today }}"></label>
+  <label>Yield bu/ac<input name="yield_bu_ac" inputmode="decimal"></label>
+  <label>Moisture<input name="moisture" inputmode="decimal"></label>
+  <label>Test wt<input name="test_weight" inputmode="decimal"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save result</button></div>
+</form>
+</div>
+
+<form method="post" action="/trials/{{ trial.id }}/note" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Add note</h2>
+  <label>Date<input type="date" name="note_date" value="{{ today }}" required></label>
+  <label>Title<input name="title"></label>
+  <label class="full">Note<textarea name="body" rows="3" required></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save note</button></div>
+</form>
+
+{% if trial.notes %}
+<ul class="simple-list">{% for n in trial.notes|sort(attribute='note_date', reverse=true) %}<li><span><strong>{{ n.note_date }} — {{ n.title or 'Note' }}</strong><span class="muted">{{ n.body }}</span></span></li>{% endfor %}</ul>
+{% endif %}
+
+<form method="post" action="/trials/{{ trial.id }}/conclusion" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Conclusion</h2>
+  <label>Status<select name="status"><option>analyzed</option><option>harvested</option><option>active</option></select></label>
+  <label>Grain price $/bu<input name="grain_price" value="{{ trial.grain_price or '' }}"></label>
+  <label class="full">What did you learn?<textarea name="conclusion" rows="3">{{ trial.conclusion or '' }}</textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save conclusion</button></div>
+</form>
+{% endblock %}

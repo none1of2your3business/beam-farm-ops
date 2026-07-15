@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Review scan #{{ scan.id }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Guided filing</p>
+    <h1>Review scan #{{ scan.id }}</h1>
+  </div>
+  <a class="btn ghost" href="/scan">New scan</a>
+</section>
+
+{% if msg %}<p class="banner-warn">{{ msg }}</p>{% endif %}
+{% if suggested.ocr_note %}<p class="banner-warn">{{ suggested.ocr_note }}</p>{% endif %}
+
+{% if scan.status != 'pending' %}
+<p class="lede">This scan is already <strong>{{ scan.status }}</strong>.</p>
+<p><a href="/photos">Back to photos</a></p>
+{% else %}
+
+<div class="scan-review-grid">
+  <div class="panel scan-preview">
+    {% if att %}
+    <img src="/photos/file/{{ att.id }}" alt="Scanned document">
+    <p class="muted">{{ att.filename }}</p>
+    {% else %}
+    <p class="muted">Photo missing.</p>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/scan/{{ scan.id }}/file" class="panel form-grid scan-form">
+    <h2 class="full" style="margin:0;font-family:var(--display)">1. Check what was read</h2>
+    <label class="full">OCR text (edit freely)
+      <textarea name="ocr_text" rows="8">{{ scan.ocr_text or '' }}</textarea>
+    </label>
+    <label>Document type
+      <select name="doc_kind">
+        {% for k in ['receipt','statement','ticket','contract','other'] %}
+        <option value="{{ k }}" {% if scan.doc_kind == k %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Date<input type="date" name="doc_date" value="{{ suggested.date or today }}"></label>
+    <label>Vendor / payee<input name="vendor" value="{{ suggested.vendor or '' }}"></label>
+    <label>Total $<input name="total_cost" type="number" step="0.01" min="0" value="{% if suggested.total is not none %}{{ '%.2f'|format(suggested.total) }}{% endif %}"></label>
+    <label>Qty<input name="quantity" type="number" step="0.01" min="0" value="{{ suggested.quantity or 1 }}"></label>
+    <label class="full">Caption<input name="caption" value="{{ att.caption if att and att.caption else '' }}"></label>
+    <label class="full">Notes<textarea name="notes" rows="2">{{ scan.notes or '' }}</textarea></label>
+
+    <h2 class="full" style="margin:0.5rem 0 0;font-family:var(--display)">2. Where does it go?</h2>
+    <fieldset class="full dest-fieldset">
+      <label class="dest-option"><input type="radio" name="destination" value="purchase" checked> Input purchase (chem / seed / fert)</label>
+      <label class="dest-option"><input type="radio" name="destination" value="invoice"> Invoice / custom work</label>
+      <label class="dest-option"><input type="radio" name="destination" value="ticket"> Link to scale ticket id</label>
+      <label class="dest-option"><input type="radio" name="destination" value="contract"> Link to grain contract</label>
+      <label class="dest-option"><input type="radio" name="destination" value="archive"> Archive photo only</label>
+    </fieldset>
+
+    <div class="full dest-panel" data-for="purchase">
+      <p class="muted">Pick an existing product, or type a new name to create one.</p>
+      <div class="form-grid" style="margin:0">
+        <label>Existing product
+          <select name="product_id">
+            <option value="">—</option>
+            {% for p in products %}
+            <option value="{{ p.id }}">{{ p.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Or new product name<input name="new_product_name" placeholder="Roundup PowerMax"></label>
+        <label>New category
+          <select name="product_category">
+            <option>chemical</option><option>fertilizer</option><option>seed</option><option>other</option>
+          </select>
+        </label>
+        <label>New unit<input name="product_unit" value="gal"></label>
+      </div>
+    </div>
+
+    <div class="full dest-panel" data-for="invoice" hidden>
+      <div class="form-grid" style="margin:0">
+        <label>Party
+          <select name="party_id">
+            <option value="">—</option>
+            {% for p in parties %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="full">Line description<input name="invoice_description" value="{{ suggested.description or suggested.vendor or 'Scanned invoice' }}"></label>
+      </div>
+    </div>
+
+    <div class="full dest-panel" data-for="ticket" hidden>
+      <label>Scale ticket / related id<input name="link_entity_id" placeholder="Optional numeric id"></label>
+    </div>
+
+    <div class="full dest-panel" data-for="contract" hidden>
+      <label>Grain contract
+        <select name="contract_id">
+          <option value="">—</option>
+          {% for c in contracts %}
+          <option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }} · {{ c.bushels }} bu</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <div class="form-actions full">
+      <button class="btn primary" type="submit">File it</button>
+      <button class="btn ghost" type="submit" form="discard-form">Discard</button>
+    </div>
+  </form>
+</div>
+
+<form id="discard-form" method="post" action="/scan/{{ scan.id }}/discard"></form>
+
+<script>
+(function () {
+  var radios = document.querySelectorAll('input[name="destination"]');
+  var panels = document.querySelectorAll('.dest-panel');
+  function sync() {
+    var v = (document.querySelector('input[name="destination"]:checked') || {}).value;
+    panels.forEach(function (p) {
+      p.hidden = p.getAttribute('data-for') !== v;
+    });
+  }
+  radios.forEach(function (r) { r.addEventListener('change', sync); });
+  sync();
+})();
+</script>
+{% endif %}
+{% endblock %}

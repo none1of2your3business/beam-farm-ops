@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+data/
+.env
+*.db
+.DS_Store
+uploads/
+.cursor/
+PCORI-filing/

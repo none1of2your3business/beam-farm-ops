@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Risk settings — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Grain · settings</p>
+    <h1>Risk settings</h1>
+    <p class="lede">Cost of production, insurance, marketing targets, and expected production from fields.</p>
+  </div>
+</section>
+<div class="panel panel-accent reveal">
+  <h2>Expected production (from fields)</h2>
+  <p class="muted">Each corn/soy field: <strong>my acres × expected yield (bu/ac)</strong>.</p>
+  {% if prod_rows %}
+  <div class="table-wrap" style="margin-top:0.75rem"><table><thead><tr><th>Field</th><th>Crop</th><th>My ac</th><th>Yield</th><th>Expected bu</th><th></th></tr></thead><tbody>
+  {% for r in prod_rows %}<tr><td><a href="/fields/{{ r.field.id }}">{{ r.field.name }}</a></td><td>{{ r.field.crop }}</td><td>{{ r.acres }}</td><td>{{ r.yield }}</td><td>{{ "{:,.0f}".format(r.bu) }}</td><td><a href="/fields/{{ r.field.id }}/edit">Edit</a></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No field yields yet.</p>
+  {% endif %}
+  {% if missing_yield %}
+  <div class="callout warn" style="margin-top:1rem">
+    <strong>{{ missing_yield|length }} field(s) missing yield</strong>
+    <ul class="chip-list">{% for f in missing_yield %}<li><a href="/fields/{{ f.id }}">{{ f.name }}</a> ({{ f.crop }}, {{ f.acres_mine }} ac)</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</div>
+
+{% if due_soon %}
+<div class="panel panel-warn reveal">
+  <h2>Delivery deadlines</h2>
+  <ul class="simple-list">{% for d in due_soon %}<li><span>{{ d.contract.crop }} · {{ d.contract.buyer or '—' }} · {{ d.contract.bushels }} bu</span><strong>{% if d.days < 0 %}{{ -d.days }}d overdue{% else %}{{ d.days }}d{% endif %} ({{ d.contract.delivery_end }})</strong></li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<form method="post" action="/risk/cop" class="form-grid panel reveal">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Breakeven / cost of production</h2>
+  <label>Corn cost $/ac<input name="corn_cost_per_ac" value="{{ settings.corn_cost_per_ac if settings else 0 }}"></label>
+  <label>Corn price assumption<input name="corn_price_assumption" value="{{ settings.corn_price_assumption if settings and settings.corn_price_assumption is not none else '' }}"></label>
+  <label>Soy cost $/ac<input name="soy_cost_per_ac" value="{{ settings.soy_cost_per_ac if settings else 0 }}"></label>
+  <label>Soy price assumption<input name="soy_price_assumption" value="{{ settings.soy_price_assumption if settings and settings.soy_price_assumption is not none else '' }}"></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save COP</button></div>
+</form>
+{% if be %}
+<section class="stat-grid reveal">{% for b in be %}
+<div class="stat"><span class="stat-label">{{ b.crop }} BE</span><span class="stat-value">{% if b.be_price %}${{ b.be_price }}{% elif b.be_yield %}{{ b.be_yield }} bu{% else %}—{% endif %}</span>
+<div class="muted">{% if b.be_price %}price to cover ${{ b.cost_ac }}/ac at {{ b.yield_assumed }} bu{% elif b.be_yield %}bu/ac needed at ${{ b.price }}{% else %}set cost + price{% endif %}</div></div>
+{% endfor %}</section>
+{% endif %}
+
+<form method="post" action="/risk/insurance" class="form-grid panel reveal">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Crop insurance</h2>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Policy<select name="policy_type"><option>RP</option><option>YP</option><option>other</option></select></label>
+  <label>Coverage %<input name="coverage_level" placeholder="85"></label>
+  <label>Acres<input name="acres"></label>
+  <label>Premium $<input name="premium"></label>
+  <label>Guarantee bu<input name="guarantee_bu"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save policy</button></div>
+</form>
+{% if insurance %}
+<ul class="simple-list reveal">{% for i in insurance %}<li><span>{{ i.crop }} {{ i.policy_type }}{% if i.coverage_level %} {{ (i.coverage_level * 100)|round(0) }}%{% endif %}</span><strong>{% if i.premium %}${{ i.premium }}{% else %}—{% endif %}</strong></li>{% endfor %}</ul>
+{% endif %}
+
+<form method="post" action="/risk/target" class="form-grid panel reveal">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Marketing target</h2>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Sell % by date<input name="target_pct" placeholder="50"></label>
+  <label>By date<input type="date" name="by_date"></label>
+  <label>Price floor<input name="price_floor"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save target</button></div>
+</form>
+{% if targets %}
+<ul class="simple-list reveal">{% for t in targets %}<li><span>{{ t.crop }} · sell {{ t.target_pct }}%{% if t.by_date %} by {{ t.by_date }}{% endif %}</span><strong>{% if t.price_floor %}${{ t.price_floor }}{% else %}—{% endif %}</strong></li>{% endfor %}</ul>
+{% endif %}
+
+
+{% endblock %}

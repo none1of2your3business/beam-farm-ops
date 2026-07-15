@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Login — Beam Farm Ops{% endblock %}
+{% block body_class %}login-body{% endblock %}
+{% block content %}
+<section class="login-wrap">
+  <div class="login-visual" style="background-image:url('/static/img/farm-hero.jpg')">
+    <div class="login-caption">
+      <p class="eyebrow" style="color:#f0d56a">Beam Farm Ops</p>
+      <h2>Built for the way you farm</h2>
+      <p>Fields, bins, contracts, and costs — clear enough for the truck, solid enough for the banker.</p>
+    </div>
+  </div>
+  <div class="login-side">
+    <div class="login-panel">
+      <p class="eyebrow">Welcome back</p>
+      <h1>Sign in</h1>
+      <p class="lede">Same login on Mac and iPhone once you’re in the cloud.</p>
+      {% if error %}
+      <p class="flash error">{{ error }}</p>
+      {% endif %}
+      <form method="post" action="/login" class="stack">
+        <label>Username
+          <input type="text" name="username" autocomplete="username" required autofocus>
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="btn primary">Sign in</button>
+      </form>
+      <p class="hint">Default: <code>admin</code> / <code>farm2026</code></p>
+    </div>
+  </div>
+</section>
+{% endblock %}

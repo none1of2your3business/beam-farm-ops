@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Farm setup</p>
+    <h1>Settings</h1>
+  </div>
+</section>
+
+<form method="post" action="/settings/farm" class="form-grid panel">
+  <label class="full">Farm name
+    <input type="text" name="farm_name_value" value="{{ settings.farm_name if settings else 'Beam Farm' }}" required>
+  </label>
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Save</button>
+  </div>
+</form>
+
+<section class="section-block">
+  <h2>Crop years</h2>
+  <p class="muted">Active year: <strong>{% if active_year %}{{ active_year.year }}{% else %}None{% endif %}</strong></p>
+  <ul class="simple-list">
+    {% for y in years %}
+    <li>
+      <span><strong>{{ y.year }}</strong> — {{ y.label or "Crop year" }}{% if active_year and y.id == active_year.id %} (active){% endif %}</span>
+      {% if not active_year or y.id != active_year.id %}
+      <form method="post" action="/years/activate" class="inline-form">
+        <input type="hidden" name="year_id" value="{{ y.id }}">
+        <button type="submit" class="linkish">Make active</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="/years/add" class="form-grid panel">
+    <label>Year
+      <input type="number" name="year" min="2000" max="2100" required>
+    </label>
+    <label>Label
+      <input type="text" name="label" placeholder="2027 Crop Year">
+    </label>
+    <div class="form-actions full">
+      <button type="submit" class="btn primary">Add crop year</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

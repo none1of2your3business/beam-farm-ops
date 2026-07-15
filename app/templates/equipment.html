@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Equipment — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">{% if year %}{{ year.year }} · {% endif %}{{ acres }} crop acres</p>
+    <h1>Equipment</h1>
+    <p class="lede">Ownership costs, maintenance, fuel, and $/acre for the fleet.</p>
+    {% if can_edit %}
+    <div class="form-actions" style="margin-top:0.75rem"><a class="btn primary" href="/equipment/new">Add equipment</a></div>
+    {% endif %}
+  </div>
+  <img src="/static/img/farm-equip.jpg" alt="Tractor in the field">
+</section>
+
+<section class="stat-grid">
+  <div class="stat"><span class="stat-label">Fleet cash cost / yr</span><span class="stat-value">${{ "{:,.0f}".format(fleet_cash) }}</span></div>
+  <div class="stat"><span class="stat-label">Cash $/acre</span><span class="stat-value">{% if fleet_cpa_cash %}${{ fleet_cpa_cash }}{% else %}—{% endif %}</span></div>
+  <div class="stat"><span class="stat-label">Total w/ dep $/acre</span><span class="stat-value">{% if fleet_cpa_total %}${{ fleet_cpa_total }}{% else %}—{% endif %}</span></div>
+  <div class="stat"><span class="stat-label">Market value</span><span class="stat-value">${{ "{:,.0f}".format(market_sum) }}</span></div>
+</section>
+<p class="muted">Cost/acre uses your crop acres (corn + soy, my share). Cash = payments + insurance + taxes + this year’s maintenance. Total adds economic depreciation (DIRTI-style).</p>
+
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Machine</th>
+        <th>Status</th>
+        <th>Market</th>
+        <th>Loan/lease bal</th>
+        <th>Cash $/yr</th>
+        <th>$/acre</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <a href="/equipment/{{ row.eq.id }}"><strong>{{ row.eq.name }}</strong></a>
+          <div class="muted">{{ row.eq.category }}{% if row.eq.make %} · {{ row.eq.make }} {{ row.eq.model or '' }}{% endif %}</div>
+        </td>
+        <td>{{ finance_labels.get(row.eq.finance_status, row.eq.finance_status) }}</td>
+        <td>{% if row.eq.market_value %}${{ "{:,.0f}".format(row.eq.market_value) }}{% else %}—{% endif %}</td>
+        <td>{% if row.eq.loan_balance %}${{ "{:,.0f}".format(row.eq.loan_balance) }}{% else %}—{% endif %}</td>
+        <td>${{ "{:,.0f}".format(row.costs.cash_cost) }}</td>
+        <td>{% if row.cpa_cash %}${{ row.cpa_cash }}{% else %}—{% endif %}</td>
+        <td class="actions"><a href="/equipment/{{ row.eq.id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No active equipment yet.{% if can_edit %} <a href="/equipment/new">Add your first machine</a>.{% endif %}</p>
+{% endif %}
+{% endblock %}

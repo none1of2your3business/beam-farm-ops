@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_chip %}
+{% block title %}Trials — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">{% if year %}{{ year.year }}{% endif %}</p><h1>Crop trials</h1></div></section>
+<form method="post" action="/trials/create" class="form-grid panel">
+  <label>Field<select name="field_id" required>{% for f in fields %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select></label>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label class="full">Trial name<input name="name" required placeholder="e.g. Fungicide strip trial — Wall Rd"></label>
+  <label class="full">Question / hypothesis<textarea name="question" rows="2"></textarea></label>
+  <label>Factor tested<input name="factor_tested" placeholder="hybrid, rate, fungicide..."></label>
+  <label>Grain price $/bu<input name="grain_price" inputmode="decimal"></label>
+  <label class="full">Design notes<textarea name="design_notes" rows="2" placeholder="strips, reps, buffers..."></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Start trial</button></div>
+</form>
+{% if trials %}
+<ul class="simple-list">{% for t in trials %}<li class="crop-rail {{ crop_tone(t.crop) }}" style="padding-left:0.75rem"><a href="/trials/{{ t.id }}"><strong>{{ t.name }}</strong><span>{{ t.field.name if t.field else '' }} · {{ crop_chip(t.crop) }} · {{ t.status }} · {{ t.treatments|length }} treatments</span></a></li>{% endfor %}</ul>
+{% else %}<p class="empty">No trials yet.</p>{% endif %}
+{% endblock %}

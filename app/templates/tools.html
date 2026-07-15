@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Tools — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">Calculators</p><h1>Sprayer fill</h1></div></section>
+<form method="post" action="/tools/sprayer" class="form-grid panel">
+  <label>Tank gal<input name="tank_gal" value="{{ settings.sprayer_tank_gal }}"></label>
+  <label>GPA<input name="gpa" value="{{ settings.sprayer_gpa }}"></label>
+  <label>Acres to spray<input name="acres"></label>
+  <label>Or field<select name="field_id"><option value="">—</option>{% for f in fields %}<option value="{{ f.id }}">{{ f.name }} ({{ f.acres_total }} ac)</option>{% endfor %}</select></label>
+  <label>Product rate<input name="product_rate" placeholder="e.g. 32"></label>
+  <label>Unit<input name="product_unit" value="oz/ac"></label>
+  <label><input type="checkbox" name="save_defaults" value="1"> Save tank/GPA as defaults</label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Calculate</button></div>
+</form>
+{% if result %}
+<section class="stat-grid">
+  <div class="stat"><span class="stat-label">Acres / fill</span><span class="stat-value">{{ result.acres_per_fill }}</span></div>
+  <div class="stat"><span class="stat-label">Fills needed</span><span class="stat-value">{{ result.fills }}</span></div>
+  <div class="stat"><span class="stat-label">Product / fill</span><span class="stat-value">{% if result.product_per_fill is not none %}{{ result.product_per_fill }}{% else %}—{% endif %}</span><div class="muted">{{ result.product_unit }}</div></div>
+  <div class="stat"><span class="stat-label">Product total</span><span class="stat-value">{% if result.product_total is not none %}{{ result.product_total }}{% else %}—{% endif %}</span></div>
+</section>
+<p class="muted">{{ result.acres }} acres · {{ result.tank }} gal tank · {{ result.gpa }} GPA</p>
+{% endif %}
+{% endblock %}

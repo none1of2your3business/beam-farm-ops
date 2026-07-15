@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Bins — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set bu_all = (stats.total_bu) or 1 %}
+{% set cap_all = (stats.corn_cap + stats.soy_cap) or 1 %}
+
+<section class="page-banner">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Grain · Storage</p>
+    <h1>Grain bins</h1>
+    <p class="lede">Fill levels and on-hand. Use Ticket for scale loads, Sheet for bulk edits, Truck for freight rates.</p>
+    <div class="form-actions fields-toolbar">
+      <a class="btn primary" href="/bins/ticket">Enter ticket / move</a>
+      <a class="btn" href="/bins/sheet">Sheet</a>
+      <a class="btn" href="/trucking">Truck rates</a>
+      <form method="post" action="/bins/carry-toggle" class="bins-carry-toggle">
+        <input type="hidden" name="next" value="/bins">
+        <input type="hidden" name="bins_show_carry" value="{% if bins_show_carry %}0{% else %}1{% endif %}">
+        <button class="btn {% if bins_show_carry %}primary{% endif %}" type="submit" title="Uses rates from Carry cost">
+          {% if bins_show_carry %}Hide monthly carry ${% else %}Show monthly carry ${% endif %}
+        </button>
+      </form>
+    </div>
+    {% if bins_show_carry %}
+    <p class="muted bins-carry-hint">Showing ~$/month from <a href="/risk/carry">Carry cost</a> rates on on-hand grain.</p>
+    {% endif %}
+  </div>
+  <img src="/static/img/farm-bins.jpg" alt="Grain bins">
+</section>
+
+{% if request.query_params.get('error') == 'bin_name_taken' %}
+<p class="banner-warn">That bin name is already used — pick another.</p>
+{% endif %}
+
+<section class="stat-grid compact">
+  <div class="stat"><span class="stat-label">Bins</span><span class="stat-value">{{ stats.bin_count }}</span></div>
+  <div class="stat crop-corn"><span class="stat-label">Corn on hand</span><span class="stat-value">{{ "{:,.0f}".format(stats.corn_bu) }}</span></div>
+  <div class="stat crop-soy"><span class="stat-label">Soy on hand</span><span class="stat-value">{{ "{:,.0f}".format(stats.soy_bu) }}</span></div>
+  <div class="stat"><span class="stat-label">Total bu</span><span class="stat-value">{{ "{:,.0f}".format(stats.total_bu) }}</span></div>
+  {% if bins_show_carry %}
+  <div class="stat"><span class="stat-label">Carry / month</span><span class="stat-value">${{ "{:,.0f}".format(stats.carry_total_mo or 0) }}</span></div>
+  {% endif %}
+</section>
+
+<section class="fields-charts">
+  <div class="fields-chart-card">
+    <p class="eyebrow">On hand</p>
+    <h3>Bushels by crop</h3>
+    <div class="fields-bar-row">
+      <span class="fields-bar-label">Corn <em>{{ "{:,.0f}".format(stats.corn_bu) }} bu</em></span>
+      <div class="fields-bar-track"><div class="fields-bar-fill corn" style="width:{{ (100 * stats.corn_bu / bu_all)|round(1) }}%"></div></div>
+    </div>
+    <div class="fields-bar-row">
+      <span class="fields-bar-label">Soy <em>{{ "{:,.0f}".format(stats.soy_bu) }} bu</em></span>
+      <div class="fields-bar-track"><div class="fields-bar-fill soy" style="width:{{ (100 * stats.soy_bu / bu_all)|round(1) }}%"></div></div>
+    </div>
+  </div>
+  <div class="fields-chart-card">
+    <p class="eyebrow">Capacity</p>
+    <h3>Storage by crop</h3>
+    <div class="fields-bar-row">
+      <span class="fields-bar-label">Corn <em>{{ "{:,.0f}".format(stats.corn_cap) }} bu</em></span>
+      <div class="fields-bar-track"><div class="fields-bar-fill corn" style="width:{{ (100 * stats.corn_cap / cap_all)|round(1) if cap_all else 0 }}%"></div></div>
+    </div>
+    <div class="fields-bar-row">
+      <span class="fields-bar-label">Soy <em>{{ "{:,.0f}".format(stats.soy_cap) }} bu</em></span>
+      <div class="fields-bar-track"><div class="fields-bar-fill soy" style="width:{{ (100 * stats.soy_cap / cap_all)|round(1) if cap_all else 0 }}%"></div></div>
+    </div>
+  </div>
+  <div class="fields-chart-card">
+    <p class="eyebrow">Next</p>
+    <h3>Move grain</h3>
+    <p class="muted" style="margin:0">Scale ticket or fill/transfer on <a href="/bins/ticket">Ticket</a>. Freight on <a href="/trucking">Truck</a>.</p>
+  </div>
+</section>
+
+<form method="post" action="/bins/create" class="form-grid panel">
+  <label>Name<input name="name" required></label>
+  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
+  <label>Capacity bu<input name="capacity_bu" placeholder="e.g. 40000"></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Add bin</button></div>
+</form>
+
+{% for group_crop, cards in bin_groups %}
+<section class="bin-crop-section {{ crop_tone(group_crop) }}">
+  <h2 class="bin-crop-heading">{{ crop_badge(group_crop) }} {{ group_crop }} bins <span class="muted">({{ cards|length }})</span></h2>
+  <div class="bin-grid">
+  {% for card in cards %}
+  {% set b = card.bin %}
+  <article class="bin-card {% if card.over %}is-over{% endif %} {{ crop_tone(b.crop) }}">
+    <div class="bin-card-top">
+      <div>
+        <h2>{{ b.name }}</h2>
+        <p class="muted">{{ crop_chip(b.crop) }}{% if card.has_cap %} · cap {{ "{:,.0f}".format(card.capacity) }} bu{% else %} · no capacity set{% endif %}</p>
+      </div>
+      <div class="bin-counter" aria-label="Bushels on hand">
+        <strong>{{ "{:,.0f}".format(card.total_bu) }}</strong>
+        <span>bu on hand</span>
+      </div>
+    </div>
+    {% if bins_show_carry and card.carry_mo is defined and card.carry_mo is not none %}
+    <p class="bin-carry-line {{ crop_tone(b.crop) }}">~${{ "{:,.2f}".format(card.carry_mo) }} <span>/ month carry</span></p>
+    {% endif %}
+
+    <div class="bin-visual" aria-hidden="true">
+      <div class="bin-silo">
+        <div class="bin-silo-roof"></div>
+        <div class="bin-silo-body">
+          {% if card.has_cap %}
+          <div class="bin-silo-fill" style="--fill: {{ card.fill }}%"></div>
+          {% else %}
+          <div class="bin-silo-fill bin-silo-unknown" style="--fill: 35%"></div>
+          {% endif %}
+          <div class="bin-silo-glass"></div>
+        </div>
+        <div class="bin-silo-legs"></div>
+      </div>
+      <div class="bin-pct-ring" style="--pct: {{ card.fill if card.has_cap else 0 }}">
+        <svg viewBox="0 0 36 36" class="bin-ring-svg">
+          <path class="bin-ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+          <path class="bin-ring-fg" stroke-dasharray="{{ card.fill if card.has_cap else 0 }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+        </svg>
+        <div class="bin-ring-label">
+          {% if card.has_cap %}
+          <strong>{{ card.pct }}%</strong>
+          <span>full</span>
+          {% else %}
+          <strong>—</strong>
+          <span>set cap</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {% if card.has_cap %}
+    <div class="bin-bar" role="img" aria-label="{{ card.pct }} percent full">
+      <div class="bin-bar-fill" style="width: {{ card.fill if card.fill <= 100 else 100 }}%"></div>
+    </div>
+    <p class="bin-bar-caption">
+      {{ "{:,.0f}".format(card.total_bu) }} / {{ "{:,.0f}".format(card.capacity) }} bu
+      {% if card.over %} · <span class="warn-text">over capacity</span>{% endif %}
+    </p>
+    {% endif %}
+
+    <ul class="simple-list bin-shares">
+      {% for s in card.shares %}
+      <li><span>{{ s.owner_name }}</span><strong>{{ "{:,.0f}".format(s.bushels) }} bu</strong></li>
+      {% else %}
+      <li class="muted">Empty</li>
+      {% endfor %}
+    </ul>
+
+    <details class="bin-edit">
+      <summary>Edit name, capacity &amp; on-hand</summary>
+      <form method="post" action="/bins/{{ b.id }}/update" class="form-grid bin-edit-form">
+        <label>Name<input name="name" value="{{ b.name }}" required></label>
+        <label>Crop<select name="crop"><option {% if b.crop == 'Corn' %}selected{% endif %}>Corn</option><option {% if b.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option></select></label>
+        <label>Capacity bu<input name="capacity_bu" value="{{ b.capacity_bu if b.capacity_bu is not none else '' }}" placeholder="e.g. 40000"></label>
+        <label>On hand (Me) bu<input name="on_hand_bu" value="{{ card.me_bu }}" title="Sets the Me / primary share. Other owners are unchanged."></label>
+        <div class="form-actions full"><button class="btn primary" type="submit">Save bin</button></div>
+      </form>
+      <p class="muted" style="margin:0.35rem 0 0;font-size:0.8rem">On hand updates the Me share (or the first share if Me is missing). Other owner shares stay as listed.</p>
+    </details>
+  </article>
+  {% endfor %}
+  </div>
+</section>
+{% else %}
+<p class="empty">No bins yet — add one above (include capacity for fill graphics).</p>
+{% endfor %}
+
+<form method="post" action="/bins/condition" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Bin moisture / temp note</h2>
+  <label>Bin<select name="bin_id">{% for b in bins %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}</select></label>
+  <label>Date<input type="date" name="note_date" value="{{ today }}"></label>
+  <label>Moisture<input name="moisture"></label>
+  <label>Temp °F<input name="temperature"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save note</button></div>
+</form>
+{% if notes %}
+<ul class="simple-list">{% for n in notes %}<li><span>Bin {{ n.bin_id }} · {{ n.note_date }} · M {{ n.moisture or '—' }} · T {{ n.temperature or '—' }}</span><strong>{{ n.notes or '' }}</strong></li>{% endfor %}</ul>
+{% endif %}
+{% if moves %}
+<div class="section-head">
+  <h2>Recent tickets / moves</h2>
+  <a href="/bins/ticket">Enter new</a>
+</div>
+<div class="table-wrap"><table><thead><tr><th>Date</th><th>Crop</th><th>Type</th><th>Bin</th><th>Field</th><th>Bu</th><th>M%</th><th>Ticket</th><th>Owner</th></tr></thead><tbody>
+{% for m in moves %}<tr class="crop-row {{ crop_tone(m.crop) }}">
+  <td>{{ m.move_date }}</td>
+  <td>{{ crop_badge(m.crop, short=true) }}</td>
+  <td>{{ m.move_type }}</td>
+  <td>{% if m.bin_id %}{{ bin_name.get(m.bin_id, m.bin_id) }}{% else %}—{% endif %}</td>
+  <td>{% if m.field_id %}{{ field_name.get(m.field_id, m.field_id) }}{% else %}—{% endif %}</td>
+  <td>{{ m.net_bu }}{% if m.wet_bu %} (wet {{ m.wet_bu }}){% endif %}</td>
+  <td>{{ m.moisture or '—' }}</td>
+  <td>{{ m.ticket_number or '—' }}</td>
+  <td>{{ m.owner_name }}</td>
+</tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+{% endblock %}

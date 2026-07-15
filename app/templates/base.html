@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}{{ farm_name or "Beam Farm Ops" }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  {% from "_hub_nav.html" import top_hubs, hub_tabs, resolve_hub %}
+  {% if user %}
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">BF</span>
+        <span>
+          <span class="brand-title">{{ farm_name }}</span>
+          <span class="brand-sub">Farm Ops</span>
+        </span>
+      </a>
+      {% if crop_years %}
+      <form method="post" action="/years/activate" class="year-switcher" title="Working crop year — fields, contracts, inputs, and plans follow this year">
+        <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+        <label class="year-switcher-label">
+          <span class="year-switcher-eyebrow">Working year</span>
+          <select name="year_id" onchange="this.form.submit()" aria-label="Active crop year">
+            {% for y in crop_years %}
+            <option value="{{ y.id }}" {% if active_year and y.id == active_year.id %}selected{% endif %}>{{ y.year }}{% if y.label and y.label != (y.year|string ~ ' Crop Year') %} — {{ y.label }}{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+      {% elif active_year %}
+      <div class="year-switcher year-switcher-static">
+        <span class="year-switcher-eyebrow">Working year</span>
+        <strong>{{ active_year.year }}</strong>
+      </div>
+      {% endif %}
+      {{ top_hubs(active or 'dashboard', user) }}
+    </div>
+  </header>
+  {% if active_year %}
+  <div class="year-strip" role="status">
+    <span>You are working in <strong>{{ active_year.year }}</strong>{% if active_year.label %} — {{ active_year.label }}{% endif %}</span>
+    <span class="muted year-strip-note">Fields · contracts · inputs · plans use this year. Bins stay shared storage.</span>
+  </div>
+  {% endif %}
+  {% set _hub = resolve_hub(active or 'dashboard') %}
+  {% if _hub != 'home' %}
+  <nav class="hub-subnav" aria-label="Section">
+    {{ hub_tabs(active or 'dashboard') }}
+  </nav>
+  {% endif %}
+  {% endif %}
+  <main class="container">{% block content %}{% endblock %}</main>
+  <div class="app-toast-host" id="app-toast-host" aria-live="polite"></div>
+  {% if flash and flash.message %}
+  <script>
+    window.__APP_FLASH__ = {{ {"message": flash.message, "level": flash.level}|tojson }};
+  </script>
+  {% endif %}
+  <script src="/static/toast.js"></script>
+  <script>
+  (function () {
+    const reveals = document.querySelectorAll('.reveal');
+    if (!reveals.length) return;
+    if ('IntersectionObserver' in window) {
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          e.target.classList.add('is-in');
+          e.target.querySelectorAll('[data-animate-bar]').forEach((bar) => {
+            bar.style.width = getComputedStyle(bar).getPropertyValue('--w') || '0%';
+          });
+          io.unobserve(e.target);
+        });
+      }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+      reveals.forEach((el) => io.observe(el));
+    } else {
+      reveals.forEach((el) => el.classList.add('is-in'));
+    }
+  })();
+  </script>
+</body>
+</html>
