@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Landlord Statement — {{ field.name }} — {{ farm_name }}{% endblock %}
+{% block body_class %}print-page{% endblock %}
+{% block content %}
+{% set L = ledger %}
+{% set B = L.cost_breakdown %}
+{% set CS = crop_share %}
+{% set year_label = field.crop_year.year if field.crop_year else '—' %}
+
+<div class="print-controls no-print" style="padding:1rem;background:#f5f5f0;border-bottom:1px solid #ddd;display:flex;gap:0.75rem;align-items:center">
+  <a class="btn ghost" href="/fields/{{ field.id }}">← Back to FOC</a>
+  <button class="btn primary" onclick="window.print()">Print / Save PDF</button>
+  <span class="muted">Statement for landlord / partner</span>
+</div>
+
+<section class="statement-header" style="padding:2rem 2rem 1rem;border-bottom:2px solid #222">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <p class="eyebrow" style="margin:0 0 0.25rem;font-size:0.8rem;color:#666;text-transform:uppercase;letter-spacing:.05em">{{ farm_name }}</p>
+      <h1 style="margin:0 0 0.25rem;font-size:1.8rem">{{ field.name }}</h1>
+      <p style="margin:0;color:#444">{{ year_label }} Season · Landlord Statement</p>
+    </div>
+    <div style="text-align:right">
+      <p style="margin:0;font-size:0.9rem;color:#555">Printed {{ today }}</p>
+      {% if field.crop %}<p style="margin:0.2rem 0 0;font-size:1rem;font-weight:600">Crop: {{ field.crop }}</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+<div style="padding:1.5rem 2rem;display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+
+  <section>
+    <h2 style="margin:0 0 0.75rem;font-size:1rem;font-weight:700;text-transform:uppercase;color:#444;letter-spacing:.04em">Field facts</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+      <tr><td style="padding:0.3rem 0;color:#555">Total acres</td><td style="text-align:right;font-weight:600">{{ field.acres_total or '—' }}</td></tr>
+      <tr><td style="padding:0.3rem 0;color:#555">My operated acres</td><td style="text-align:right;font-weight:600">{{ field.acres_mine or '—' }}</td></tr>
+      <tr><td style="padding:0.3rem 0;color:#555">Ownership mode</td><td style="text-align:right">{{ field.ownership_mode }}</td></tr>
+      {% if field.lease_type %}<tr><td style="padding:0.3rem 0;color:#555">Lease type</td><td style="text-align:right">{{ field.lease_type }}</td></tr>{% endif %}
+      {% if field.rent_per_acre %}<tr><td style="padding:0.3rem 0;color:#555">Cash rent / acre</td><td style="text-align:right">${{ "%.2f"|format(field.rent_per_acre) }}</td></tr>{% endif %}
+    </table>
+  </section>
+
+  <section>
+    <h2 style="margin:0 0 0.75rem;font-size:1rem;font-weight:700;text-transform:uppercase;color:#444;letter-spacing:.04em">Ownership partners</h2>
+    {% if shares %}
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+      <thead><tr style="border-bottom:1px solid #ddd"><th style="text-align:left;padding:0.3rem 0;color:#555">Partner</th><th style="text-align:right;color:#555">Share %</th><th style="text-align:right;color:#555">Acres</th></tr></thead>
+      <tbody>
+        {% for s in shares %}
+        <tr>
+          <td style="padding:0.3rem 0">{{ s.display_name }}{% if s.is_me %} <span class="muted">(operator)</span>{% endif %}</td>
+          <td style="text-align:right">{{ "%.1f"|format(s.share_pct) }}%</td>
+          <td style="text-align:right">{% if field.acres_total %}{{ "%.2f"|format(field.acres_total * s.share_pct / 100) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#777;font-size:0.9rem">No partners on record.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 style="margin:0 0 0.75rem;font-size:1rem;font-weight:700;text-transform:uppercase;color:#444;letter-spacing:.04em">Crop-share / landlord entitlement</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+      <tr><td style="padding:0.3rem 0;color:#555">Operator share</td><td style="text-align:right;font-weight:600">{{ "%.1f"|format(CS.my_pct) }}%</td></tr>
+      <tr><td style="padding:0.3rem 0;color:#555">Landlord / partner share</td><td style="text-align:right;font-weight:600">{{ "%.1f"|format(CS.landlord_pct) }}%</td></tr>
+      {% if CS.total_bu is not none %}
+      <tr><td style="padding:0.3rem 0;color:#555">Expected field production</td><td style="text-align:right">{{ "{:,.0f}".format(CS.total_bu) }} bu</td></tr>
+      <tr><td style="padding:0.3rem 0;color:#555">Operator bushels</td><td style="text-align:right">{{ "{:,.0f}".format(CS.my_bu) }} bu</td></tr>
+      <tr><td style="padding:0.3rem 0;color:#555">Landlord bushels</td><td style="text-align:right;font-weight:700">{{ "{:,.0f}".format(CS.landlord_bu) if CS.landlord_bu is not none else '—' }} bu</td></tr>
+      {% endif %}
+      {% if CS.mark is not none %}
+      <tr><td style="padding:0.3rem 0;color:#555">Mark price</td><td style="text-align:right">${{ "%.2f"|format(CS.mark) }}/bu</td></tr>
+      {% endif %}
+      {% if CS.landlord_grain_value is not none %}
+      <tr style="border-top:1px solid #ddd"><td style="padding:0.45rem 0;color:#555">Est. landlord grain value</td><td style="text-align:right;font-weight:700">${{ "{:,.0f}".format(CS.landlord_grain_value) }}</td></tr>
+      {% endif %}
+      {% if CS.cash_rent_total %}
+      <tr><td style="padding:0.3rem 0;color:#555">Cash rent due (full field)</td><td style="text-align:right;font-weight:700">${{ "{:,.0f}".format(CS.cash_rent_total) }}</td></tr>
+      {% endif %}
+      <tr style="border-top:2px solid #222">
+        <td style="padding:0.55rem 0;font-weight:700">Est. amount due landlord</td>
+        <td style="text-align:right;font-weight:700">
+          {% set due = (CS.landlord_grain_value or 0) + (CS.cash_rent_total or 0) %}
+          {% if due %}${{ "{:,.0f}".format(due) }}{% else %}—{% endif %}
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0.65rem 0 0;font-size:0.8rem;color:#777">
+      {% if CS.is_crop_share %}
+      Crop-share assumption: landlord grain share is their % of expected field bushels. Operator inputs below are typically operator-paid unless your lease says otherwise.
+      {% else %}
+      Cash-rent fields: primary landlord amount is rent. Grain value shown only if partners have a crop share %.
+      {% endif %}
+    </p>
+  </section>
+
+  <section>
+    <h2 style="margin:0 0 0.75rem;font-size:1rem;font-weight:700;text-transform:uppercase;color:#444;letter-spacing:.04em">Operator season expenses</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+      {% if B.rent %}<tr><td style="padding:0.3rem 0;color:#555">Cash rent / taxes (operator books)</td><td style="text-align:right">${{ "{:,.0f}".format(B.rent) }}</td></tr>{% endif %}
+      {% if B.ops %}<tr><td style="padding:0.3rem 0;color:#555">Operations / hire</td><td style="text-align:right">${{ "{:,.0f}".format(B.ops) }}</td></tr>{% endif %}
+      {% if B.hybrids %}<tr><td style="padding:0.3rem 0;color:#555">Seed / hybrids</td><td style="text-align:right">${{ "{:,.0f}".format(B.hybrids) }}</td></tr>{% endif %}
+      {% if B.sprays %}<tr><td style="padding:0.3rem 0;color:#555">Spray mixes</td><td style="text-align:right">${{ "{:,.0f}".format(B.sprays) }}</td></tr>{% endif %}
+      {% if B.inputs %}<tr><td style="padding:0.3rem 0;color:#555">Assigned inputs</td><td style="text-align:right">${{ "{:,.0f}".format(B.inputs) }}</td></tr>{% endif %}
+      {% if B.insurance %}<tr><td style="padding:0.3rem 0;color:#555">Crop insurance</td><td style="text-align:right">${{ "{:,.0f}".format(B.insurance) }}</td></tr>{% endif %}
+      <tr style="border-top:2px solid #222;font-weight:700"><td style="padding:0.5rem 0">Total (operator COP)</td><td style="text-align:right">${{ "{:,.0f}".format(B.total) }}</td></tr>
+      {% if L.cost_ac is not none %}<tr><td style="padding:0.2rem 0;color:#555">Cost per acre</td><td style="text-align:right">${{ "%.2f"|format(L.cost_ac) }}</td></tr>{% endif %}
+    </table>
+  </section>
+
+</div>
+
+<section style="padding:1rem 2rem 2rem;border-top:1px solid #ddd;font-size:0.8rem;color:#888">
+  <p style="margin:0">Informational only. Final settlement depends on harvest tickets, moisture, contracts, and your written lease. Adjust landlord input-share terms manually if the lease splits chemicals or fertilizer.</p>
+</section>
+
+<style>
+@media print {
+  .no-print, .topbar, .hub-nav, .year-strip, .site-footer { display: none !important; }
+  body { background: #fff; }
+}
+</style>
+{% endblock %}

@@ -1,31 +1,372 @@
 {% extends "base.html" %}
 {% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
-{% block title %}{{ field.name }} — {{ farm_name }}{% endblock %}
+{% block title %}{{ field.name }} — Ops Center — {{ farm_name }}{% endblock %}
 {% block content %}
-<section class="page-head crop-panel {{ crop_tone(field.crop) }}">
-  <div>
-    <p class="eyebrow">{{ crop_chip(field.crop) }} · {{ field.ownership_mode }}{% if field.lease_type %} · {{ field.lease_type }}{% endif %}</p>
+{% set L = ledger %}
+{% set M = L.marks %}
+{% set B = L.cost_breakdown %}
+{% set gap = L.gap_futures %}
+{% set gap_ac = L.gap_futures_ac %}
+{% set year_label = field.crop_year.year if field.crop_year else '—' %}
+
+<section class="foc-hero crop-panel {{ crop_tone(field.crop) }}">
+  <div class="foc-hero-copy">
+    <p class="eyebrow">Field Operations Center · {{ year_label }}</p>
     <h1>{{ field.name }}</h1>
+    <p class="foc-hero-meta">
+      {{ crop_chip(field.crop) }}
+      <span>· {{ field.ownership_mode }}{% if field.lease_type %} · {{ field.lease_type }}{% endif %}</span>
+      <span>· {{ field.acres_mine or field.acres_total or '—' }} my ac</span>
+      {% if field.acres_total and field.acres_mine and field.acres_total != field.acres_mine %}
+      <span class="muted">· {{ field.acres_total }} total</span>
+      {% endif %}
+    </p>
   </div>
-  <div class="form-actions">
-    <a class="btn primary" href="/fields/{{ field.id }}/operations">Operations ledger</a>
+  <div class="form-actions foc-hero-actions">
+    {% if can_edit_fields %}
+    <a class="btn primary" href="/fields/{{ field.id }}/add-operation">Add operation</a>
+    {% endif %}
+    <a class="btn" href="/fields/{{ field.id }}/operations">Full ledger</a>
+    {% if can_edit_fields %}
     <a class="btn" href="/inputs/assign">Assign inputs</a>
-    <a class="btn ghost" href="/fields/{{ field.id }}/edit">Edit</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}/edit">Edit field</a>
+    {% endif %}
     <a class="btn ghost" href="/fields">All fields</a>
   </div>
+  <div class="form-actions foc-hero-links" style="margin-top:0.5rem;flex-wrap:wrap;gap:0.35rem">
+    <a class="btn ghost" href="/bins/ticket?field_id={{ field.id }}" style="font-size:0.82rem">Ticket</a>
+    <a class="btn ghost" href="/trucking" style="font-size:0.82rem">Truck</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}/landlord-statement" style="font-size:0.82rem">Landlord stmt</a>
+    <a class="btn ghost" href="/work-orders" style="font-size:0.82rem">Work orders</a>
+  </div>
 </section>
 
-<section class="stat-grid compact">
-  <div class="stat"><span class="stat-label">My acres</span><span class="stat-value">{{ field.acres_mine }}</span></div>
-  <div class="stat"><span class="stat-label">Ops $</span><span class="stat-value">${{ "{:,.0f}".format(op_cost) }}</span></div>
-  <div class="stat"><span class="stat-label">Inputs $</span><span class="stat-value">${{ "{:,.0f}".format(assign_cost) }}</span></div>
-  <div class="stat"><span class="stat-label">$/acre</span><span class="stat-value">{% if cost_ac %}${{ cost_ac }}{% else %}—{% endif %}</span></div>
+{# —— Command economics: cost, CME income, P&amp;L/ac —— #}
+<section class="foc-command" aria-label="Field economics">
+  <div class="foc-command-card">
+    <span class="foc-kicker">Total expenses</span>
+    <strong class="foc-num money-expense">${{ "{:,.0f}".format(L.running_cost) }}</strong>
+    <span class="muted">ops + seed + spray + inputs + rent</span>
+  </div>
+  <div class="foc-command-card">
+    <span class="foc-kicker">Cost / acre</span>
+    <strong class="foc-num money-expense">{% if L.cost_ac is not none %}${{ "%.2f"|format(L.cost_ac) }}{% else %}—{% endif %}</strong>
+    <span class="muted">{% if L.acres %}{{ L.acres|round(1) }} my ac{% else %}set acres{% endif %}</span>
+  </div>
+  <div class="foc-command-card">
+    <span class="foc-kicker">Projected sales @ {{ M.futures_label|lower }}</span>
+    <strong class="foc-num money-sales">{% if L.projected_futures is not none %}${{ "{:,.0f}".format(L.projected_futures) }}{% else %}—{% endif %}</strong>
+    <span class="muted">
+      {% if L.expected_bu is not none %}{{ "{:,.0f}".format(L.expected_bu) }} bu{% else %}set yield{% endif %}
+      {% if M.futures is not none %} · ${{ "%.2f"|format(M.futures) }}/bu{% elif not M.futures %} · no CME quote{% endif %}
+    </span>
+  </div>
+  <div class="foc-command-card foc-pnl {% if gap is not none %}{% if gap >= 0 %}is-profit{% else %}is-loss{% endif %}{% endif %}">
+    <span class="foc-kicker">{% if gap is not none and gap < 0 %}Loss{% else %}Profit{% endif %}</span>
+    <strong class="foc-num {% if gap is not none %}{% if gap >= 0 %}money-profit{% else %}money-loss{% endif %}{% endif %}">
+      {% if gap is not none %}{% if gap >= 0 %}+{% endif %}${{ "{:,.0f}".format(gap) }}{% else %}—{% endif %}
+    </strong>
+    <span class="muted {% if gap_ac is not none %}{% if gap_ac >= 0 %}foc-pnl-sub is-profit{% else %}foc-pnl-sub is-loss{% endif %}{% endif %}">
+      {% if gap_ac is not none %}{% if gap_ac >= 0 %}+{% endif %}${{ "%.2f"|format(gap_ac) }}/ac{% else %}need yield + board{% endif %}
+      {% if L.projected_futures_ac is not none %} · <span class="money-sales">rev ${{ "%.2f"|format(L.projected_futures_ac) }}/ac</span>{% endif %}
+    </span>
+  </div>
+  <div class="foc-command-card foc-be">
+    <span class="foc-kicker">Break-even yield</span>
+    <strong class="foc-num">{% if L.be_yield_futures is not none %}{{ L.be_yield_futures }}{% else %}—{% endif %}</strong>
+    <span class="muted">
+      bu/ac @ CME
+      {% if L.vs_be_futures is not none %} · <span class="{% if L.vs_be_futures >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.vs_be_futures >= 0 %}+{% endif %}{{ L.vs_be_futures }} vs expected</span>{% endif %}
+    </span>
+  </div>
+  {% if L.budget_cop_ac is not none %}
+  <div class="foc-command-card foc-budget">
+    <span class="foc-kicker">Budget COP (settings) vs actual</span>
+    <strong class="foc-num {% if L.vs_budget_ac is not none %}{% if L.vs_budget_ac > 0 %}money-loss{% else %}money-profit{% endif %}{% endif %}">
+      {% if L.vs_budget_ac is not none %}{% if L.vs_budget_ac > 0 %}+{% endif %}${{ "%.2f"|format(L.vs_budget_ac) }}/ac{% else %}${{ "%.2f"|format(L.budget_cop_ac) }}/ac{% endif %}
+    </strong>
+    <span class="muted">
+      Budget ${{ "%.2f"|format(L.budget_cop_ac) }}/ac · Actual season ${{ "%.2f"|format(L.cost_ac) if L.cost_ac is not none else '—' }}/ac
+      {% if L.vs_budget_ac is not none %}· {% if L.vs_budget_ac > 0 %}<span class="money-loss">over budget</span>{% else %}<span class="money-profit">under budget</span>{% endif %}{% endif %}
+    </span>
+  </div>
+  {% endif %}
 </section>
-<p class="muted">Total tracked cost ${{ "{:,.0f}".format(total_cost) }} (ops + assigned inputs + rent ${{ "{:,.0f}".format(rent) }}). Expected yield {{ field.expected_yield or '—' }} bu/ac{% if field.expected_bushels %} · {{ field.expected_bushels }} bu{% endif %}.</p>
+
+{% if M.futures is none or L.expected_yield is none %}
+<p class="foc-hint banner-warn">
+  {% if L.expected_yield is none %}Set expected yield below to project income.{% endif %}
+  {% if M.futures is none %}
+  {% if L.expected_yield is none %} {% endif %}
+  No board quote — refresh CME on <a href="/risk">Risk</a> (or set futures in Settings).
+  {% endif %}
+</p>
+{% elif settings and settings.quote_as_of %}
+<p class="foc-hint muted">Board mark {{ M.futures_label|lower }} · quote as of {{ settings.quote_as_of }}{% if settings.quote_source %} · {{ settings.quote_source }}{% endif %} · <a href="/risk">Refresh quotes</a></p>
+{% endif %}
+
+{# —— Season pulse: done vs needed —— #}
+<section class="foc-pulse">
+  <div class="foc-panel">
+    <header class="foc-panel-head">
+      <h2>Season checklist</h2>
+      <span class="muted">{{ done_milestones }}/{{ season_checklist|length }} milestones logged</span>
+    </header>
+    <ul class="foc-checklist">
+      {% for m in season_checklist %}
+      <li class="{% if m.done %}is-done{% else %}is-open{% endif %}">
+        <span class="foc-check-mark" aria-hidden="true">{% if m.done %}✓{% else %}○{% endif %}</span>
+        <span class="foc-check-body">
+          <strong>{{ m.label }}</strong>
+          {% if m.done %}
+          <em class="muted">{% if m.latest %}{{ m.latest }}{% else %}logged{% endif %}{% if m.count > 1 %} · {{ m.count }} ops{% endif %}</em>
+          {% else %}
+          <em class="muted">not logged</em>
+          {% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="foc-panel foc-panel-needed">
+    <header class="foc-panel-head">
+      <h2>Still needed</h2>
+      {% if planned_remaining %}
+      <span class="money-expense">est ${{ "{:,.0f}".format(planned_remaining) }} remaining</span>
+      {% endif %}
+    </header>
+    {% if open_plans %}
+    <ul class="foc-needed-list">
+      {% for p in open_plans %}
+      <li>
+        <div>
+          <strong>{{ p.title }}</strong>
+          <span class="muted">
+            {{ p.plan_type }}
+            {% if p.priority and p.priority != 'normal' %} · <span class="{% if p.priority == 'high' %}money-loss{% endif %}">{{ p.priority }}</span>{% endif %}
+            {% if p.assigned_to %} · <em>{{ p.assigned_to }}</em>{% endif %}
+            {% if p.target_date %} · due {{ p.target_date }}{% endif %}
+            {% if p.estimated_cost_per_acre is not none %} · <span class="money-expense">est ${{ "%.2f"|format(p.estimated_cost_per_acre) }}/ac</span>{% endif %}
+          </span>
+        </div>
+        <div class="form-actions" style="gap:0.3rem">
+          {% set wizard_kind = p.op_kind or p.plan_type %}
+          {% if can_edit_fields %}
+          <a class="btn" href="/fields/{{ field.id }}/add-operation{% if wizard_kind %}?kind={{ wizard_kind }}{% endif %}">Log work</a>
+          <form method="post" action="/fields/{{ field.id }}/plan-done">
+            <input type="hidden" name="plan_id" value="{{ p.id }}">
+            <button class="btn ghost" type="submit">Done</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="foc-empty">No open plans. <a href="/inputs/assign">Assign inputs</a> or add a plan from Inputs.</p>
+    {% endif %}
+    {% set open_miles = season_checklist|selectattr('done', 'equalto', false)|list %}
+    {% if open_miles %}
+    <p class="muted foc-needed-hint">Open milestones: {% for m in open_miles %}{{ m.label }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+    {% endif %}
+  </div>
+</section>
+
+{# —— Expense breakdown + P&amp;L context —— #}
+<section class="foc-money-row">
+  <div class="foc-panel">
+    <header class="foc-panel-head">
+      <h2>Expense breakdown</h2>
+      <a class="muted" href="/fields/{{ field.id }}/operations">Ledger →</a>
+    </header>
+    <ul class="foc-breakdown">
+      <li><span>Cash Rent/Property Taxes</span><strong class="money-expense">${{ "{:,.0f}".format(B.rent) }}</strong></li>
+      <li><span>Operations (hire / custom)</span><strong class="money-expense">${{ "{:,.0f}".format(B.ops) }}</strong></li>
+      <li><span>Seed / hybrids</span><strong class="money-expense">${{ "{:,.0f}".format(B.hybrids) }}</strong></li>
+      <li><span>Spray mixes</span><strong class="money-expense">${{ "{:,.0f}".format(B.sprays) }}</strong></li>
+      <li><span>Assigned inputs</span><strong class="money-expense">${{ "{:,.0f}".format(B.inputs) }}</strong></li>
+      {% if B.insurance %}<li><span>Crop insurance (allocated)</span><strong class="money-expense">${{ "{:,.0f}".format(B.insurance) }}</strong></li>{% endif %}
+      <li class="foc-breakdown-total"><span>Total</span><strong class="money-expense">${{ "{:,.0f}".format(B.total) }}</strong></li>
+    </ul>
+    {% if L.cost_ac is not none %}
+    <div class="foc-bar" aria-hidden="true">
+      {% set tot = B.total if B.total else 1 %}
+      {% if B.rent %}<i class="foc-bar-rent" style="width:{{ (100 * B.rent / tot)|round(1) }}%"></i>{% endif %}
+      {% if B.ops %}<i class="foc-bar-ops" style="width:{{ (100 * B.ops / tot)|round(1) }}%"></i>{% endif %}
+      {% if B.hybrids %}<i class="foc-bar-hybrids" style="width:{{ (100 * B.hybrids / tot)|round(1) }}%"></i>{% endif %}
+      {% if B.sprays %}<i class="foc-bar-sprays" style="width:{{ (100 * B.sprays / tot)|round(1) }}%"></i>{% endif %}
+      {% if B.inputs %}<i class="foc-bar-inputs" style="width:{{ (100 * B.inputs / tot)|round(1) }}%"></i>{% endif %}
+    </div>
+    <p class="foc-bar-legend muted">
+      <span><i class="foc-dot foc-dot-rent"></i>Rent</span>
+      <span><i class="foc-dot foc-dot-ops"></i>Ops</span>
+      <span><i class="foc-dot foc-dot-hybrids"></i>Seed</span>
+      <span><i class="foc-dot foc-dot-sprays"></i>Spray</span>
+      <span><i class="foc-dot foc-dot-inputs"></i>Inputs</span>
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="foc-panel">
+    <header class="foc-panel-head">
+      <h2>Mark prices</h2>
+      <a class="muted" href="/risk">Risk →</a>
+    </header>
+    <ul class="foc-marks">
+      <li>
+        <span>{{ M.futures_label }}</span>
+        <strong>{% if M.futures is not none %}${{ "%.2f"|format(M.futures) }}/bu{% else %}—{% endif %}</strong>
+        {% if M.futures_raw is not none and M.basis is not none %}
+        <em class="muted">board ${{ "%.2f"|format(M.futures_raw) }} · basis {{ "%+.2f"|format(M.basis) }}</em>
+        {% endif %}
+      </li>
+      <li>
+        <span>Avg contracted</span>
+        <strong>{% if M.contracted is not none %}${{ "%.2f"|format(M.contracted) }}/bu{% else %}no open contracts{% endif %}</strong>
+        {% if L.gap_contracted is not none %}
+        <em class="{% if L.gap_contracted >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.gap_contracted >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_contracted) }} vs cost{% if L.gap_contracted_ac is not none %} · {% if L.gap_contracted_ac >= 0 %}+{% endif %}${{ "%.2f"|format(L.gap_contracted_ac) }}/ac{% endif %}</em>
+        {% endif %}
+      </li>
+      <li>
+        <span>Expected production</span>
+        <strong>{% if L.expected_yield is not none %}{{ L.expected_yield }} bu/ac{% else %}—{% endif %}</strong>
+        <em class="muted">{% if L.expected_bu is not none %}{{ "{:,.0f}".format(L.expected_bu) }} bu my share{% else %}set yield below{% endif %}</em>
+      </li>
+    </ul>
+  </div>
+</section>
+
+{# —— Operations done + inputs on field —— #}
+<section class="foc-activity-row">
+  <div class="foc-panel foc-panel-wide">
+    <header class="foc-panel-head">
+      <h2>Operations done</h2>
+      <span class="muted">{{ ops|length }} logged · <a href="/fields/{{ field.id }}/operations">full year</a></span>
+    </header>
+    {% if ops %}
+    <div class="table-wrap">
+      <table class="foc-ops-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Notes</th>
+            <th>$</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set live_ops = ops|rejectattr('voided')|list %}
+          {% for o in live_ops[:15] %}
+          <tr>
+            <td>{{ o.op_date or '—' }}</td>
+            <td><span class="ops-type-pill ops-type-op">{{ o.op_type }}</span></td>
+            <td class="muted">{{ o.description or '—' }}</td>
+            <td class="foc-amt money-expense">{% if o.cost %}${{ "{:,.2f}".format(o.cost) }}{% else %}—{% endif %}</td>
+            <td>
+              {% if can_edit_fields %}
+              <form method="post" action="/fields/{{ field.id }}/void/op/{{ o.id }}" style="margin:0" onsubmit="return confirm('Void this operation?')">
+                <button class="btn ghost" type="submit" style="font-size:0.75rem;padding:0.15rem 0.45rem" title="Void this operation">Void</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="muted">No active operations</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if live_ops|length > 15 %}
+    <p class="muted">Showing 15 of {{ live_ops|length }} active. <a href="/fields/{{ field.id }}/operations">See all on ledger</a>.</p>
+    {% endif %}
+    {% else %}
+    <p class="foc-empty">No operations yet. <a href="/fields/{{ field.id }}/add-operation">Add the first operation</a>.</p>
+    {% endif %}
+
+    {% if recent_events and not ops %}
+    {# fallback already covered #}
+    {% elif recent_events %}
+    <h3 class="foc-subhead">Recent costed activity</h3>
+    <ul class="foc-recent">
+      {% for e in recent_events[:8] %}
+      <li>
+        <span class="ops-type-pill ops-type-{{ e.type }}">{{ e.type_label }}</span>
+        <strong>{{ e.title }}</strong>
+        <span class="muted">{% if e.undated %}Season{% else %}{{ e.date }}{% endif %}{% if e.detail %} · {{ e.detail }}{% endif %}</span>
+        <em class="money-expense">{% if e.amount is not none %}${{ "{:,.0f}".format(e.amount) }}{% else %}—{% endif %}</em>
+        {% if can_edit_fields and e.ref %}
+        {% set rtype = e.ref[0] %}
+        {% set rid = e.ref[1] %}
+        {% if rtype == 'op' %}<form method="post" action="/fields/{{ field.id }}/void/op/{{ rid }}" style="margin:0"><button class="btn ghost" type="submit" style="font-size:0.72rem;padding:0.1rem 0.35rem">Void</button></form>
+        {% elif rtype == 'assign' %}<form method="post" action="/fields/{{ field.id }}/void/assign/{{ rid }}" style="margin:0"><button class="btn ghost" type="submit" style="font-size:0.72rem;padding:0.1rem 0.35rem">Void</button></form>
+        {% elif rtype == 'spray' %}<form method="post" action="/fields/{{ field.id }}/void/spray/{{ rid }}" style="margin:0"><button class="btn ghost" type="submit" style="font-size:0.72rem;padding:0.1rem 0.35rem">Void</button></form>
+        {% elif rtype == 'hybrid' %}<form method="post" action="/fields/{{ field.id }}/void/hybrid/{{ rid }}" style="margin:0"><button class="btn ghost" type="submit" style="font-size:0.72rem;padding:0.1rem 0.35rem">Void</button></form>
+        {% endif %}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  <div class="foc-side-stack">
+    <div class="foc-panel">
+      <header class="foc-panel-head">
+        <h2>Seed &amp; spray</h2>
+        <a class="muted" href="/inputs/assign">Assign →</a>
+      </header>
+      <ul class="simple-list foc-inputs-list">
+        {% for link, h in hybrids %}
+        {% if h %}
+        <li>
+          <span>
+            <strong>{{ h.name }}</strong>
+            <span class="muted">{% if link.applied_date %}{{ link.applied_date }}{% endif %}{% if link.units_applied is not none %} · {{ '%.4g'|format(link.units_applied) }} {{ h.unit_label or 'units' }}{% endif %}</span>
+          </span>
+          <strong>{{ link.rate or '—' }}</strong>
+        </li>
+        {% endif %}
+        {% else %}
+        <li class="muted">No hybrids assigned</li>
+        {% endfor %}
+        {% for link, s in sprays %}
+        {% if s %}
+        <li>
+          <span>
+            <strong>{{ s.name }}</strong>
+            <span class="muted">{% if link.applied_date %}{{ link.applied_date }}{% endif %} · {{ link.timing_label or s.timing or 'spray' }}</span>
+          </span>
+          <strong class="money-expense">{% if s.cost_per_acre is not none %}${{ "%.2f"|format(s.cost_per_acre) }}/ac{% else %}—{% endif %}</strong>
+        </li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+
+    <form method="post" action="/fields/{{ field.id }}/yield" class="foc-panel foc-yield-form">
+      <header class="foc-panel-head">
+        <h2>Expected yield</h2>
+      </header>
+      <p class="muted" style="margin:0 0 0.65rem">My acres × yield → production &amp; CME P&amp;L above.</p>
+      <label>bu / acre
+        <input name="expected_yield" inputmode="decimal" value="{{ field.expected_yield if field.expected_yield is not none else '' }}" placeholder="e.g. 210">
+      </label>
+      <p class="muted" style="margin:0.4rem 0 0.75rem">
+        {% if field.expected_bushels %}{{ "{:,.0f}".format(field.expected_bushels) }} bu expected{% else %}Production not set{% endif %}
+      </p>
+      <button class="btn primary" type="submit">Save yield</button>
+    </form>
+  </div>
+</section>
 
 {% if shares %}
-<section class="panel share-summary">
-  <h2 style="margin:0 0 0.55rem;font-family:var(--display)">Share partners</h2>
+<section class="foc-panel share-summary">
+  <header class="foc-panel-head">
+    <h2>Share partners</h2>
+    <a class="muted" href="/fields/{{ field.id }}/edit">Edit →</a>
+  </header>
   <ul class="simple-list">
     {% for s in shares %}
     <li>
@@ -39,62 +380,73 @@
     {% endfor %}
   </ul>
   {% set tot = shares|sum(attribute='share_pct') %}
-  <p class="muted" style="margin:0.5rem 0 0">Total {{ '%.1f'|format(tot) }}%{% if (tot - 100)|abs > 0.05 %} — should add to 100%{% endif %} · <a href="/fields/{{ field.id }}/edit">Edit partners</a></p>
+  <p class="muted" style="margin:0.5rem 0 0">Total {{ '%.1f'|format(tot) }}%{% if (tot - 100)|abs > 0.05 %} — should add to 100%{% endif %}</p>
 </section>
 {% elif field.ownership_mode == 'on_shares' %}
 <p class="banner-warn">This field is on shares but no partners are listed yet. <a href="/fields/{{ field.id }}/edit">Add partners</a></p>
 {% endif %}
 
-<form method="post" action="/fields/{{ field.id }}/yield" class="form-grid panel panel-accent">
-  <h2 class="full" style="margin:0;font-family:var(--display)">Expected yield → production</h2>
-  <p class="full muted" style="margin:0">My acres × yield feeds Grain Marketing % sold. Current: {% if field.expected_bushels %}{{ "{:,.0f}".format(field.expected_bushels) }} bu{% else %}not set{% endif %}.</p>
-  <label>Expected yield (bu/ac)<input name="expected_yield" inputmode="decimal" value="{{ field.expected_yield if field.expected_yield is not none else '' }}" placeholder="e.g. 210"></label>
-  <div class="form-actions" style="align-items:end"><button class="btn primary" type="submit">Save yield</button></div>
-</form>
+<section class="foc-bottom-row">
+  <form method="post" action="/fields/{{ field.id }}/soil" class="foc-panel form-grid foc-soil-form">
+    <header class="foc-panel-head full">
+      <h2>Soil test</h2>
+    </header>
+    <label>Date<input type="date" name="test_date" value="{{ today }}"></label>
+    <label>Lab<input name="lab"></label>
+    <label>pH<input name="ph"></label>
+    <label>P<input name="p"></label>
+    <label>K<input name="k"></label>
+    <label>OM %<input name="om"></label>
+    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+    <label class="full">Fert recommendations (creates fert plan)<textarea name="recommendations" rows="2"></textarea></label>
+    <div class="form-actions full"><button class="btn primary" type="submit">Save soil test</button></div>
+    {% if soils %}
+    <div class="full">
+      <h3 class="foc-subhead">History</h3>
+      <ul class="simple-list">
+        {% for s in soils[:5] %}
+        <li><span>{{ s.test_date }} · pH {{ s.ph or '—' }} · P {{ s.p or '—' }} · K {{ s.k or '—' }}{% if s.om is not none %} · OM {{ s.om }}%{% endif %}</span><strong>{{ s.lab or '' }}</strong></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </form>
 
-<div class="split">
-  <div class="panel">
-    <h2>Plans</h2>
-    <ul class="simple-list">
-      {% for p in plans %}
-      <li>
-        <span><strong>{{ p.title }}</strong><span class="muted">{{ p.plan_type }} · {{ p.status }}</span></span>
-        {% if p.status != 'done' %}
-        <form method="post" action="/fields/{{ field.id }}/plan-done"><input type="hidden" name="plan_id" value="{{ p.id }}"><button class="linkish" type="submit">Done</button></form>
-        {% endif %}
-      </li>
-      {% else %}<li>No plans — <a href="/inputs/assign">assign from Inputs</a></li>{% endfor %}
-    </ul>
+  {% if prior %}
+  <div class="foc-panel">
+    <header class="foc-panel-head">
+      <h2>Multi-year compare</h2>
+    </header>
+    <div class="table-wrap">
+      <table style="width:100%;font-size:0.85rem;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid #ddd">
+            <th style="text-align:left;padding:0.25rem 0.35rem">Year</th>
+            <th style="text-align:left;padding:0.25rem 0.35rem">Crop</th>
+            <th style="text-align:right;padding:0.25rem 0.35rem">My ac</th>
+            <th style="text-align:right;padding:0.25rem 0.35rem">Exp yield</th>
+          </tr>
+        </thead>
+        <tbody>
+          {# Current year first #}
+          <tr style="background:#f7f7f2;font-weight:600">
+            <td style="padding:0.25rem 0.35rem">{{ year_label }} ←</td>
+            <td style="padding:0.25rem 0.35rem">{{ field.crop }}</td>
+            <td style="text-align:right;padding:0.25rem 0.35rem">{{ field.acres_mine or '—' }}</td>
+            <td style="text-align:right;padding:0.25rem 0.35rem">{% if field.expected_yield is not none %}{{ field.expected_yield }} bu/ac{% else %}—{% endif %}</td>
+          </tr>
+          {% for p in prior %}
+          <tr style="border-top:1px solid #eee">
+            <td style="padding:0.25rem 0.35rem">{{ p.crop_year.year if p.crop_year else '?' }}</td>
+            <td style="padding:0.25rem 0.35rem">{{ p.crop }}</td>
+            <td style="text-align:right;padding:0.25rem 0.35rem">{{ p.acres_mine or '—' }}</td>
+            <td style="text-align:right;padding:0.25rem 0.35rem">{% if p.expected_yield is not none %}{{ p.expected_yield }} bu/ac{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-  <div class="panel">
-    <h2>Hybrids / sprays</h2>
-    <ul class="simple-list">
-      {% for link, h in hybrids %}{% if h %}<li><span>{{ h.name }}{% if link.applied_date %} · {{ link.applied_date }}{% endif %}</span><strong>{{ link.rate or '—' }}</strong></li>{% endif %}{% else %}<li>No hybrids — <a href="/inputs/assign">assign</a></li>{% endfor %}
-      {% for link, s in sprays %}{% if s %}<li><span>{{ s.name }}{% if link.applied_date %} · {{ link.applied_date }}{% endif %}</span><strong>{{ link.timing_label or s.timing or '—' }}</strong></li>{% endif %}{% endfor %}
-    </ul>
-  </div>
-</div>
-<p class="muted">Log expenses and review the full year history on the <a href="/fields/{{ field.id }}/operations">operations ledger</a>.</p>
-
-<form method="post" action="/fields/{{ field.id }}/soil" class="form-grid panel">
-  <h2 class="full" style="margin:0;font-family:var(--display)">Soil test</h2>
-  <label>Date<input type="date" name="test_date" value="{{ today }}"></label>
-  <label>Lab<input name="lab"></label>
-  <label>pH<input name="ph"></label>
-  <label>P<input name="p"></label>
-  <label>K<input name="k"></label>
-  <label>OM %<input name="om"></label>
-  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
-  <label class="full">Fert recommendations (creates fert plan)<textarea name="recommendations" rows="2"></textarea></label>
-  <div class="form-actions full"><button class="btn primary" type="submit">Save soil test</button></div>
-</form>
-{% if soils %}
-<ul class="simple-list">{% for s in soils %}<li><span>{{ s.test_date }} · pH {{ s.ph or '—' }} · P {{ s.p or '—' }} · K {{ s.k or '—' }}</span><strong>{{ s.lab or '' }}</strong></li>{% endfor %}</ul>
-{% endif %}
-
-{% if prior %}
-<div class="panel"><h2>Crop rotation history</h2>
-<ul class="simple-list">{% for p in prior %}<li><span>{{ p.crop_year.year if p.crop_year else '?' }}</span><strong>{{ p.crop }}</strong></li>{% endfor %}</ul>
-</div>
-{% endif %}
+  {% endif %}
+</section>
 {% endblock %}

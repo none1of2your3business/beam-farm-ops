@@ -1,7 +1,7 @@
 {# Hub navigation + secondary tabs. Pass `active` from the page context. #}
 {% macro resolve_hub(active) -%}
 {%- if active == 'dashboard' -%}home
-{%- elif active in ['fields', 'parties', 'trials', 'insights'] -%}fields
+{%- elif active in ['fields', 'parties', 'trials', 'insights', 'work_orders'] -%}fields
 {%- elif active in ['library', 'library_assign', 'purchases', 'input_upload', 'tools'] -%}inputs
 {%- elif active in ['risk', 'risk_contracts', 'risk_settings', 'carry', 'bins', 'bins_ticket', 'bins_sheet', 'trucking'] -%}grain
 {%- elif active in ['settlements', 'invoices', 'balance', 'equipment'] -%}money
@@ -15,6 +15,7 @@
 {%- set hub = resolve_hub(active) -%}
 {%- if hub == 'fields' -%}
   <a class="hub-tab {% if active == 'fields' %}active{% endif %}" href="/fields">Overview</a>
+  <a class="hub-tab {% if active == 'work_orders' %}active{% endif %}" href="/work-orders">Work orders</a>
   <a class="hub-tab {% if active == 'parties' %}active{% endif %}" href="/parties">Parties</a>
   <a class="hub-tab {% if active == 'trials' %}active{% endif %}" href="/trials">Trials</a>
   <a class="hub-tab {% if active == 'insights' %}active{% endif %}" href="/insights">Insights</a>
@@ -27,12 +28,11 @@
 {%- elif hub == 'grain' -%}
   <a class="hub-tab {% if active == 'risk' %}active{% endif %}" href="/risk">Board</a>
   <a class="hub-tab {% if active == 'risk_contracts' %}active{% endif %}" href="/risk/contracts">Contracts</a>
-  <a class="hub-tab {% if active == 'risk_settings' %}active{% endif %}" href="/risk/settings">Risk settings</a>
-  <a class="hub-tab {% if active == 'carry' %}active{% endif %}" href="/risk/carry">Carry</a>
-  <a class="hub-tab {% if active == 'bins' %}active{% endif %}" href="/bins">Bins</a>
+  <a class="hub-tab {% if active in ['bins', 'bins_sheet'] %}active{% endif %}" href="/bins">Bins</a>
   <a class="hub-tab {% if active == 'bins_ticket' %}active{% endif %}" href="/bins/ticket">Ticket</a>
-  <a class="hub-tab {% if active == 'bins_sheet' %}active{% endif %}" href="/bins/sheet">Sheet</a>
   <a class="hub-tab {% if active == 'trucking' %}active{% endif %}" href="/trucking">Truck</a>
+  <a class="hub-tab {% if active == 'carry' %}active{% endif %}" href="/risk/carry">Carry</a>
+  <a class="hub-tab {% if active == 'risk_settings' %}active{% endif %}" href="/risk/settings">Settings</a>
 {%- elif hub == 'money' -%}
   <a class="hub-tab {% if active == 'settlements' %}active{% endif %}" href="/settlements">Settle</a>
   <a class="hub-tab {% if active == 'invoices' %}active{% endif %}" href="/invoices">Invoices</a>
@@ -57,7 +57,7 @@
   <a href="/" class="{% if hub == 'home' %}active{% endif %}">Home</a>
   <a href="/fields" class="{% if hub == 'fields' %}active{% endif %}">Fields</a>
   <a href="/inputs" class="{% if hub == 'inputs' %}active{% endif %}">Inputs</a>
-  <a href="/risk" class="{% if hub == 'grain' %}active{% endif %}">Grain</a>
+  <a href="/risk" class="{% if hub == 'grain' %}active{% endif %}">Marketing and Storage</a>
   <a href="/settlements" class="{% if hub == 'money' %}active{% endif %}">Money</a>
   <a href="/scan" class="{% if hub == 'capture' %}active{% endif %}">Capture</a>
   {% if user and user.role == 'owner' %}

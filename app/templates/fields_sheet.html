@@ -59,6 +59,7 @@
           <th>Plan cost $</th>
           <th>Ownership</th>
           <th>Notes</th>
+          <th class="sheet-actions-col">Op</th>
         </tr>
       </thead>
       <tbody>
@@ -91,12 +92,15 @@
             </select>
           </td>
           <td><input name="notes" type="text" value="{{ f.notes or '' }}" class="sheet-notes"></td>
+          <td class="sheet-actions-col">
+            <a class="sheet-op-link" href="/fields/{{ f.id }}/add-operation" title="Add operation">Add op</a>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
       <tfoot>
         <tr class="sheet-totals-row">
-          <td colspan="12">
+          <td colspan="13">
             <div class="sheet-totals" id="sheet-totals">
               <span>My acres <strong id="tot-acres">—</strong></span>
               <span>Exp. bu <strong id="tot-bu">—</strong></span>

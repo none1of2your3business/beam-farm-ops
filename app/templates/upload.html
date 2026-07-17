@@ -4,10 +4,11 @@
 <section class="page-head"><div><p class="eyebrow">Import hub</p><h1>Master Upload</h1></div>
 <div class="form-actions"><a class="btn ghost" href="/photos">Photos</a><a class="btn ghost" href="/export">Excel export</a></div></section>
 {% if message %}<p class="panel" style="border-color:var(--accent)">{{ message }}</p>{% endif %}
-<p class="lede">Drop Cargill CSVs, crop-acres Excel, Panorama files, or chem / mix sheets. Spray and chem files open a guided review so you confirm before anything is saved.</p>
+<p class="lede">Drop Cargill CSVs, crop-acres Excel, planting season reports, Panorama files, or chem / mix sheets. Guided recipes open a preview so you confirm columns before anything is saved.</p>
 <form method="post" action="/upload/file" enctype="multipart/form-data" class="form-grid panel">
   <label>Type
     <select name="import_type">
+      <option value="planting_csv">Planting / season report CSV (guided)</option>
       <option value="cargill_csv">Cargill / elevator CSV (auto)</option>
       <option value="fields_excel">Crop acres Excel (auto)</option>
       <option value="panorama_file">Panorama / 20|20 file</option>

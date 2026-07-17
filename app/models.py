@@ -216,8 +216,11 @@ class FieldHybrid(Base):
     field_id: Mapped[int] = mapped_column(ForeignKey("fields.id"), index=True)
     hybrid_id: Mapped[int] = mapped_column(ForeignKey("hybrids.id"), index=True)
     rate: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    units_applied: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    treated_acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     applied_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    voided: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SprayMix(Base):
@@ -241,6 +244,7 @@ class SprayMixLine(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     spray_mix_id: Mapped[int] = mapped_column(ForeignKey("spray_mixes.id"), index=True)
+    product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("input_products.id"), nullable=True, index=True)
     product_name: Mapped[str] = mapped_column(String(160))
     rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     rate_unit: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)  # oz/ac | pt/ac | qt/ac | lb/ac
@@ -259,6 +263,10 @@ class FieldSprayMix(Base):
     timing_label: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     applied_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    treated_acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    weather_temp: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    weather_wind: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    voided: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class FieldPlan(Base):
@@ -267,13 +275,16 @@ class FieldPlan(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     field_id: Mapped[int] = mapped_column(ForeignKey("fields.id"), index=True)
     crop_year_id: Mapped[int] = mapped_column(ForeignKey("crop_years.id"), index=True)
-    plan_type: Mapped[str] = mapped_column(String(40))  # planting | fertilizer | spray
+    plan_type: Mapped[str] = mapped_column(String(40))  # planting | fertilizer | spray | work_order | …
     title: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(40), default="planned")
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     target_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     completed_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     estimated_cost_per_acre: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    priority: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # high | normal | low
+    op_kind: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)  # wizard preselect
 
 
 class InputProduct(Base):
@@ -310,6 +321,7 @@ class FieldAssignment(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     unit_cost: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    voided: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class FieldOperation(Base):
@@ -322,6 +334,7 @@ class FieldOperation(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cost: Mapped[float] = mapped_column(Float, default=0.0)
     billable: Mapped[int] = mapped_column(Integer, default=0)
+    voided: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Invoice(Base):
@@ -600,6 +613,7 @@ class ProductReturn(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("input_products.id"), index=True)
     field_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fields.id"), nullable=True)
+    assignment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("field_assignments.id"), nullable=True)
     return_date: Mapped[date] = mapped_column(Date)
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     unit_cost: Mapped[float] = mapped_column(Float, default=0.0)

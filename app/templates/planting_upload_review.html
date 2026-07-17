@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}Planting import — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set step = payload.step or 'map' %}
+{% set headers = payload.headers or [] %}
+{% set cmap = payload.column_map or {} %}
+
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Planting import · step
+      {% if step == 'map' %}1 of 3{% elif step == 'rows' %}2 of 3{% else %}3 of 3{% endif %}
+    </p>
+    <h1>{{ payload.original_filename or batch.filename }}</h1>
+    <p class="lede muted">Season planting report — guess columns, verify crop per field, then save.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn ghost" href="/upload">Master Upload</a>
+    {% if step != 'done' %}
+    <form method="post" action="/upload/planting/{{ batch.id }}/discard" onsubmit="return confirm('Discard this import?');">
+      <button class="btn" type="submit">Discard</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+{% if message %}<p class="banner-ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="banner-warn">{{ error }}</p>{% endif %}
+
+<nav class="filters" aria-label="Import steps" style="gap:0.5rem">
+  <span class="chip {% if step == 'map' %}is-on{% endif %}">1 · Columns</span>
+  <span class="chip {% if step == 'rows' %}is-on{% endif %}">2 · Preview</span>
+  <span class="chip {% if step == 'done' %}is-on{% endif %}">3 · Saved</span>
+</nav>
+
+{% if step == 'map' %}
+<form method="post" action="/upload/planting/{{ batch.id }}/map" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Verify columns</h2>
+  <p class="full muted" style="margin:0">We guessed each source column. Change any that look wrong. Leave unused on “— ignore —”. Crop is usually missing from planter reports — you will set it per field on the next screen.</p>
+
+  <label>Default crop (starting value for each row)
+    <select name="crop_default">
+      <option value="Corn" {% if (payload.crop_default or 'Corn') == 'Corn' %}selected{% endif %}>Corn</option>
+      <option value="Soybeans" {% if payload.crop_default == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+      <option value="None" {% if payload.crop_default == 'None' %}selected{% endif %}>None / leave blank</option>
+    </select>
+  </label>
+
+  {% for key in field_keys %}
+  <label>{{ field_labels.get(key, key) }}
+    <select name="map_{{ key }}">
+      <option value="-1">— ignore —</option>
+      {% for h in headers %}
+      <option value="{{ loop.index0 }}" {% if cmap.get(key) == loop.index0 %}selected{% endif %}>{{ h }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+
+  {% if headers %}
+  <div class="full table-wrap" style="margin-top:0.5rem">
+    <p class="muted">File preview (first rows)</p>
+    <table>
+      <thead><tr>{% for h in headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in (payload.rows or [])[:8] %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Next · preview planting rows</button>
+  </div>
+</form>
+{% endif %}
+
+{% if step == 'rows' %}
+<form method="post" action="/upload/planting/{{ batch.id }}/commit" class="plant-review" id="plant-review-form" novalidate>
+  <header class="plant-review-head">
+    <div>
+      <h2>Preview planting rows</h2>
+      <p class="muted">Confirm field match and crop, then resolve each hybrid — match library, pick another, or create new (details now or later).</p>
+    </div>
+    <div class="plant-review-head-meta muted">
+      {{ proposals|length }} field{{ 's' if proposals|length != 1 else '' }}
+    </div>
+  </header>
+
+  {% if not proposals %}
+  <p class="banner-warn">No rows found — go back and check the Field name column mapping.</p>
+  {% else %}
+  <div class="plant-review-list">
+    {% for r in proposals %}
+    <article class="plant-review-card {% if not r.matched_field_id %}is-unmatched{% endif %}">
+      <input type="hidden" name="row_id" value="{{ r.id }}">
+      {% if r.matched_field_id %}
+      <input type="hidden" name="matched_{{ r.id }}" value="{{ r.matched_field_id }}">
+      {% endif %}
+
+      <div class="plant-review-card-top">
+        <label class="plant-review-include" title="Include this row">
+          <input type="checkbox" name="include_{{ r.id }}" value="1" {% if r.include %}checked{% endif %}>
+          <span class="plant-review-include-mark" aria-hidden="true"></span>
+        </label>
+        <div class="plant-review-identity">
+          <h3>{{ r.field_name }}</h3>
+          <div class="plant-review-sub">
+            {% if r.matched_field_name %}
+            <span class="tag-ok">→ {{ r.matched_field_name }}</span>
+            {% else %}
+            <span class="tag-miss">no field match</span>
+            {% endif %}
+            {% if r.farm_name and r.farm_name != r.field_name %}<span class="muted">{{ r.farm_name }}</span>{% endif %}
+            {% if r.client %}<span class="muted">{{ r.client }}</span>{% endif %}
+            {% if r.total_units is not none %}<span class="muted">{{ '%.2f'|format(r.total_units) }} units total</span>{% endif %}
+          </div>
+        </div>
+        <div class="plant-review-controls">
+          <label>Crop
+            <select name="crop_{{ r.id }}">
+              <option value="Corn" {% if r.crop == 'Corn' %}selected{% endif %}>Corn</option>
+              <option value="Soybeans" {% if r.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+              <option value="None" {% if r.crop not in ['Corn','Soybeans'] %}selected{% endif %}>None</option>
+            </select>
+          </label>
+          <label>Date
+            <input type="date" name="date_{{ r.id }}" value="{{ r.op_date or '' }}">
+          </label>
+          <div class="plant-review-acres">
+            <span class="muted">Acres</span>
+            <strong>{% if r.acres is not none %}{{ '%.1f'|format(r.acres) }}{% else %}—{% endif %}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="plant-review-flags">
+        {% if r.matched_field_id %}
+        <label class="plant-flag">
+          <input type="checkbox" name="update_field_crop_{{ r.id }}" value="1" {% if r.update_field_crop %}checked{% endif %}>
+          Update field crop to match
+        </label>
+        {% else %}
+        <label class="plant-flag">
+          <input type="checkbox" name="create_{{ r.id }}" value="1" {% if r.create_field %}checked{% endif %}>
+          Create new field if missing
+        </label>
+        {% endif %}
+        {% if r.all_dates and r.all_dates|length > 1 %}
+        <span class="muted">Also planted {{ r.all_dates[1:]|join(', ') }}</span>
+        {% endif %}
+      </div>
+
+      {% if r.hybrids %}
+      <div class="plant-review-hybrids">
+        <p class="plant-review-hybrids-label">Hybrids / varieties</p>
+        {% for h in r.hybrids %}
+        {% set hi = loop.index0 %}
+        {% set is_new = h.resolve == 'new' or not h.selected_hybrid_id %}
+        <div class="plant-hyb" data-plant-hyb>
+          <div class="plant-hyb-main">
+            <div class="plant-hyb-csv">
+              <span class="plant-hyb-csv-name">{{ h.name }}</span>
+              {% if h.matched_hybrid_id %}
+              <span class="tag-ok">library match</span>
+              {% else %}
+              <span class="tag-miss">new</span>
+              {% endif %}
+            </div>
+            <label class="plant-hyb-resolve">Resolve
+              <select name="hybrid_sel_{{ r.id }}_{{ hi }}" class="plant-hyb-sel" data-hyb-sel>
+                <option value="new" {% if is_new %}selected{% endif %}>Create new · {{ h.name }}</option>
+                {% for opt in hybrid_catalog or [] %}
+                <option value="{{ opt.id }}" {% if h.selected_hybrid_id == opt.id %}selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Rate
+              <input name="rate_{{ r.id }}_{{ hi }}" value="{{ h.rate or '' }}" placeholder="e.g. 34000 seeds/ac">
+            </label>
+            <label>Units
+              <input name="units_{{ r.id }}_{{ hi }}" value="{% if h.units is not none %}{{ '%.2f'|format(h.units) }}{% endif %}" type="number" step="any" min="0" placeholder="0">
+            </label>
+            <input type="hidden" name="hybrid_{{ r.id }}_{{ hi }}" value="{{ h.name }}">
+          </div>
+
+          <div class="plant-hyb-new" data-hyb-new {% if not is_new %}hidden{% endif %}>
+            <div class="plant-hyb-new-head">
+              <strong>New hybrid — what do you want to do?</strong>
+            </div>
+            <div class="plant-hyb-choice" role="radiogroup" aria-label="New hybrid details">
+              <label class="plant-hyb-choice-btn {% if not h.detail_now %}is-selected{% endif %}">
+                <input type="radio" name="hybrid_detail_mode_{{ r.id }}_{{ hi }}" value="later" {% if not h.detail_now %}checked{% endif %}>
+                <span class="plant-hyb-choice-title">Create name only</span>
+                <span class="plant-hyb-choice-sub">Save the variety name now. Add brand, price, and traits later in Inputs.</span>
+              </label>
+              <label class="plant-hyb-choice-btn {% if h.detail_now %}is-selected{% endif %}">
+                <input type="radio" name="hybrid_detail_mode_{{ r.id }}_{{ hi }}" value="now" {% if h.detail_now %}checked{% endif %} data-hyb-detail-now>
+                <span class="plant-hyb-choice-title">Fill details now</span>
+                <span class="plant-hyb-choice-sub">Enter brand, traits, unit cost, and $/acre before saving.</span>
+              </label>
+            </div>
+            <div class="plant-hyb-new-fields" data-hyb-detail-fields {% if not h.detail_now %}hidden{% endif %}>
+              <label>Brand
+                <input name="hybrid_brand_{{ r.id }}_{{ hi }}" value="{{ h.brand or '' }}" placeholder="Pioneer, Beck’s…">
+              </label>
+              <label>Name
+                <input name="hybrid_name_edit_{{ r.id }}_{{ hi }}" value="{{ h.name }}" placeholder="Hybrid / variety name">
+              </label>
+              <label>Maturity
+                <input name="hybrid_maturity_{{ r.id }}_{{ hi }}" value="{{ h.maturity or '' }}" placeholder="112 RM">
+              </label>
+              <label>Traits
+                <input name="hybrid_traits_{{ r.id }}_{{ hi }}" value="{{ h.traits or '' }}" placeholder="VT2P, Enlist…">
+              </label>
+              <label>Unit
+                <select name="hybrid_unit_{{ r.id }}_{{ hi }}">
+                  <option value="unit" {% if (h.unit_label or 'unit') == 'unit' %}selected{% endif %}>unit</option>
+                  <option value="bag" {% if h.unit_label == 'bag' %}selected{% endif %}>bag</option>
+                  <option value="80k" {% if h.unit_label == '80k' %}selected{% endif %}>80k</option>
+                  <option value="lb" {% if h.unit_label == 'lb' %}selected{% endif %}>lb</option>
+                </select>
+              </label>
+              <label>Cost / unit ($)
+                <input name="hybrid_cpu_{{ r.id }}_{{ hi }}" type="number" step="0.01" min="0" value="{% if h.cost_per_unit is not none %}{{ h.cost_per_unit }}{% endif %}" placeholder="285.00">
+              </label>
+              <label>Cost / acre ($)
+                <input name="hybrid_cpa_{{ r.id }}_{{ hi }}" type="number" step="0.01" min="0" value="{% if h.cost_per_acre is not none %}{{ h.cost_per_acre }}{% endif %}" placeholder="95.00">
+              </label>
+              <label class="plant-hyb-notes">Notes
+                <input name="hybrid_notes_{{ r.id }}_{{ hi }}" value="{{ h.notes or '' }}" placeholder="optional">
+              </label>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+        <input type="hidden" name="hybrid_count_{{ r.id }}" value="{{ r.hybrids|length }}">
+      </div>
+      {% else %}
+      <p class="muted plant-review-no-hyb">No hybrids in this CSV row</p>
+      <input type="hidden" name="hybrid_count_{{ r.id }}" value="0">
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="form-actions plant-review-actions">
+    <button class="btn ghost" type="submit" formaction="/upload/planting/{{ batch.id }}/back" formmethod="post">Back</button>
+    <button class="btn primary" type="submit" {% if not proposals %}disabled{% endif %}>Save planting operations</button>
+  </div>
+</form>
+<script src="/static/planting-import-review.js?v=2"></script>
+{% endif %}
+
+{% if step == 'done' %}
+<section class="panel">
+  <h2 style="margin:0 0 0.5rem;font-family:var(--display)">Import saved</h2>
+  {% if payload.result %}
+  <ul class="simple-list">
+    <li><span>Planting operations</span><strong>{{ payload.result.operations }}</strong></li>
+    <li><span>Hybrid links</span><strong>{{ payload.result.hybrid_links }}</strong></li>
+    <li><span>Hybrids created</span><strong>{{ payload.result.hybrids_created or 0 }}</strong></li>
+    <li><span>Fields created</span><strong>{{ payload.result.fields_created }}</strong></li>
+    <li><span>Fields crop updated</span><strong>{{ payload.result.fields_crop_updated or 0 }}</strong></li>
+    <li><span>Skipped</span><strong>{{ payload.result.skipped }}</strong></li>
+  </ul>
+  {% endif %}
+  <div class="form-actions" style="margin-top:1rem">
+    <a class="btn primary" href="/fields">Open fields</a>
+    <a class="btn" href="/inputs">Edit hybrids in Inputs</a>
+    <a class="btn ghost" href="/upload">Upload another</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

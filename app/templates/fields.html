@@ -27,7 +27,7 @@
   <div class="stat crop-corn"><span class="stat-label">Corn acres</span><span class="stat-value">{{ stats.corn_acres }}</span></div>
   <div class="stat crop-soy"><span class="stat-label">Soy acres</span><span class="stat-value">{{ stats.soy_acres }}</span></div>
   <div class="stat"><span class="stat-label">Rent</span><span class="stat-value">${{ "{:,.0f}".format(stats.rent_total) }}</span></div>
-  <div class="stat"><span class="stat-label">Plan COP</span><span class="stat-value">${{ "{:,.0f}".format(stats.plan_cost_total) }}</span></div>
+  <div class="stat"><span class="stat-label">Budget COP (settings)</span><span class="stat-value">${{ "{:,.0f}".format(stats.plan_cost_total) }}</span></div>
 </section>
 
 <section class="fields-charts">
@@ -63,7 +63,7 @@
   </div>
 
   <div class="fields-chart-card">
-    <p class="eyebrow">Cash rent</p>
+    <p class="eyebrow">Cash Rent/Property Taxes</p>
     <h3>Rent by crop</h3>
     <div class="fields-bar-row">
       <span class="fields-bar-label">Corn <em>${{ "{:,.0f}".format(stats.corn_rent) }}</em></span>
@@ -106,6 +106,7 @@
 {% macro field_card(f) %}
 {% set plan_cop = corn_cop if f.crop == 'Corn' else (soy_cop if f.crop == 'Soybeans' else 0) %}
 {% set plan_cost = plan_cop * (f.acres_mine or 0) %}
+{% set ops = (field_ops_summary or {}).get(f.id, {}) %}
 <article class="field-card {{ crop_tone(f.crop) }}">
   <header class="field-card-head">
     <a href="/fields/{{ f.id }}"><strong>{{ f.name }}</strong></a>
@@ -117,9 +118,21 @@
     <div><dt>Base yield</dt><dd>{% if f.expected_yield is not none %}{{ f.expected_yield }}{% else %}<span class="tag-miss">need</span>{% endif %}</dd></div>
     <div><dt>Exp. bu</dt><dd>{% if f.expected_bushels %}{{ "{:,.0f}".format(f.expected_bushels) }}{% else %}—{% endif %}</dd></div>
     <div><dt>Rent</dt><dd>${{ "{:,.0f}".format(f.rent_my_share) }}</dd></div>
-    <div><dt>Plan COP</dt><dd>${{ "{:,.0f}".format(plan_cost) }}</dd></div>
+    <div><dt>Budget COP</dt><dd>${{ "{:,.0f}".format(plan_cost) }}</dd></div>
   </dl>
+  <div class="field-card-ops">
+    {% if ops and ops.types %}
+      {% for t in ops.types %}
+      <span class="ops-type-pill ops-type-op">{{ t }}</span>
+      {% endfor %}
+      {% if ops.latest %}<span class="muted field-card-ops-meta">latest {{ ops.latest }}</span>{% endif %}
+      {% if ops.count %}<span class="muted field-card-ops-meta">{{ ops.count }} logged</span>{% endif %}
+    {% else %}
+      <span class="muted field-card-ops-empty">No operations logged this year</span>
+    {% endif %}
+  </div>
   <div class="field-card-actions">
+    <a class="btn primary field-card-op-btn" href="/fields/{{ f.id }}/add-operation">Add operation</a>
     <a href="/fields/{{ f.id }}">Open</a>
     <a href="/fields/{{ f.id }}/edit">Edit</a>
   </div>
@@ -159,7 +172,7 @@
 <div class="fields-summary-bar">
   <span>{{ stats.total_mine_acres }} my acres</span>
   <span>Rent ${{ "{:,.0f}".format(stats.rent_total) }}</span>
-  <span>Plan COP ${{ "{:,.0f}".format(stats.plan_cost_total) }}</span>
+  <span>Budget COP (settings) ${{ "{:,.0f}".format(stats.plan_cost_total) }}</span>
   <a href="/fields/sheet">Edit in Sheet →</a>
 </div>
 {% else %}

@@ -299,7 +299,7 @@ def main() -> int:
         )
         risk = c.get("/risk")
         check("GET marketing", risk)
-        if "Grain Marketing" not in risk.text or "mkt-bar-fill" not in risk.text:
+        if "Marketing and Storage" not in risk.text or "mkt-bar-fill" not in risk.text:
             fails.append(("marketing chart", risk.status_code, "missing chart markup"))
             print("FAIL marketing chart markup")
         check(
@@ -555,7 +555,7 @@ def main() -> int:
                 c.post(
                     f"/settlements/{set_id}/line",
                     data={
-                        "description": "Cash rent",
+                        "description": "Cash Rent/Property Taxes",
                         "amount": "1200",
                         "field_id": fid or "",
                     },

@@ -173,6 +173,47 @@ def carry_farm_mo(bin_bu: float, rate_per_bu_mo: Optional[float]) -> Optional[fl
     return round(max(0.0, bin_bu) * float(rate_per_bu_mo), 2)
 
 
+def _crop_carry_inputs(settings: Any, crop: str) -> dict[str, Any]:
+    """Storage, shrink, basis, APR, and mark mode for one crop."""
+    storage = 0.03 if crop == "Corn" else 0.04
+    shrink = 0.003 if crop == "Corn" else 0.004
+    basis = None
+    if settings:
+        if crop == "Corn":
+            storage = (
+                settings.corn_storage_per_bu_mo
+                if settings.corn_storage_per_bu_mo is not None
+                else 0.03
+            )
+            shrink = (
+                settings.corn_shrink_per_bu_mo
+                if settings.corn_shrink_per_bu_mo is not None
+                else 0.003
+            )
+            basis = settings.corn_local_basis
+        else:
+            storage = (
+                settings.soy_storage_per_bu_mo
+                if settings.soy_storage_per_bu_mo is not None
+                else 0.04
+            )
+            shrink = (
+                settings.soy_shrink_per_bu_mo
+                if settings.soy_shrink_per_bu_mo is not None
+                else 0.004
+            )
+            basis = settings.soy_local_basis
+    interest = (getattr(settings, "carry_interest_apr", None) if settings else 7.0) or 7.0
+    mode = (getattr(settings, "carry_mark_mode", None) if settings else "cash") or "cash"
+    return {
+        "storage": storage,
+        "shrink": shrink,
+        "basis": basis,
+        "interest_apr": interest,
+        "mark_mode": mode,
+    }
+
+
 def build_carry_snapshot(
     settings: Any,
     board: dict[str, Any],
@@ -190,35 +231,26 @@ def build_carry_snapshot(
         "mark_mode": mode,
     }
     for crop in ("Corn", "Soybeans"):
-        storage = 0.03 if crop == "Corn" else 0.04
-        shrink = 0.003 if crop == "Corn" else 0.004
-        basis = None
-        if settings:
-            if crop == "Corn":
-                storage = settings.corn_storage_per_bu_mo if settings.corn_storage_per_bu_mo is not None else 0.03
-                shrink = settings.corn_shrink_per_bu_mo if settings.corn_shrink_per_bu_mo is not None else 0.003
-                basis = settings.corn_local_basis
-            else:
-                storage = settings.soy_storage_per_bu_mo if settings.soy_storage_per_bu_mo is not None else 0.04
-                shrink = settings.soy_shrink_per_bu_mo if settings.soy_shrink_per_bu_mo is not None else 0.004
-                basis = settings.soy_local_basis
+        inp = _crop_carry_inputs(settings, crop)
         futures = None
         if board.get(crop) and board[crop].get("price") is not None:
             futures = board[crop]["price"]
         elif market_fallback.get(crop) is not None:
             futures = market_fallback[crop]
-        mark = carry_mark_price(futures, basis, mode)
+        mark = carry_mark_price(futures, inp["basis"], inp["mark_mode"])
         interest_mo = (
-            round(float(mark) * (float(interest) / 100.0) / 12.0, 4) if mark is not None else 0.0
+            round(float(mark) * (float(inp["interest_apr"]) / 100.0) / 12.0, 4)
+            if mark is not None
+            else 0.0
         )
-        rate = carry_per_bu_mo(mark, interest, storage, shrink)
+        rate = carry_per_bu_mo(mark, inp["interest_apr"], inp["storage"], inp["shrink"])
         farm_mo = carry_farm_mo(bin_bu.get(crop) or 0, rate)
         carry["by_crop"][crop] = {
             "futures": futures,
-            "basis": basis,
+            "basis": inp["basis"],
             "mark": mark,
-            "storage": storage,
-            "shrink": shrink,
+            "storage": inp["storage"],
+            "shrink": inp["shrink"],
             "interest_mo": interest_mo,
             "rate": rate,
             "bin_bu": bin_bu.get(crop) or 0,
@@ -228,6 +260,59 @@ def build_carry_snapshot(
             carry["farm_total_mo"] += farm_mo
     carry["farm_total_mo"] = round(carry["farm_total_mo"], 2)
     return carry
+
+
+def strip_spreads_with_carry(
+    strip: dict[str, list],
+    settings: Any = None,
+) -> dict[str, list]:
+    """
+    Calendar spreads plus cost of carry and net carry for each month gap.
+
+    Market carry  = next − this  (¢/bu)
+    Cost of carry = monthly holding rate × months between contracts
+    Net carry     = market carry − cost of carry
+      > 0 → net carry (board pays more than it costs to hold)
+      < 0 → net inverse (holding cost exceeds what the board pays)
+    """
+    from app.cme_quotes import calendar_spreads
+
+    out: dict[str, list] = {}
+    for crop in ("Corn", "Soybeans"):
+        rows = strip.get(crop) or []
+        spreads = calendar_spreads(rows)
+        inp = _crop_carry_inputs(settings, crop)
+        for i, sp in enumerate(spreads):
+            a = rows[i] if i < len(rows) else {}
+            months = sp.get("months")
+            mark = carry_mark_price(a.get("price"), inp["basis"], inp["mark_mode"])
+            rate = carry_per_bu_mo(
+                mark, inp["interest_apr"], inp["storage"], inp["shrink"]
+            )
+            cost = None
+            cost_cents = None
+            if rate is not None and months:
+                cost = round(float(rate) * float(months), 4)
+                cost_cents = round(cost * 100, 1)
+            net = None
+            net_cents = None
+            if sp.get("spread") is not None and cost is not None:
+                net = round(float(sp["spread"]) - cost, 4)
+                net_cents = round(net * 100, 1)
+            sp.update(
+                {
+                    "rate_mo": rate,
+                    "cost_of_carry": cost,
+                    "cost_cents": cost_cents,
+                    "net_carry": net,
+                    "net_cents": net_cents,
+                    "is_net_carry": net is not None and net > 0,
+                    "is_net_inverse": net is not None and net < 0,
+                    "is_net_flat": net is not None and abs(net) < 5e-5,
+                }
+            )
+        out[crop] = spreads
+    return out
 
 
 def desk_rows(

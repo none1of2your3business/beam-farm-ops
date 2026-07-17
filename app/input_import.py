@@ -530,6 +530,9 @@ def commit_rows(
     mix_line_buckets: dict[str, list[dict[str, Any]]] = {}
 
     for row in payload.get("rows") or []:
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
         if not row.get("include"):
             skipped += 1
             continue

@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Work Orders — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Fields · Planning</p>
+    <h1>Work Orders</h1>
+    <p class="lede muted">Open field plans for {{ year.year if year else '—' }}. Click "Log work" to record the operation.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/fields">All fields</a>
+  </div>
+</section>
+
+{% if plans %}
+<section class="panel">
+  <div class="table-wrap">
+    <table class="foc-ops-table">
+      <thead>
+        <tr>
+          <th>Priority</th>
+          <th>Field</th>
+          <th>Title / type</th>
+          <th>Assigned to</th>
+          <th>Target date</th>
+          <th>Est $/ac</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in plans %}
+        {% set f = fields_by_id.get(p.field_id) %}
+        <tr>
+          <td>
+            {% if p.priority == 'high' %}<span class="ops-type-pill" style="background:#fee;color:#a00">High</span>
+            {% elif p.priority == 'low' %}<span class="muted" style="font-size:0.82rem">Low</span>
+            {% else %}Normal{% endif %}
+          </td>
+          <td>
+            {% if f %}<a href="/fields/{{ f.id }}">{{ f.name }}</a>{% else %}—{% endif %}
+          </td>
+          <td>
+            <strong>{{ p.title }}</strong>
+            <span class="muted">{{ p.plan_type }}</span>
+          </td>
+          <td>{{ p.assigned_to or '—' }}</td>
+          <td class="{% if p.target_date and p.target_date.isoformat() < today %}money-loss{% endif %}">
+            {{ p.target_date or '—' }}
+          </td>
+          <td>{% if p.estimated_cost_per_acre is not none %}${{ "%.2f"|format(p.estimated_cost_per_acre) }}{% else %}—{% endif %}</td>
+          <td class="form-actions">
+            {% if f %}
+            <a class="btn primary" href="/fields/{{ f.id }}/add-operation{% if p.op_kind %}?kind={{ p.op_kind }}{% elif p.plan_type and p.plan_type != 'work_order' %}?kind={{ p.plan_type }}{% endif %}">Log work</a>
+            <a class="btn ghost" href="/fields/{{ f.id }}">FOC</a>
+            {% endif %}
+            <form method="post" action="/fields/{{ p.field_id }}/plan-done" style="display:inline">
+              <input type="hidden" name="plan_id" value="{{ p.id }}">
+              <input type="hidden" name="next" value="/work-orders">
+              <button class="btn ghost" type="submit">Done</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<p class="panel muted">No open work orders for {{ year.year if year else 'this year' }}. Create one below.</p>
+{% endif %}
+
+<section class="panel form-grid">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Create work order</h2>
+  {% if can_edit_fields %}
+  <form method="post" action="/work-orders/create" class="form-grid full">
+    <label>Field
+      <select name="field_id" required>
+        <option value="">— select field —</option>
+        {% for f in year_fields %}
+        <option value="{{ f.id }}">{{ f.name }} ({{ f.crop }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Title<input name="title" required placeholder="Spray post-emerge herbicide"></label>
+    <label>Type
+      <select name="plan_type">
+        <option value="work_order">Work order</option>
+        <option value="planting">Planting</option>
+        <option value="spray">Spray</option>
+        <option value="fertilizer">Fertilizer</option>
+        <option value="sidedress">Sidedress</option>
+        <option value="harvest">Harvest</option>
+        <option value="lime">Lime</option>
+        <option value="other">Other</option>
+      </select>
+    </label>
+    <label>Op kind (wizard preselect)
+      <select name="op_kind">
+        <option value="">— none —</option>
+        <option value="planting">Planting</option>
+        <option value="spraying">Spraying</option>
+        <option value="dry_fertilizer">Dry Fertilizer</option>
+        <option value="sidedress">Sidedress</option>
+        <option value="harvest">Harvest</option>
+        <option value="lime">Lime</option>
+      </select>
+    </label>
+    <label>Assigned to<input name="assigned_to" placeholder="name or team"></label>
+    <label>Priority
+      <select name="priority">
+        <option value="normal">Normal</option>
+        <option value="high">High</option>
+        <option value="low">Low</option>
+      </select>
+    </label>
+    <label>Target date<input type="date" name="target_date" value="{{ today }}"></label>
+    <label>Est $/ac<input name="estimated_cost_per_acre" inputmode="decimal" placeholder="optional"></label>
+    <label class="full">Details<textarea name="details" rows="2" placeholder="Notes, product specs, timing conditions…"></textarea></label>
+    <div class="form-actions full"><button class="btn primary" type="submit">Create work order</button></div>
+  </form>
+  {% else %}
+  <p class="muted full">View-only role — creating work orders is disabled.</p>
+  {% endif %}
+</section>
+{% endblock %}

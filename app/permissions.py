@@ -71,6 +71,11 @@ def can_edit_finance(role: str | None) -> bool:
     return (role or "") in ("owner", "accountant")
 
 
+def can_edit_fields(role: str | None) -> bool:
+    """Log ops, void, work orders, yield — not viewers."""
+    return (role or "") in ("owner", "agronomist", "accountant")
+
+
 def can_manage_team(role: str | None) -> bool:
     return (role or "") == "owner"
 

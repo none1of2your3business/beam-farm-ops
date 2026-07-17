@@ -93,17 +93,43 @@ def run_migrations() -> None:
             smcols = {c["name"] for c in inspector.get_columns("spray_mixes")}
             _add_col(conn, "spray_mixes", "cost_per_acre", "FLOAT", smcols)
 
-        if "field_plans" in tables:
-            fpcols = {c["name"] for c in inspector.get_columns("field_plans")}
-            _add_col(conn, "field_plans", "estimated_cost_per_acre", "FLOAT", fpcols)
-
         if "field_spray_mixes" in tables:
             fsmcols = {c["name"] for c in inspector.get_columns("field_spray_mixes")}
             _add_col(conn, "field_spray_mixes", "applied_date", "DATE", fsmcols)
+            _add_col(conn, "field_spray_mixes", "treated_acres", "FLOAT", fsmcols)
+            _add_col(conn, "field_spray_mixes", "weather_temp", "VARCHAR(40)", fsmcols)
+            _add_col(conn, "field_spray_mixes", "weather_wind", "VARCHAR(40)", fsmcols)
+            _add_col(conn, "field_spray_mixes", "voided", "INTEGER DEFAULT 0", fsmcols)
 
         if "field_hybrids" in tables:
             fhcols = {c["name"] for c in inspector.get_columns("field_hybrids")}
             _add_col(conn, "field_hybrids", "applied_date", "DATE", fhcols)
+            _add_col(conn, "field_hybrids", "units_applied", "FLOAT", fhcols)
+            _add_col(conn, "field_hybrids", "treated_acres", "FLOAT", fhcols)
+            _add_col(conn, "field_hybrids", "voided", "INTEGER DEFAULT 0", fhcols)
+
+        if "field_plans" in tables:
+            fpcols = {c["name"] for c in inspector.get_columns("field_plans")}
+            _add_col(conn, "field_plans", "estimated_cost_per_acre", "FLOAT", fpcols)
+            _add_col(conn, "field_plans", "assigned_to", "VARCHAR(120)", fpcols)
+            _add_col(conn, "field_plans", "priority", "VARCHAR(20)", fpcols)
+            _add_col(conn, "field_plans", "op_kind", "VARCHAR(40)", fpcols)
+
+        if "field_operations" in tables:
+            focols = {c["name"] for c in inspector.get_columns("field_operations")}
+            _add_col(conn, "field_operations", "voided", "INTEGER DEFAULT 0", focols)
+
+        if "field_assignments" in tables:
+            facols = {c["name"] for c in inspector.get_columns("field_assignments")}
+            _add_col(conn, "field_assignments", "voided", "INTEGER DEFAULT 0", facols)
+
+        if "spray_mix_lines" in tables:
+            smlcols = {c["name"] for c in inspector.get_columns("spray_mix_lines")}
+            _add_col(conn, "spray_mix_lines", "product_id", "INTEGER", smlcols)
+
+        if "product_returns" in tables:
+            prcols = {c["name"] for c in inspector.get_columns("product_returns")}
+            _add_col(conn, "product_returns", "assignment_id", "INTEGER", prcols)
 
         if "input_purchases" in tables:
             ipcols = {c["name"] for c in inspector.get_columns("input_purchases")}

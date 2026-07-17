@@ -62,7 +62,7 @@
 
   <label>Lease type
     <select name="lease_type">
-      {% for key, label in [('cash_rent','Cash rent'),('flex_rent','Flex rent'),('crop_share','Crop share'),('none','None')] %}
+      {% for key, label in [('cash_rent','Cash Rent/Property Taxes'),('flex_rent','Flex rent'),('crop_share','Crop share'),('none','None')] %}
       <option value="{{ key }}" {% if field and field.lease_type == key %}selected{% elif not field and key == 'cash_rent' %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
     </select>

@@ -97,16 +97,26 @@ def build_field_ledger(
     settings: Any,
     board: dict[str, Any],
     contracts: list[Any],
+    insurance_premium: Optional[float] = None,
+    budget_cop_ac: Optional[float] = None,
 ) -> dict[str, Any]:
     """
     Chronological ledger + economics strip for one field season.
 
     Plans appear as estimate activity (est_amount) and do NOT count in running cost.
+    Voided ops / assigns / spray / hybrid links are skipped.
+    Spray/hybrid CPA uses treated_acres when set, else field acres.
     """
     acres = _acres(field)
     rent = float(getattr(field, "rent_my_share", 0) or 0)
     crop = getattr(field, "crop", "") or ""
     events: list[dict[str, Any]] = []
+
+    def _bill_acres(link: Any) -> float:
+        ta = getattr(link, "treated_acres", None)
+        if ta is not None and float(ta) > 0:
+            return float(ta)
+        return acres
 
     if rent:
         events.append(
@@ -115,16 +125,37 @@ def build_field_ledger(
                 "undated": True,
                 "type": "rent",
                 "type_label": "Rent",
-                "title": "Cash rent (my share)",
+                "title": "Cash Rent/Property Taxes (my share)",
                 "detail": f"{acres:g} ac × ${float(getattr(field, 'rent_per_acre', 0) or 0):.2f}/ac",
                 "amount": _money(rent),
                 "est_amount": None,
                 "counts": True,
                 "sort_key": (0, date.min, 0),
+                "ref": None,
+            }
+        )
+
+    ins = float(insurance_premium) if insurance_premium else 0.0
+    if ins > 0:
+        events.append(
+            {
+                "date": None,
+                "undated": True,
+                "type": "insurance",
+                "type_label": "Insurance",
+                "title": "Crop insurance premium (allocated)",
+                "detail": f"${ins / acres:.2f}/ac" if acres else "",
+                "amount": _money(ins),
+                "est_amount": None,
+                "counts": True,
+                "sort_key": (0, date.min, 1),
+                "ref": None,
             }
         )
 
     for o in ops:
+        if getattr(o, "voided", 0):
+            continue
         amt = float(getattr(o, "cost", 0) or 0)
         d = getattr(o, "op_date", None)
         events.append(
@@ -139,10 +170,13 @@ def build_field_ledger(
                 "est_amount": None,
                 "counts": True,
                 "sort_key": (1 if d else 0, d or date.min, getattr(o, "id", 0) or 0),
+                "ref": ("op", getattr(o, "id", None)),
             }
         )
 
     for a in assigns:
+        if getattr(a, "voided", 0):
+            continue
         qty = float(getattr(a, "quantity", 0) or 0)
         unit = float(getattr(a, "unit_cost", 0) or 0)
         amt = qty * unit
@@ -163,15 +197,29 @@ def build_field_ledger(
                 "est_amount": None,
                 "counts": True,
                 "sort_key": (1 if d else 0, d or date.min, getattr(a, "id", 0) or 0),
+                "ref": ("assign", getattr(a, "id", None)),
             }
         )
 
     for link, mix in spray_links:
+        if getattr(link, "voided", 0):
+            continue
         cpa = getattr(mix, "cost_per_acre", None) if mix else None
-        amt = float(cpa) * acres if cpa is not None and acres else None
+        bill_ac = _bill_acres(link)
+        amt = float(cpa) * bill_ac if cpa is not None and bill_ac else None
         d = getattr(link, "applied_date", None)
         timing = getattr(link, "timing_label", None) or (getattr(mix, "timing", None) if mix else None)
         title = getattr(mix, "name", None) if mix else f"Spray #{getattr(link, 'spray_mix_id', '?')}"
+        wx = []
+        if getattr(link, "weather_temp", None):
+            wx.append(f"{link.weather_temp}°F")
+        if getattr(link, "weather_wind", None):
+            wx.append(f"wind {link.weather_wind}")
+        detail = (timing or "")
+        if cpa is not None:
+            detail += f" · ${cpa:.2f}/ac × {bill_ac:g} ac"
+        if wx:
+            detail += (" · " if detail else "") + ", ".join(wx)
         events.append(
             {
                 "date": d,
@@ -179,26 +227,43 @@ def build_field_ledger(
                 "type": "spray",
                 "type_label": "Spray",
                 "title": title,
-                "detail": (timing or "")
-                + (f" · ${cpa:.2f}/ac × {acres:g} ac" if cpa is not None else ""),
+                "detail": detail,
                 "amount": _money(amt) if amt is not None else None,
                 "est_amount": None,
                 "counts": amt is not None,
                 "sort_key": (1 if d else 0, d or date.min, getattr(link, "id", 0) or 0),
+                "ref": ("spray", getattr(link, "id", None)),
             }
         )
 
     for link, hybrid in hybrid_links:
+        if getattr(link, "voided", 0):
+            continue
+        units = getattr(link, "units_applied", None)
+        cpu = getattr(hybrid, "cost_per_unit", None) if hybrid else None
         cpa = getattr(hybrid, "cost_per_acre", None) if hybrid else None
-        amt = float(cpa) * acres if cpa is not None and acres else None
+        bill_ac = _bill_acres(link)
+        amt = None
+        if units is not None and cpu is not None:
+            amt = float(units) * float(cpu)
+        elif cpa is not None and bill_ac:
+            amt = float(cpa) * bill_ac
         d = getattr(link, "applied_date", None)
         rate = getattr(link, "rate", None)
         title = getattr(hybrid, "name", None) if hybrid else f"Hybrid #{getattr(link, 'hybrid_id', '?')}"
+        unit_label = getattr(hybrid, "unit_label", None) if hybrid else None
         detail_bits = []
         if rate:
             detail_bits.append(str(rate))
-        if cpa is not None:
-            detail_bits.append(f"${cpa:.2f}/ac × {acres:g} ac")
+        if units is not None:
+            ul = unit_label or "units"
+            detail_bits.append(f"{float(units):g} {ul}")
+        if units is not None and cpu is not None:
+            detail_bits.append(f"${float(cpu):.2f}/{unit_label or 'unit'} × {float(units):g}")
+        elif cpa is not None:
+            detail_bits.append(f"${cpa:.2f}/ac × {bill_ac:g} ac")
+        elif cpu is not None and units is None:
+            detail_bits.append(f"${float(cpu):.2f}/{unit_label or 'unit'} · units not set — $0")
         events.append(
             {
                 "date": d,
@@ -211,6 +276,7 @@ def build_field_ledger(
                 "est_amount": None,
                 "counts": amt is not None,
                 "sort_key": (1 if d else 0, d or date.min, getattr(link, "id", 0) or 0),
+                "ref": ("hybrid", getattr(link, "id", None)),
             }
         )
 
@@ -315,6 +381,38 @@ def build_field_ledger(
             return None
         return round(float(expected_yld) - float(be), 1)
 
+    def per_ac(total: Optional[float]) -> Optional[float]:
+        if total is None or not acres:
+            return None
+        return round(float(total) / acres, 2)
+
+    gap_c = gap(proj_c)
+    gap_f = gap(proj_f)
+
+    breakdown = {"rent": 0.0, "ops": 0.0, "inputs": 0.0, "sprays": 0.0, "hybrids": 0.0, "insurance": 0.0}
+    type_to_key = {
+        "rent": "rent",
+        "op": "ops",
+        "input": "inputs",
+        "spray": "sprays",
+        "hybrid": "hybrids",
+        "insurance": "insurance",
+    }
+    for e in events:
+        if not e.get("counts") or e.get("amount") is None:
+            continue
+        key = type_to_key.get(e.get("type"))
+        if key:
+            breakdown[key] += float(e["amount"])
+    for k in breakdown:
+        breakdown[k] = round(breakdown[k], 2)
+    breakdown["total"] = running_cost
+
+    budget_ac = float(budget_cop_ac) if budget_cop_ac is not None else None
+    budget_total = round(budget_ac * acres, 2) if budget_ac is not None and acres else None
+    vs_budget = round(running_cost - budget_total, 2) if budget_total is not None else None
+    vs_budget_ac = round(cost_ac - budget_ac, 2) if cost_ac is not None and budget_ac is not None else None
+
     return {
         "events": events,
         "running_cost": running_cost,
@@ -326,11 +424,21 @@ def build_field_ledger(
         "marks": marks,
         "projected_contracted": proj_c,
         "projected_futures": proj_f,
-        "gap_contracted": gap(proj_c),
-        "gap_futures": gap(proj_f),
+        "projected_futures_ac": per_ac(proj_f),
+        "projected_contracted_ac": per_ac(proj_c),
+        "gap_contracted": gap_c,
+        "gap_futures": gap_f,
+        "gap_contracted_ac": per_ac(gap_c),
+        "gap_futures_ac": per_ac(gap_f),
         "be_yield_contracted": be_c,
         "be_yield_futures": be_f,
         "vs_be_contracted": yld_vs(be_c),
         "vs_be_futures": yld_vs(be_f),
+        "cost_breakdown": breakdown,
+        "insurance_premium": _money(ins) if ins else 0.0,
+        "budget_cop_ac": budget_ac,
+        "budget_total": budget_total,
+        "vs_budget": vs_budget,
+        "vs_budget_ac": vs_budget_ac,
         "crop": crop,
     }

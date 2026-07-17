@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
-{% block title %}Grain board — {{ farm_name }}{% endblock %}
+{% block title %}Marketing and Storage — {{ farm_name }}{% endblock %}
 {% block content %}
 <section class="mkt-hero reveal">
   <div class="mkt-hero-media">
@@ -8,8 +8,8 @@
     <img src="/static/img/farm-elevator.jpg" alt="Elevator" class="mkt-hero-float" data-speed="-0.08">
   </div>
   <div class="mkt-hero-copy">
-    <p class="eyebrow">{{ year.year if year else "" }} · grain</p>
-    <h1>Grain board</h1>
+    <p class="eyebrow">{{ year.year if year else "" }} · Marketing and Storage</p>
+    <h1>Marketing board</h1>
     <p class="lede">Quotes · position · money at risk.</p>
   </div>
 </section>
@@ -183,7 +183,7 @@
       <p class="mkt-updated mkt-updated-inline">{{ quote_updated.label }} — {{ quote_updated.source_label }}</p>
       {% endif %}
     </div>
-    <p class="muted">From the current unexpired contract through the same month next year. Between months: calendar spread (next − this). <strong class="spread-pos">Green = carry</strong>, <strong class="spread-neg">red = inverse</strong>.</p>
+    <p class="muted">From the current unexpired contract through the same month next year. Between months: <strong>market carry</strong> (next − this), then <strong>cost of carry</strong> (interest + storage + shrink × months), then <strong>net carry</strong> (market − cost). <strong class="spread-pos">Green = carry / net carry</strong>, <strong class="spread-neg">red = inverse / net inverse</strong>. Rates from <a href="/risk/carry">Carry</a>.</p>
   </div>
   {% for crop in ["Corn", "Soybeans"] %}
   {% set months = (futures_strip or {}).get(crop, []) %}
@@ -195,10 +195,10 @@
         {% for row in months %}
         <div class="mkt-strip-month {% if row.is_front %}is-front{% endif %}" role="listitem">
           <span class="mkt-strip-month-label">{{ row.label }}{% if row.is_front %} <span class="mkt-front-tag">front</span>{% endif %}</span>
-          {% if row.price is not none %}
-          <strong class="mkt-strip-price">${{ "%.2f"|format(row.price) }}</strong>
-          {% if row.change is not none %}
-          <span class="mkt-quote-chg {% if row.change < 0 %}down{% elif row.change > 0 %}up{% endif %}">{{ "%+.2f"|format(row.change) }}</span>
+          {% if row.get('price') is not none %}
+          <strong class="mkt-strip-price">${{ "%.2f"|format(row.get('price')) }}</strong>
+          {% if row.get('change') is not none %}
+          <span class="mkt-quote-chg {% if row.get('change') < 0 %}down{% elif row.get('change') > 0 %}up{% endif %}">{{ "%+.2f"|format(row.get('change')) }}</span>
           {% endif %}
           {% else %}
           <strong class="mkt-strip-price muted">—</strong>
@@ -209,13 +209,27 @@
         {% set sp = spreads[loop.index0] if loop.index0 < spreads|length else none %}
         <div class="mkt-strip-spread {% if sp and sp.is_carry %}is-carry{% elif sp and sp.is_inverse %}is-inverse{% elif sp and sp.is_flat %}is-flat{% endif %}"
              role="listitem"
-             title="{% if sp %}{{ sp.from_label }} → {{ sp.to_label }}: next month minus this month{% endif %}">
+             title="{% if sp %}{{ sp.from_label }} → {{ sp.to_label }}{% if sp.months %} · {{ sp.months }} mo{% endif %}: market carry − cost of carry = net{% endif %}">
           <span class="mkt-spread-arrow" aria-hidden="true">→</span>
           {% if sp and sp.cents is not none %}
           <strong class="mkt-spread-val">{{ "%+.1f"|format(sp.cents) }}¢</strong>
           <em>{% if sp.is_carry %}carry{% elif sp.is_inverse %}inverse{% else %}flat{% endif %}</em>
           {% else %}
           <strong class="mkt-spread-val muted">—</strong>
+          {% endif %}
+          {% set cost_c = sp.get('cost_cents') if sp else none %}
+          {% set net_c = sp.get('net_cents') if sp else none %}
+          {% if cost_c is not none %}
+          <span class="mkt-spread-line mkt-spread-cost">
+            <strong>{{ "%.1f"|format(cost_c) }}¢</strong>
+            <em>cost{% if sp.get('months') %} · {{ sp.months }}mo{% endif %}</em>
+          </span>
+          {% endif %}
+          {% if net_c is not none %}
+          <span class="mkt-spread-line mkt-spread-net {% if sp.get('is_net_carry') %}is-net-pos{% elif sp.get('is_net_inverse') %}is-net-neg{% endif %}">
+            <strong>{{ "%+.1f"|format(net_c) }}¢</strong>
+            <em>{% if sp.get('is_net_carry') %}net carry{% elif sp.get('is_net_inverse') %}net inverse{% else %}net flat{% endif %}</em>
+          </span>
           {% endif %}
         </div>
         {% endif %}

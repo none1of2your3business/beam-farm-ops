@@ -49,7 +49,7 @@ OWNERSHIP_LABELS = {
     "custom_work": "Custom work",
 }
 LEASE_LABELS = {
-    "cash_rent": "Cash rent",
+    "cash_rent": "Cash Rent/Property Taxes",
     "flex_rent": "Flex rent",
     "crop_share": "Crop share",
     "none": "None",
@@ -293,8 +293,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
                 {"name": "Trials", "href": "/trials", "status": "ready", "module": "trials", "tone": "sky", "blurb": "Compare what works"},
                 {"name": "Insights / AI", "href": "/insights", "status": "ready", "module": "insights", "tone": "gold", "blurb": "Briefing + what-if"},
                 {"name": "Panorama sync", "href": "/panorama", "status": "ready", "module": "panorama", "tone": "clay", "blurb": "File upload ready"},
-                {"name": "Grain bins", "href": "/bins", "status": "ready", "module": "grain", "tone": "gold", "blurb": "Inventory & tickets"},
-                {"name": "Grain Marketing", "href": "/risk", "status": "ready", "module": "risk", "tone": "clay", "blurb": "Futures & basis % sold"},
+                {"name": "Storage bins", "href": "/bins", "status": "ready", "module": "grain", "tone": "gold", "blurb": "Inventory & tickets"},
+                {"name": "Marketing and Storage", "href": "/risk", "status": "ready", "module": "risk", "tone": "clay", "blurb": "Futures & basis % sold"},
                 {"name": "Inputs & plans", "href": "/inputs", "status": "ready", "module": "library", "tone": "green", "blurb": "Seed, chem & costs"},
                 {"name": "Purchases", "href": "/purchases", "status": "ready", "module": "purchases", "tone": "sky", "blurb": "Avg cost → fields"},
                 {"name": "Invoices", "href": "/invoices", "status": "ready", "module": "invoices", "tone": "gold", "blurb": "Custom work"},
@@ -392,6 +392,65 @@ def fields_list(
     stats["corn_cop"] = corn_cop
     stats["soy_cop"] = soy_cop
 
+    # Year operations summary for field cards (no need to open each field)
+    field_ops_summary: dict[int, dict] = {}
+    if year and fields:
+        from app.models import FieldHybrid, FieldOperation, FieldSprayMix
+
+        fids = [f.id for f in fields]
+        ops = list(
+            db.scalars(
+                select(FieldOperation)
+                .where(FieldOperation.field_id.in_(fids))
+                .order_by(FieldOperation.op_date.desc(), FieldOperation.id.desc())
+            )
+        )
+        hybrid_links = list(
+            db.scalars(select(FieldHybrid).where(FieldHybrid.field_id.in_(fids)))
+        )
+        spray_links = list(
+            db.scalars(select(FieldSprayMix).where(FieldSprayMix.field_id.in_(fids)))
+        )
+        for fid in fids:
+            field_ops_summary[fid] = {"types": [], "labels": [], "count": 0, "latest": None}
+
+        type_order: dict[int, list[str]] = {fid: [] for fid in fids}
+        latest: dict[int, object] = {}
+        counts: dict[int, int] = {fid: 0 for fid in fids}
+
+        for o in ops:
+            fid = o.field_id
+            counts[fid] = counts.get(fid, 0) + 1
+            label = (o.op_type or "Op").strip() or "Op"
+            if label not in type_order[fid]:
+                type_order[fid].append(label)
+            d = o.op_date
+            if d and (fid not in latest or (latest[fid] is None or d > latest[fid])):
+                latest[fid] = d
+
+        # Fallbacks when assignments exist without a FieldOperation row yet
+        hybrid_fields = {link.field_id for link in hybrid_links}
+        spray_fields = {link.field_id for link in spray_links}
+        for fid in hybrid_fields:
+            if "Planting" not in type_order.get(fid, []) and not any(
+                t.casefold().startswith("plant") for t in type_order.get(fid, [])
+            ):
+                type_order.setdefault(fid, []).append("Seed assigned")
+                counts[fid] = counts.get(fid, 0) + 1
+        for fid in spray_fields:
+            if "Spraying" not in type_order.get(fid, []) and not any(
+                "spray" in t.casefold() for t in type_order.get(fid, [])
+            ):
+                type_order.setdefault(fid, []).append("Spray assigned")
+                counts[fid] = counts.get(fid, 0) + 1
+
+        for fid in fids:
+            field_ops_summary[fid] = {
+                "types": type_order.get(fid, [])[:6],
+                "count": counts.get(fid, 0),
+                "latest": latest.get(fid),
+            }
+
     view_mode = (view or "overview").strip().lower()
     if view_mode not in ("overview", "sheet"):
         view_mode = "overview"
@@ -416,6 +475,7 @@ def fields_list(
             "soy_cop": soy_cop,
             "saved": request.query_params.get("saved"),
             "msg": request.query_params.get("msg"),
+            "field_ops_summary": field_ops_summary,
         },
     )
 

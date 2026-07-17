@@ -122,7 +122,9 @@ def main() -> int:
                 dst_db.execute(text("SET session_replication_role = replica"))
                 replica_mode = True
             except Exception as exc:  # noqa: BLE001
-                print("Note: could not disable FK checks (", exc, ") — using ordered inserts")
+                dst_db.rollback()  # clear aborted transaction on Neon
+                print("Note: could not disable FK checks — using ordered inserts")
+                print(" ", str(exc).split("\n")[0][:160])
 
         for table_name in ordered:
             table = Base.metadata.tables.get(table_name)

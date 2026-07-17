@@ -93,6 +93,8 @@ def strip_contracts(crop: str, as_of: Optional[date] = None) -> list[dict[str, A
                     "ticker": yahoo_symbol(root, code, y),
                     "last_trading_day": ltd.isoformat(),
                     "is_front": False,
+                    "price": None,
+                    "change": None,
                 }
             )
 
@@ -357,6 +359,17 @@ def board_from_settings(settings: Any) -> dict[str, Optional[dict]]:
     return board
 
 
+def months_between_contracts(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
+    """Calendar months from contract a to b (delivery months)."""
+    try:
+        y1, m1 = int(a["year"]), int(a["month"])
+        y2, m2 = int(b["year"]), int(b["month"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    n = (y2 - y1) * 12 + (m2 - m1)
+    return n if n > 0 else None
+
+
 def calendar_spreads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Contiguous calendar spreads for a futures strip.
@@ -378,12 +391,16 @@ def calendar_spreads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 spread = round(float(pb) - float(pa), 4)
             except (TypeError, ValueError):
                 spread = None
+        months = months_between_contracts(a, b)
         out.append(
             {
                 "from_label": a.get("short") or a.get("label"),
                 "to_label": b.get("short") or b.get("label"),
                 "from_month": a.get("month"),
                 "to_month": b.get("month"),
+                "from_year": a.get("year"),
+                "to_year": b.get("year"),
+                "months": months,
                 "spread": spread,
                 "cents": round(spread * 100, 1) if spread is not None else None,
                 "is_carry": spread is not None and spread > 0,

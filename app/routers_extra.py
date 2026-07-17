@@ -615,7 +615,7 @@ def _bin_cards(db: Session):
 
 
 @router.get("/bins", response_class=HTMLResponse)
-def bins_page(request: Request, view: Optional[str] = None, db: Session = Depends(get_db)):
+def bins_page(request: Request, view: Optional[str] = None, db: Session = Depends(get_db), preselect_field_id: Optional[str] = None):
     user = _need(request, "grain")
     if isinstance(user, RedirectResponse):
         return user
@@ -718,6 +718,7 @@ def bins_page(request: Request, view: Optional[str] = None, db: Session = Depend
         "settings": settings,
         "bins_show_carry": show_carry,
         "carry_rates": carry_rates,
+        "preselect_field_id": int(preselect_field_id) if (preselect_field_id or "").isdigit() else None,
     }
     return templates.TemplateResponse(template, ctx)
 
@@ -749,7 +750,7 @@ def bins_sheet(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/bins/ticket", response_class=HTMLResponse)
 def bins_ticket_page(request: Request, db: Session = Depends(get_db)):
-    return bins_page(request, view="ticket", db=db)
+    return bins_page(request, view="ticket", db=db, preselect_field_id=request.query_params.get("field_id"))
 
 
 @router.post("/bins/sheet/save")
@@ -1401,7 +1402,7 @@ def _risk_page_payload(request: Request, db: Session, user):
         db.commit()
         futures_strip = cme_quotes.strip_from_settings(settings)
 
-    strip_spreads = cme_quotes.strip_spreads_map(futures_strip)
+    strip_spreads = mkt.strip_spreads_with_carry(futures_strip, settings)
 
     corn_basis = (settings.corn_local_basis if settings else None)
     soy_basis = (settings.soy_local_basis if settings else None)
@@ -2115,6 +2116,16 @@ def library_assign_hybrid(
     hybrid = db.get(Hybrid, hybrid_id)
     if not hybrid:
         return redirect_flash(request, "/library", "Hybrid not found — nothing assigned.", "error")
+    # Gate: if hybrid has $/unit cost but no cost_per_acre fallback, units are needed for costing
+    if hybrid.cost_per_unit and not hybrid.cost_per_acre:
+        return redirect_flash(
+            request,
+            "/library",
+            f'Hybrid "{hybrid.name}" has $/unit cost but no $/ac fallback. '
+            "Enter units applied via the field wizard (Add operation \u2192 Planting) so seed cost is captured, "
+            "or set a $/ac on the hybrid in the library.",
+            "warn",
+        )
     when = _d(applied_date)
     pairs = [("hybrid_id", str(hybrid_id)), ("rate", rate), ("applied_date", applied_date)]
     pairs += [("field_ids", str(fid)) for fid in ids]
@@ -2972,16 +2983,49 @@ def purchases_return(
     if not product or qty <= 0:
         return RedirectResponse("/purchases", status_code=303)
     product.on_hand = (product.on_hand or 0) + qty
-    db.add(
-        ProductReturn(
-            product_id=product.id,
-            field_id=int(field_id) if field_id.isdigit() else None,
-            return_date=_d(return_date) or date.today(),
-            quantity=qty,
-            unit_cost=product.avg_unit_cost or 0,
-            notes=notes.strip() or None,
+    fid = int(field_id) if field_id.isdigit() else None
+    ret_date = _d(return_date) or date.today()
+    unit_cost = product.avg_unit_cost or 0
+
+    # Find most recent non-voided assignment for this product+field to link
+    assignment_id: Optional[int] = None
+    if fid:
+        last_assign = db.scalar(
+            select(FieldAssignment)
+            .where(
+                FieldAssignment.product_id == product.id,
+                FieldAssignment.field_id == fid,
+                FieldAssignment.voided == 0,
+                FieldAssignment.quantity > 0,
+            )
+            .order_by(FieldAssignment.id.desc())
+            .limit(1)
         )
+        if last_assign:
+            assignment_id = last_assign.id
+            unit_cost = last_assign.unit_cost or unit_cost
+        # Create a negative FieldAssignment to credit the field ledger
+        db.add(
+            FieldAssignment(
+                product_id=product.id,
+                field_id=fid,
+                assign_date=ret_date,
+                quantity=-qty,
+                unit_cost=unit_cost,
+                notes=f"Return credit: {notes.strip()}" if notes.strip() else "Return credit",
+            )
+        )
+
+    pr = ProductReturn(
+        product_id=product.id,
+        field_id=fid,
+        assignment_id=assignment_id,
+        return_date=ret_date,
+        quantity=qty,
+        unit_cost=unit_cost,
+        notes=notes.strip() or None,
     )
+    db.add(pr)
     log_activity(db, user.get("username"), "product_return", f"{product.name} +{qty}")
     db.commit()
     return RedirectResponse("/purchases", status_code=303)
@@ -3105,6 +3149,15 @@ async def upload_file(
         )
         return RedirectResponse(f"/inputs/upload/{batch.id}", status_code=303)
 
+    if import_type == "planting_csv":
+        batch = _start_planting_import(
+            db,
+            user=user,
+            filename=file.filename or "planting.csv",
+            content=content,
+        )
+        return RedirectResponse(f"/upload/planting/{batch.id}", status_code=303)
+
     upload_root = Path(__file__).resolve().parent.parent / "data" / "uploads"
     upload_root.mkdir(parents=True, exist_ok=True)
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (file.filename or "upload.bin"))
@@ -3148,3 +3201,283 @@ async def upload_file(
     log_activity(db, user.get("username"), "upload", f"{import_type}: {safe}")
     db.commit()
     return RedirectResponse(f"/upload?msg={notes[:120]}", status_code=303)
+
+
+# ---------- Guided planting / season-report CSV ----------
+def _guess_crop_from_filename(name: str) -> str:
+    n = (name or "").lower()
+    if "soy" in n or "bean" in n:
+        return "Soybeans"
+    return "Corn"
+
+
+def _start_planting_import(
+    db: Session,
+    *,
+    user: dict,
+    filename: str,
+    content: bytes,
+) -> ImportBatch:
+    from app import planting_import as pimp
+    from app.activity import log_activity
+
+    safe = _safe_filename(filename)
+    path = _upload_root() / f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{safe}"
+    path.write_bytes(content)
+    crop_guess = _guess_crop_from_filename(filename or safe)
+    payload = pimp.build_payload(filename or safe, str(path), content, crop_guess=crop_guess)
+    batch = ImportBatch(
+        filename=path.name,
+        import_type="planting_csv",
+        status="pending_review",
+        row_count=len(payload.get("rows") or []),
+        notes="Guided planting import · map columns",
+        payload_json=pimp.dump_payload(payload),
+    )
+    db.add(batch)
+    log_activity(db, user.get("username"), "planting_upload", f"{safe} → review")
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def _planting_batch(db: Session, batch_id: int) -> ImportBatch | None:
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.import_type != "planting_csv":
+        return None
+    return batch
+
+
+def _save_planting_payload(db: Session, batch: ImportBatch, payload: dict) -> None:
+    from app import planting_import as pimp
+
+    batch.payload_json = pimp.dump_payload(payload)
+    batch.row_count = len(payload.get("proposals") or payload.get("rows") or [])
+    db.commit()
+
+
+@router.get("/upload/planting/{batch_id}", response_class=HTMLResponse)
+def planting_upload_review(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import planting_import as pimp
+
+    batch = _planting_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload?msg=Planting import not found", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    year = _year(db)
+    hybrids = []
+    if year:
+        hybrids = list(
+            db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id).order_by(Hybrid.name))
+        )
+    return templates.TemplateResponse(
+        "planting_upload_review.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "upload",
+            "farm_name": _farm(db),
+            "batch": batch,
+            "payload": payload,
+            "proposals": payload.get("proposals") or [],
+            "hybrid_catalog": pimp.hybrid_catalog(hybrids),
+            "field_keys": pimp.FIELD_KEYS,
+            "field_labels": pimp.FIELD_LABELS,
+            "message": request.query_params.get("msg"),
+            "error": request.query_params.get("err"),
+        },
+    )
+
+
+@router.post("/upload/planting/{batch_id}/map")
+async def planting_upload_map(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import planting_import as pimp
+
+    batch = _planting_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    form = await request.form()
+    cmap: dict[str, int | None] = {}
+    for key in pimp.FIELD_KEYS:
+        raw = str(form.get(f"map_{key}") or "-1")
+        try:
+            idx = int(raw)
+        except ValueError:
+            idx = -1
+        cmap[key] = None if idx < 0 else idx
+    payload["column_map"] = cmap
+    payload["crop_default"] = str(form.get("crop_default") or payload.get("crop_default") or "Corn")
+    year = _year(db)
+    fields = []
+    hybrids = []
+    if year:
+        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id)))
+        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+    payload["proposals"] = pimp.build_proposals(payload, fields, hybrids)
+    payload["step"] = "rows"
+    batch.notes = f"Mapped columns · {len(payload['proposals'])} planting rows"
+    _save_planting_payload(db, batch, payload)
+    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+
+
+@router.post("/upload/planting/{batch_id}/back")
+def planting_upload_back(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import planting_import as pimp
+
+    batch = _planting_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    payload["step"] = "map"
+    _save_planting_payload(db, batch, payload)
+    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+
+
+@router.post("/upload/planting/{batch_id}/discard")
+def planting_upload_discard(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = _planting_batch(db, batch_id)
+    if batch:
+        batch.status = "discarded"
+        batch.notes = "Discarded by user"
+        db.commit()
+    return RedirectResponse("/upload?msg=Planting import discarded", status_code=303)
+
+
+@router.post("/upload/planting/{batch_id}/commit")
+async def planting_upload_commit(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import planting_import as pimp
+    from app.activity import log_activity
+
+    batch = _planting_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    year = _year(db)
+    if not year:
+        return RedirectResponse(
+            f"/upload/planting/{batch_id}?err=No active crop year",
+            status_code=303,
+        )
+    payload = pimp.load_payload(batch.payload_json)
+    form = await request.form()
+    proposals = payload.get("proposals") or []
+    updated: list[dict] = []
+    for row in proposals:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        include = str(form.get(f"include_{rid}") or "") in ("1", "on", "true", "yes")
+        create_field = str(form.get(f"create_{rid}") or "") in ("1", "on", "true", "yes")
+        update_field_crop = str(form.get(f"update_field_crop_{rid}") or "") in ("1", "on", "true", "yes")
+        crop = str(form.get(f"crop_{rid}") or row.get("crop") or "Corn").strip() or "Corn"
+        matched_raw = str(form.get(f"matched_{rid}") or row.get("matched_field_id") or "").strip()
+        matched_id = None
+        if matched_raw:
+            try:
+                matched_id = int(matched_raw)
+            except ValueError:
+                matched_id = None
+        op_date = str(form.get(f"date_{rid}") or "").strip() or None
+        try:
+            hcount = int(str(form.get(f"hybrid_count_{rid}") or "0"))
+        except ValueError:
+            hcount = 0
+        hybrids = []
+        for i in range(hcount):
+            name = str(form.get(f"hybrid_{rid}_{i}") or "").strip()
+            if not name:
+                continue
+            rate = str(form.get(f"rate_{rid}_{i}") or "").strip()
+            units_raw = str(form.get(f"units_{rid}_{i}") or "").strip()
+            units = None
+            if units_raw:
+                try:
+                    units = float(units_raw.replace(",", ""))
+                except ValueError:
+                    units = None
+            sel = str(form.get(f"hybrid_sel_{rid}_{i}") or "").strip()
+            # sel: "new" | hybrid id
+            if sel == "new" or sel == "":
+                resolve = "new"
+                selected_hybrid_id = None
+            else:
+                resolve = "pick"
+                try:
+                    selected_hybrid_id = int(sel)
+                except ValueError:
+                    resolve = "new"
+                    selected_hybrid_id = None
+            detail_mode = str(form.get(f"hybrid_detail_mode_{rid}_{i}") or "later").strip()
+            detail_now = detail_mode == "now"
+            name_edit = str(form.get(f"hybrid_name_edit_{rid}_{i}") or name).strip() or name
+            details = {
+                "detail_now": detail_now,
+                "name": name_edit if detail_now else name,
+                "brand": str(form.get(f"hybrid_brand_{rid}_{i}") or "").strip() if detail_now else "",
+                "maturity": str(form.get(f"hybrid_maturity_{rid}_{i}") or "").strip() if detail_now else "",
+                "traits": str(form.get(f"hybrid_traits_{rid}_{i}") or "").strip() if detail_now else "",
+                "unit_label": str(form.get(f"hybrid_unit_{rid}_{i}") or "unit").strip() or "unit",
+                "cost_per_unit": str(form.get(f"hybrid_cpu_{rid}_{i}") or "").strip() if detail_now else "",
+                "cost_per_acre": str(form.get(f"hybrid_cpa_{rid}_{i}") or "").strip() if detail_now else "",
+                "notes": str(form.get(f"hybrid_notes_{rid}_{i}") or "").strip() if detail_now else "",
+            }
+            hybrids.append(
+                {
+                    "name": name,
+                    "rate": rate or None,
+                    "units": units,
+                    "resolve": resolve,
+                    "selected_hybrid_id": selected_hybrid_id,
+                    "details": details,
+                }
+            )
+        updated.append(
+            {
+                **row,
+                "include": include,
+                "create_field": create_field if matched_id is None else False,
+                "update_field_crop": update_field_crop,
+                "matched_field_id": matched_id,
+                "op_date": op_date,
+                "crop": crop,
+                "hybrids": hybrids,
+            }
+        )
+
+    result = pimp.commit_proposals(db, crop_year_id=year.id, proposals=updated)
+    payload["proposals"] = updated
+    payload["result"] = result
+    payload["step"] = "done"
+    batch.status = "imported"
+    batch.notes = (
+        f"Planting import: {result['operations']} ops, "
+        f"{result['hybrid_links']} hybrid links, "
+        f"{result.get('hybrids_created', 0)} hybrids created, "
+        f"{result['fields_created']} fields created"
+    )
+    batch.row_count = result["operations"]
+    _save_planting_payload(db, batch, payload)
+    log_activity(
+        db,
+        user.get("username"),
+        "planting_import",
+        batch.notes,
+    )
+    db.commit()
+    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+

@@ -12,17 +12,19 @@
     <p class="lede muted" style="margin:0.35rem 0 0">Everything logged on this field for the working year, with running cost and break-even.</p>
   </div>
   <div class="form-actions">
+    <a class="btn primary" href="/fields/{{ field.id }}/add-operation">Add operation</a>
     <a class="btn" href="/inputs/assign">Assign inputs</a>
-    <a class="btn ghost" href="/fields/{{ field.id }}">Field detail</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}">Ops Center</a>
     <a class="btn ghost" href="/fields">All fields</a>
   </div>
 </section>
 
 <form method="post" action="/fields/{{ field.id }}/operation" class="form-grid panel" id="ops-quick-add">
-  <h2 class="full" style="margin:0;font-family:var(--display)">Quick add operation</h2>
+  <h2 class="full" style="margin:0;font-family:var(--display)">Quick add <span class="muted" style="font-size:0.85rem;font-weight:500">(prefer <a href="/fields/{{ field.id }}/add-operation">guided wizard</a>)</span></h2>
+  <p class="full muted" style="margin:0 0 0.5rem">Use the <a href="/fields/{{ field.id }}/add-operation">wizard</a> for seed, spray, and inputs — it links inventory and deducts stock. This quick form is for <strong>hire / custom work charges only</strong> (no product).</p>
   <label>Date<input type="date" name="op_date" value="{{ today }}"></label>
   <label>Type<input name="op_type" placeholder="plant, spray, till, other" value="other"></label>
-  <label>Cost $<input name="cost" value="0"></label>
+  <label>Hire / custom $ only (not product)<input name="cost" value="0" inputmode="decimal"></label>
   <label>Billable<input type="checkbox" name="billable" value="1"></label>
   <label class="full">Description<textarea name="description" rows="2"></textarea></label>
   <div class="form-actions full"><button class="btn primary" type="submit">Add to ledger</button></div>
@@ -31,8 +33,8 @@
 <section class="ops-econ-strip" aria-label="Field economics">
   <div class="ops-econ-card">
     <span class="ops-econ-label">Running cost</span>
-    <strong>${{ "{:,.0f}".format(L.running_cost) }}</strong>
-    <span class="muted">{% if L.cost_ac is not none %}${{ "%.2f"|format(L.cost_ac) }}/ac{% else %}—{% endif %} · rent ${{ "{:,.0f}".format(L.rent) }}</span>
+    <strong class="money-expense">${{ "{:,.0f}".format(L.running_cost) }}</strong>
+    <span class="muted">{% if L.cost_ac is not none %}<span class="money-expense">${{ "%.2f"|format(L.cost_ac) }}/ac</span>{% else %}—{% endif %} · <span class="money-expense">rent ${{ "{:,.0f}".format(L.rent) }}</span></span>
   </div>
   <div class="ops-econ-card">
     <span class="ops-econ-label">Expected</span>
@@ -40,20 +42,20 @@
     <span class="muted">bu/ac{% if L.expected_bu is not none %} · {{ "{:,.0f}".format(L.expected_bu) }} bu{% endif %}</span>
   </div>
   <div class="ops-econ-card">
-    <span class="ops-econ-label">Projected @ contracted</span>
-    <strong>{% if L.projected_contracted is not none %}${{ "{:,.0f}".format(L.projected_contracted) }}{% else %}—{% endif %}</strong>
+    <span class="ops-econ-label">Projected sales @ contracted</span>
+    <strong class="money-sales">{% if L.projected_contracted is not none %}${{ "{:,.0f}".format(L.projected_contracted) }}{% else %}—{% endif %}</strong>
     <span class="muted">
       {% if M.contracted is not none %}${{ "%.2f"|format(M.contracted) }}/bu avg
-      {% if L.gap_contracted is not none %} · {% if L.gap_contracted >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_contracted) }} vs cost{% endif %}
+      {% if L.gap_contracted is not none %} · <span class="{% if L.gap_contracted >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.gap_contracted >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_contracted) }} vs cost</span>{% endif %}
       {% else %}no open contracts{% endif %}
     </span>
   </div>
   <div class="ops-econ-card">
-    <span class="ops-econ-label">Projected @ {{ M.futures_label|lower }}</span>
-    <strong>{% if L.projected_futures is not none %}${{ "{:,.0f}".format(L.projected_futures) }}{% else %}—{% endif %}</strong>
+    <span class="ops-econ-label">Projected sales @ {{ M.futures_label|lower }}</span>
+    <strong class="money-sales">{% if L.projected_futures is not none %}${{ "{:,.0f}".format(L.projected_futures) }}{% else %}—{% endif %}</strong>
     <span class="muted">
       {% if M.futures is not none %}${{ "%.2f"|format(M.futures) }}/bu
-      {% if L.gap_futures is not none %} · {% if L.gap_futures >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_futures) }} vs cost{% endif %}
+      {% if L.gap_futures is not none %} · <span class="{% if L.gap_futures >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.gap_futures >= 0 %}+{% endif %}${{ "{:,.0f}".format(L.gap_futures) }} vs cost</span>{% endif %}
       {% else %}no board quote{% endif %}
     </span>
   </div>
@@ -62,12 +64,12 @@
     <p class="ops-econ-be-row">
       <span>Contracted</span>
       <strong>{% if L.be_yield_contracted is not none %}{{ L.be_yield_contracted }}{% else %}—{% endif %}</strong>
-      <em class="muted">bu/ac{% if L.vs_be_contracted is not none %} · {% if L.vs_be_contracted >= 0 %}+{% endif %}{{ L.vs_be_contracted }} vs expected{% endif %}</em>
+      <em class="muted">bu/ac{% if L.vs_be_contracted is not none %} · <span class="{% if L.vs_be_contracted >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.vs_be_contracted >= 0 %}+{% endif %}{{ L.vs_be_contracted }} vs expected</span>{% endif %}</em>
     </p>
     <p class="ops-econ-be-row">
       <span>Futures</span>
       <strong>{% if L.be_yield_futures is not none %}{{ L.be_yield_futures }}{% else %}—{% endif %}</strong>
-      <em class="muted">bu/ac{% if L.vs_be_futures is not none %} · {% if L.vs_be_futures >= 0 %}+{% endif %}{{ L.vs_be_futures }} vs expected{% endif %}</em>
+      <em class="muted">bu/ac{% if L.vs_be_futures is not none %} · <span class="{% if L.vs_be_futures >= 0 %}money-profit{% else %}money-loss{% endif %}">{% if L.vs_be_futures >= 0 %}+{% endif %}{{ L.vs_be_futures }} vs expected</span>{% endif %}</em>
     </p>
   </div>
 </section>
@@ -111,13 +113,13 @@
             <strong>{{ e.title }}</strong>
             {% if e.detail %}<div class="muted ops-ledger-detail">{{ e.detail }}</div>{% endif %}
           </td>
-          <td class="ops-ledger-amt">
+          <td class="ops-ledger-amt money-expense">
             {% if e.amount is not none and e.counts %}${{ "{:,.2f}".format(e.amount) }}
-            {% elif e.est_amount is not none %}<span class="muted">est ${{ "{:,.2f}".format(e.est_amount) }}</span>
+            {% elif e.est_amount is not none %}<span class="muted money-expense">est ${{ "{:,.2f}".format(e.est_amount) }}</span>
             {% elif e.amount is not none %}${{ "{:,.2f}".format(e.amount) }}
             {% else %}—{% endif %}
           </td>
-          <td class="ops-ledger-run">{% if e.running is not none %}${{ "{:,.2f}".format(e.running) }}{% else %}—{% endif %}</td>
+          <td class="ops-ledger-run money-expense">{% if e.running is not none %}${{ "{:,.2f}".format(e.running) }}{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -125,7 +127,7 @@
         <tr class="ops-ledger-total">
           <td colspan="3">Running cost (counted activity)</td>
           <td></td>
-          <td><strong>${{ "{:,.2f}".format(L.running_cost) }}</strong></td>
+          <td><strong class="money-expense">${{ "{:,.2f}".format(L.running_cost) }}</strong></td>
         </tr>
       </tfoot>
     </table>
