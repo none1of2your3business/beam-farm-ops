@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Add bin — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Bins · Storage</p>
+    <h1>Add a bin</h1>
+    <p class="lede">Create a storage bin with crop, who the grain is for, and capacity. Capacity powers the fill graphics on the bins overview.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/bins">Back to bins</a>
+    <a class="btn" href="/bins/ticket">Move grain</a>
+  </div>
+</section>
+
+{% if request.query_params.get('error') == 'bin_name_taken' %}
+<p class="banner-warn">That bin name is already used — pick another.</p>
+{% endif %}
+
+<form method="post" action="/bins/create" class="form-grid panel">
+  <label>Name<input name="name" required autofocus placeholder="e.g. North Bin"></label>
+  <label>Crop
+    <select name="crop">
+      {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+      {% if c != 'None' %}<option value="{{ c }}">{{ c }}</option>{% endif %}
+      {% endfor %}
+    </select>
+  </label>
+  <label>Grain for / farmed with
+    <select name="with_party_id" data-add-new="/risk/contracts/new/with-party?next=/bins/new">
+      <option value="">Me (my farms)</option>
+      {% for p in parties %}
+      <option value="{{ p.id }}" {% if with_party_preselect and with_party_preselect == p.id %}selected{% endif %}>{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
+      {% endfor %}
+      <option value="__add_new__">Add New…</option>
+    </select>
+  </label>
+  <label>Capacity bu<input name="capacity_bu" placeholder="e.g. 40000"></label>
+  <p class="full muted" style="margin:-0.35rem 0 0.25rem">Who this bin’s grain is for — same partners list as contracts. Empty = Me.</p>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Add bin</button>
+    <a class="btn" href="/bins">Cancel</a>
+  </div>
+</form>
+{% endblock %}

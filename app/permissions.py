@@ -32,6 +32,7 @@ ROLE_MODULES = {
         "trucking",
         "tools",
         "activity",
+        "budget",
     },
     "agronomist": {
         "dashboard",
@@ -57,8 +58,9 @@ ROLE_MODULES = {
         "settlements",
         "trucking",
         "activity",
+        "budget",
     },
-    "viewer": {"dashboard", "fields", "equipment", "balance", "risk", "insights"},
+    "viewer": {"dashboard", "fields", "equipment", "balance", "risk", "insights", "budget"},
 }
 
 
@@ -69,11 +71,6 @@ def can_access(role: str | None, module: str) -> bool:
 
 def can_edit_finance(role: str | None) -> bool:
     return (role or "") in ("owner", "accountant")
-
-
-def can_edit_fields(role: str | None) -> bool:
-    """Log ops, void, work orders, yield — not viewers."""
-    return (role or "") in ("owner", "agronomist", "accountant")
 
 
 def can_manage_team(role: str | None) -> bool:

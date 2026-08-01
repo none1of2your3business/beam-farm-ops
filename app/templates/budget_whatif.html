@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Budget what-if — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Budget · decide</p>
+    <h1>What-if spend</h1>
+    <p class="lede">Test an extra spend (fertilizer, fungicide, seed) against expected yield gain. Green = worth it.</p>
+  </div>
+</section>
+
+<form method="get" action="/budget/what-if" class="form-grid panel">
+  <label>Field
+    <select name="field_id" required onchange="this.form.submit()">
+      <option value="">— pick a field —</option>
+      {% for c in cards %}
+      <option value="{{ c.field_id }}" {% if field_id == c.field_id %}selected{% endif %}>{{ c.name }} ({{ c.crop }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Extra spend $
+    <input type="number" name="extra" step="1" min="0" value="{{ extra }}" placeholder="e.g. 2500">
+  </label>
+  <label>Yield gain bu/ac
+    <input type="number" name="yield_gain" step="0.1" value="{{ yield_gain }}" placeholder="e.g. 5">
+  </label>
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Run what-if</button>
+  </div>
+</form>
+
+{% if card and result %}
+<section class="bud-whatif-result tone-{{ result.tone }}">
+  <h2>{{ card.name }}</h2>
+  <p class="muted">Plan ${{ "{:,.0f}".format(card.planned_total) }} · price {% if card.price is not none %}${{ "%.2f"|format(card.price) }}{% else %}missing{% endif %}</p>
+  <div class="bud-detail-grid">
+    <div class="bud-stat">
+      <span>Profit before</span>
+      <strong>{% if result.profit_before is not none %}${{ "{:,.0f}".format(result.profit_before) }}{% else %}—{% endif %}</strong>
+    </div>
+    <div class="bud-stat">
+      <span>Profit after</span>
+      <strong>{% if result.profit_after is not none %}${{ "{:,.0f}".format(result.profit_after) }}{% else %}—{% endif %}</strong>
+    </div>
+    <div class="bud-stat tone-{{ result.tone }}">
+      <span>Change</span>
+      <strong>{% if result.delta is not none %}{{ "+" if result.delta >= 0 else "" }}${{ "{:,.0f}".format(result.delta) }}{% else %}—{% endif %}</strong>
+      <em>{% if result.worth_it %}Worth it — turns greener{% elif result.delta is not none %}Not worth it — stays / goes red{% else %}Need price &amp; yield{% endif %}</em>
+    </div>
+  </div>
+  <p><a class="btn ghost" href="/budget/fields/{{ card.field_id }}">Open field budget</a></p>
+</section>
+{% elif field_id and not result %}
+<p class="banner-warn">Enter extra spend and/or yield gain, then run again.</p>
+{% endif %}
+{% endblock %}

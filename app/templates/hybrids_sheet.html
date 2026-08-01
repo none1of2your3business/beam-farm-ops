@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Hybrid sheet — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set sheet_next = '/inputs/hybrids/sheet' %}
+{% if filter_crop and filter_crop != 'all' %}
+  {% set sheet_next = '/inputs/hybrids/sheet?crop=' ~ filter_crop %}
+{% endif %}
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">Inputs · Spreadsheet</p>
+    <h1>Hybrid sheet</h1>
+    <p class="lede">Edit name, brand, traits, and especially <strong>cost per unit</strong> so field operations P&amp;L uses planted units × $/unit. Brand and Trait are selection lists — use <strong>Add New…</strong> to grow them.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <a class="btn" href="/inputs">Catalog</a>
+    <a class="btn" href="/inputs/hybrids/merge">Merge duplicates</a>
+    <a class="btn" href="/inputs/lists">Edit lists</a>
+    <a class="btn" href="/inputs/assign">Assign to fields</a>
+  </div>
+</section>
+
+{% if saved is not none and saved != '' %}
+<p class="banner-ok">Saved {{ saved }} hybrid{% if saved != '1' %}s{% endif %}.</p>
+{% endif %}
+{% if brand_added %}<p class="banner-ok">Brand “{{ brand_added }}” added to the list.</p>{% endif %}
+{% if trait_added %}<p class="banner-ok">Trait “{{ trait_added }}” added to the list.</p>{% endif %}
+
+{% if not year %}
+<p class="banner-warn">No active crop year — set one under Settings.</p>
+{% else %}
+
+<form method="get" action="/inputs/hybrids/sheet" class="filters">
+  <label>Crop
+    <select name="crop" onchange="this.form.submit()">
+      <option value="all" {% if filter_crop == 'all' %}selected{% endif %}>All</option>
+      <option value="Corn" {% if filter_crop == 'Corn' %}selected{% endif %}>Corn</option>
+      <option value="Soybeans" {% if filter_crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+    </select>
+  </label>
+</form>
+
+{% if hybrids %}
+<form method="post" action="/inputs/hybrids/sheet/save{% if filter_crop and filter_crop != 'all' %}?crop={{ filter_crop }}{% endif %}" id="hybrid-sheet-form" class="sheet-form">
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table" id="hybrid-sheet-table" data-sortable>
+      <thead>
+        <tr>
+          <th class="sheet-name">Hybrid</th>
+          <th>Crop</th>
+          <th>Brand</th>
+          <th>Maturity</th>
+          <th>Traits</th>
+          <th>Unit</th>
+          <th>Cost / unit $</th>
+          <th>Cost / ac $</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in hybrids %}
+        {% set brand_sel = brand_added if (focus_hybrid_id == h.id and brand_added) else (h.brand or '') %}
+        {% set trait_sel = trait_added if (focus_hybrid_id == h.id and trait_added) else (h.traits or '') %}
+        <tr class="sheet-row crop-row {{ crop_tone(h.crop) }}" {% if focus_hybrid_id == h.id %}data-focus-row="1"{% endif %}>
+          <td class="sheet-name">
+            <input type="hidden" name="hybrid_id" value="{{ h.id }}">
+            <input name="name" value="{{ h.name }}" class="sheet-notes" required>
+          </td>
+          <td>
+            <select name="crop" class="sheet-crop">
+              {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+              {% if c != 'None' %}<option value="{{ c }}" {% if h.crop == c %}selected{% endif %}>{{ c }}</option>{% endif %}
+              {% endfor %}
+              {% if h.crop and h.crop not in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+              <option value="{{ h.crop }}" selected>{{ h.crop }}</option>
+              {% endif %}
+            </select>
+            {{ crop_badge(h.crop, short=true) }}
+          </td>
+          <td>
+            <select name="brand"
+                    data-add-new="/inputs/hybrids/new/brand?next={{ sheet_next|urlencode }}&hybrid_id={{ h.id }}">
+              <option value="" {% if not brand_sel %}selected{% endif %}>—</option>
+              {% for b in hybrid_brands %}
+              <option value="{{ b }}" {% if brand_sel == b %}selected{% endif %}>{{ b }}</option>
+              {% endfor %}
+              {% if brand_sel and brand_sel not in hybrid_brands %}
+              <option value="{{ brand_sel }}" selected>{{ brand_sel }}</option>
+              {% endif %}
+              <option value="__add_new__">Add New…</option>
+            </select>
+          </td>
+          <td><input name="maturity" value="{{ h.maturity or '' }}" class="sheet-notes"></td>
+          <td>
+            <select name="traits"
+                    data-add-new="/inputs/hybrids/new/trait?next={{ sheet_next|urlencode }}&hybrid_id={{ h.id }}">
+              <option value="" {% if not trait_sel %}selected{% endif %}>—</option>
+              {% for t in hybrid_traits %}
+              <option value="{{ t }}" {% if trait_sel == t %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+              {% if trait_sel and trait_sel not in hybrid_traits %}
+              <option value="{{ trait_sel }}" selected>{{ trait_sel }}</option>
+              {% endif %}
+              <option value="__add_new__">Add New…</option>
+            </select>
+          </td>
+          <td>
+            <select name="unit_label">
+              <option value="" {% if not h.unit_label %}selected{% endif %}>—</option>
+              {% for u in ['bag', 'unit', '80k', 'lb', 'bu'] %}
+              <option value="{{ u }}" {% if h.unit_label == u %}selected{% endif %}>{{ u }}</option>
+              {% endfor %}
+              {% if h.unit_label and h.unit_label not in ['bag','unit','80k','lb','bu'] %}
+              <option value="{{ h.unit_label }}" selected>{{ h.unit_label }}</option>
+              {% endif %}
+            </select>
+          </td>
+          <td><input name="cost_per_unit" type="number" step="0.01" min="0" value="{{ h.cost_per_unit if h.cost_per_unit is not none else '' }}" class="sheet-num" placeholder="285.00"></td>
+          <td><input name="cost_per_acre" type="number" step="0.01" min="0" value="{{ h.cost_per_acre if h.cost_per_acre is not none else '' }}" class="sheet-num" placeholder="optional"></td>
+          <td><input name="notes" type="text" value="{{ h.notes or '' }}" class="sheet-notes"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="sheet-save-bar">
+    <button class="btn primary" type="submit">Save all</button>
+    <span class="muted" id="hybrid-sheet-dirty">No unsaved changes</span>
+  </div>
+</form>
+<p class="muted" style="margin-top:0.75rem">Tip: set <strong>Cost / unit</strong> for each hybrid. Manage Brand / Trait lists anytime under <a href="/inputs/lists">Inputs lists</a>.</p>
+{% else %}
+<p class="empty">No hybrids yet. <a href="/inputs">Add hybrids</a> or import from <a href="/panorama">Panorama planting</a>.</p>
+{% endif %}
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById("hybrid-sheet-form");
+  if (!form) return;
+  var dirty = false;
+  function mark() {
+    dirty = true;
+    var hint = document.getElementById("hybrid-sheet-dirty");
+    if (hint) hint.textContent = "Unsaved changes";
+  }
+  form.addEventListener("input", mark);
+  form.addEventListener("change", mark);
+  form.addEventListener("submit", function () { dirty = false; });
+  window.addEventListener("beforeunload", function (e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  var focus = form.querySelector("[data-focus-row]");
+  if (focus) focus.scrollIntoView({ block: "center", behavior: "smooth" });
+})();
+</script>
+<script src="/static/sheet-sort.js?v=2"></script>
+{% endblock %}

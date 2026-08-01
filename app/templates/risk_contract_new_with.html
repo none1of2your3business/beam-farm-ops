@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Add person — contract farms with — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Contracts · Add New</p>
+    <h1>Add person (farms with)</h1>
+    <p class="lede">Name the partner or landlord whose farms this contract will cover. They do <strong>not</strong> own a share of the contract — you still own 100% of it. This only marks which relationship’s farms the contract is for.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="{{ back_href or '/risk/contracts' }}">Back to contracts</a>
+  </div>
+</section>
+
+<form method="post" action="/risk/contracts/new/with-party" class="form-grid panel">
+  {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
+  <label>Name
+    <input name="name" required autofocus placeholder="e.g. Harold, landlord name">
+  </label>
+  <label>Type
+    <select name="party_type">
+      {% for opt in party_types %}
+      <option value="{{ opt.value }}">{{ opt.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="full">Notes
+    <textarea name="notes" rows="2" placeholder="optional"></textarea>
+  </label>
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Save and return</button>
+    <a class="btn" href="{{ back_href or '/risk/contracts' }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

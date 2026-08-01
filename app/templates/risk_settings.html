@@ -4,7 +4,7 @@
 {% block content %}
 <section class="page-banner">
   <div class="page-banner-copy">
-    <p class="eyebrow">Marketing and Storage · settings</p>
+    <p class="eyebrow">Grain · settings</p>
     <h1>Risk settings</h1>
     <p class="lede">Cost of production, insurance, marketing targets, and expected production from fields.</p>
   </div>
@@ -34,7 +34,7 @@
 </div>
 {% endif %}
 
-<form method="post" action="/risk/cop" class="form-grid panel reveal">
+<form method="post" action="/risk/cop" class="form-grid panel reveal" data-autosave>
   <h2 class="full" style="margin:0;font-family:var(--display)">Breakeven / cost of production</h2>
   <label>Corn cost $/ac<input name="corn_cost_per_ac" value="{{ settings.corn_cost_per_ac if settings else 0 }}"></label>
   <label>Corn price assumption<input name="corn_price_assumption" value="{{ settings.corn_price_assumption if settings and settings.corn_price_assumption is not none else '' }}"></label>

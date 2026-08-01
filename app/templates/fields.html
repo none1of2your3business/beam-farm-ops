@@ -10,11 +10,11 @@
   <div class="page-banner-copy">
     <p class="eyebrow">{% if year %}{{ year.year }}{% endif %} · Overview</p>
     <h1>Fields</h1>
-    <p class="lede">Plan by crop and acres — switch to Sheet for fast bulk edits.</p>
+    <p class="lede">Operations, year cost, and break-even by field — Sheet for fast bulk edits.</p>
     <div class="form-actions fields-toolbar">
       <div class="view-switch" role="tablist" aria-label="Fields view">
-        <a class="view-switch-btn active" href="/fields?view=overview&crop={{ filter_crop }}&ownership={{ filter_ownership }}">Overview</a>
-        <a class="view-switch-btn" href="/fields/sheet?crop={{ filter_crop }}&ownership={{ filter_ownership }}">Sheet</a>
+        <a class="view-switch-btn active" href="/fields?view=overview&crop={{ filter_crop }}{% if ownership_qs %}&{{ ownership_qs }}{% endif %}">Overview</a>
+        <a class="view-switch-btn" href="/fields/sheet?crop={{ filter_crop }}{% if ownership_qs %}&{{ ownership_qs }}{% endif %}">Sheet</a>
       </div>
       <a class="btn primary" href="/fields/new">Add field</a>
     </div>
@@ -26,8 +26,8 @@
   <div class="stat"><span class="stat-label">Shown</span><span class="stat-value">{{ stats.field_count }}</span></div>
   <div class="stat crop-corn"><span class="stat-label">Corn acres</span><span class="stat-value">{{ stats.corn_acres }}</span></div>
   <div class="stat crop-soy"><span class="stat-label">Soy acres</span><span class="stat-value">{{ stats.soy_acres }}</span></div>
-  <div class="stat"><span class="stat-label">Rent</span><span class="stat-value">${{ "{:,.0f}".format(stats.rent_total) }}</span></div>
-  <div class="stat"><span class="stat-label">Budget COP (settings)</span><span class="stat-value">${{ "{:,.0f}".format(stats.plan_cost_total) }}</span></div>
+  <div class="stat"><span class="stat-label">Year cost</span><span class="stat-value">${{ "{:,.0f}".format(year_cost or 0) }}</span></div>
+  <div class="stat"><span class="stat-label">Year $/ac</span><span class="stat-value">{% if year_cost_ac is not none %}${{ "{:,.0f}".format(year_cost_ac) }}{% else %}—{% endif %}</span></div>
 </section>
 
 <section class="fields-charts">
@@ -46,7 +46,6 @@
       <span class="fields-bar-label">Other <em>{{ stats.none_acres }} ac</em></span>
       <div class="fields-bar-track"><div class="fields-bar-fill none" style="width:{{ (100 * stats.none_acres / acres_all)|round(1) }}%"></div></div>
     </div>
-    <p class="muted fields-chart-note">COP rates: corn ${{ '%.0f'|format(corn_cop) }}/ac · soy ${{ '%.0f'|format(soy_cop) }}/ac (Settings → Marketing costs)</p>
   </div>
 
   <div class="fields-chart-card">
@@ -63,7 +62,7 @@
   </div>
 
   <div class="fields-chart-card">
-    <p class="eyebrow">Cash Rent/Property Taxes</p>
+    <p class="eyebrow">Cash rent</p>
     <h3>Rent by crop</h3>
     <div class="fields-bar-row">
       <span class="fields-bar-label">Corn <em>${{ "{:,.0f}".format(stats.corn_rent) }}</em></span>
@@ -86,14 +85,19 @@
       <option value="None" {% if filter_crop == 'None' %}selected{% endif %}>None</option>
     </select>
   </label>
-  <label>Ownership
-    <select name="ownership" onchange="this.form.submit()">
-      <option value="all" {% if filter_ownership == 'all' %}selected{% endif %}>All</option>
+  <fieldset class="filter-own">
+    <legend>Ownership <span class="muted">(multi-select)</span></legend>
+    <div class="filter-own-options">
       {% for key, label in ownership_labels.items() %}
-      <option value="{{ key }}" {% if filter_ownership == key %}selected{% endif %}>{{ label }}</option>
+      <label class="filter-own-check">
+        <input type="checkbox" name="ownership" value="{{ key }}"
+               {% if not filter_ownerships or key in filter_ownerships %}checked{% endif %}
+               onchange="this.form.submit()">
+        {{ label }}
+      </label>
       {% endfor %}
-    </select>
-  </label>
+    </div>
+  </fieldset>
 </form>
 
 {% if msg == 'totals_not_a_field' %}
@@ -102,37 +106,97 @@
 {% if msg == 'name_required' %}
 <p class="banner-warn">Field name is required.</p>
 {% endif %}
+{% if msg == 'planting_complete' %}
+<p class="banner-ok">Planting marked complete for that field.</p>
+{% endif %}
 {% if fields %}
 {% macro field_card(f) %}
-{% set plan_cop = corn_cop if f.crop == 'Corn' else (soy_cop if f.crop == 'Soybeans' else 0) %}
-{% set plan_cost = plan_cop * (f.acres_mine or 0) %}
-{% set ops = (field_ops_summary or {}).get(f.id, {}) %}
-<article class="field-card {{ crop_tone(f.crop) }}">
+{% set card = ledger_by_id.get(f.id) if ledger_by_id else none %}
+{% set M = card.marks if card else none %}
+<article class="field-card field-card-econ {{ crop_tone(f.crop) }}">
   <header class="field-card-head">
     <a href="/fields/{{ f.id }}"><strong>{{ f.name }}</strong></a>
     {{ crop_chip(f.crop) }}
   </header>
-  {% if f.party %}<p class="muted">{{ f.party.name }}</p>{% endif %}
+  {% if f.party %}<p class="muted field-card-party">{{ f.party.name }}</p>{% endif %}
+
+  {% set plant = card.planting if card else none %}
+  {% if plant %}
+  <p class="planting-status-line">
+    {% if plant.status == 'complete' %}
+    <span class="planting-status planting-status-complete">{{ plant.label }}</span>
+    <span class="muted">{{ "{:,.0f}".format(plant.planted_acres) }}/{{ "{:,.0f}".format(plant.field_acres) }} ac</span>
+    {% elif plant.status == 'incomplete' %}
+    <a class="planting-status planting-status-incomplete" href="/fields/{{ f.id }}/planting/complete">{{ plant.label }}</a>
+    <span class="muted">{{ "{:,.0f}".format(plant.planted_acres) }}/{{ "{:,.0f}".format(plant.field_acres) }} ac · {{ "{:,.0f}".format(plant.remaining_acres) }} left</span>
+    {% else %}
+    <span class="planting-status planting-status-none">{{ plant.label }}</span>
+    <a class="muted" href="/fields/{{ f.id }}/planting/complete">start fill</a>
+    {% endif %}
+  </p>
+  {% endif %}
+
   <dl class="field-card-stats">
     <div><dt>My acres</dt><dd>{{ f.acres_mine }}</dd></div>
     <div><dt>Base yield</dt><dd>{% if f.expected_yield is not none %}{{ f.expected_yield }}{% else %}<span class="tag-miss">need</span>{% endif %}</dd></div>
-    <div><dt>Exp. bu</dt><dd>{% if f.expected_bushels %}{{ "{:,.0f}".format(f.expected_bushels) }}{% else %}—{% endif %}</dd></div>
-    <div><dt>Rent</dt><dd>${{ "{:,.0f}".format(f.rent_my_share) }}</dd></div>
-    <div><dt>Budget COP</dt><dd>${{ "{:,.0f}".format(plan_cost) }}</dd></div>
+    <div><dt>Year cost</dt><dd>{% if card %}${{ "{:,.0f}".format(card.running_cost or 0) }}{% else %}—{% endif %}</dd></div>
+    <div><dt>$/ac</dt><dd>{% if card and card.cost_ac is not none %}${{ "{:,.2f}".format(card.cost_ac) }}{% else %}—{% endif %}</dd></div>
   </dl>
+
+  <div class="field-card-be">
+    <p class="field-card-be-label">Break-even</p>
+    <dl class="field-card-stats field-card-be-stats">
+      <div>
+        <dt>Yield @ contract</dt>
+        <dd>
+          {% if card and card.be_yield_contracted is not none %}{{ card.be_yield_contracted }} <span class="muted">bu/ac</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </dd>
+        {% if M and M.contracted is not none %}<span class="field-card-be-hint">${{ "%.2f"|format(M.contracted) }}/bu avg</span>{% endif %}
+      </div>
+      <div>
+        <dt>Yield @ futures</dt>
+        <dd>
+          {% if card and card.be_yield_futures is not none %}{{ card.be_yield_futures }} <span class="muted">bu/ac</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </dd>
+        {% if M and M.futures is not none %}<span class="field-card-be-hint">${{ "%.2f"|format(M.futures) }}/bu</span>{% endif %}
+      </div>
+      <div class="field-card-be-price">
+        <dt>Price @ avg yield</dt>
+        <dd>
+          {% if card and card.be_price_at_yield is not none %}${{ "%.2f"|format(card.be_price_at_yield) }} <span class="muted">/bu</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </dd>
+        {% if f.expected_yield is not none %}<span class="field-card-be-hint">at {{ f.expected_yield }} bu/ac</span>{% endif %}
+      </div>
+    </dl>
+  </div>
+
   <div class="field-card-ops">
-    {% if ops and ops.types %}
-      {% for t in ops.types %}
-      <span class="ops-type-pill ops-type-op">{{ t }}</span>
+    <p class="field-card-be-label">Operations done</p>
+    {% if card and card.completed %}
+    <ul class="field-ops-chips">
+      {% for e in card.completed[:8] %}
+      <li title="{{ e.detail or '' }}{% if e.date %} · {{ e.date }}{% endif %}">
+        <em>{{ e.type_label }}</em> {{ e.title }}
+        {% if e.amount is not none %}<span class="muted">${{ "{:,.0f}".format(e.amount) }}</span>{% endif %}
+      </li>
       {% endfor %}
-      {% if ops.latest %}<span class="muted field-card-ops-meta">latest {{ ops.latest }}</span>{% endif %}
-      {% if ops.count %}<span class="muted field-card-ops-meta">{{ ops.count }} logged</span>{% endif %}
+      {% if card.completed|length > 8 %}
+      <li class="muted">+{{ card.completed|length - 8 }} more</li>
+      {% endif %}
+    </ul>
     {% else %}
-      <span class="muted field-card-ops-empty">No operations logged this year</span>
+    <p class="muted field-ops-empty">None yet — <a href="/fields/{{ f.id }}/operations">log ops</a></p>
     {% endif %}
   </div>
+
   <div class="field-card-actions">
-    <a class="btn primary field-card-op-btn" href="/fields/{{ f.id }}/add-operation">Add operation</a>
+    <a href="/fields/{{ f.id }}/operations">Ledger</a>
+    {% if f.ownership_mode in ['on_shares', 'custom_work'] %}
+    <a href="/fields/{{ f.id }}/invoice">Invoice</a>
+    {% endif %}
     <a href="/fields/{{ f.id }}">Open</a>
     <a href="/fields/{{ f.id }}/edit">Edit</a>
   </div>
@@ -140,7 +204,7 @@
 {% endmacro %}
 
 {% if filter_crop and filter_crop != 'all' %}
-<div class="fields-card-grid">
+<div class="fields-card-grid fields-card-grid-wide">
   {% for f in fields %}{{ field_card(f) }}{% endfor %}
 </div>
 {% else %}
@@ -149,7 +213,7 @@
 {% if group %}
 <section class="crop-section {{ crop_tone(group_crop) }}">
   <h2 class="crop-section-head">{{ crop_badge(group_crop) }} {{ group_crop }} <span class="muted">({{ group|length }})</span></h2>
-  <div class="fields-card-grid">
+  <div class="fields-card-grid fields-card-grid-wide">
     {% for f in group %}{{ field_card(f) }}{% endfor %}
   </div>
 </section>
@@ -162,7 +226,7 @@
 {% if others %}
 <section class="crop-section">
   <h2 class="crop-section-head">{{ crop_badge('None') }} Other <span class="muted">({{ others|length }})</span></h2>
-  <div class="fields-card-grid">
+  <div class="fields-card-grid fields-card-grid-wide">
     {% for f in others %}{{ field_card(f) }}{% endfor %}
   </div>
 </section>
@@ -171,9 +235,9 @@
 
 <div class="fields-summary-bar">
   <span>{{ stats.total_mine_acres }} my acres</span>
-  <span>Rent ${{ "{:,.0f}".format(stats.rent_total) }}</span>
-  <span>Budget COP (settings) ${{ "{:,.0f}".format(stats.plan_cost_total) }}</span>
-  <a href="/fields/sheet">Edit in Sheet →</a>
+  <span>Year cost ${{ "{:,.0f}".format(year_cost or 0) }}</span>
+  <span>{% if year_cost_ac is not none %}${{ "{:,.2f}".format(year_cost_ac) }}/ac{% else %}—/ac{% endif %}</span>
+  <a href="/fields/ops">Field Operations →</a>
 </div>
 {% else %}
 <p class="empty">No fields match. <a href="/fields/new">Add one</a>.</p>

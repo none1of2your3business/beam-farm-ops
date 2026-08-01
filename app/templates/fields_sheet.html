@@ -6,12 +6,12 @@
   <div>
     <p class="eyebrow">{% if year %}{{ year.year }}{% endif %} · Spreadsheet</p>
     <h1>Fields Sheet</h1>
-    <p class="lede">Edit crop, acres, base yield, and rent in one grid — click a column header to sort. Save all when ready.</p>
+    <p class="lede">Edit crop, acres, base yield, rent, and share partners in one grid — changes autosave. Choosing <strong>On shares</strong> opens Partners (check one or more people).</p>
   </div>
   <div class="form-actions fields-toolbar">
     <div class="view-switch" role="tablist" aria-label="Fields view">
-      <a class="view-switch-btn" href="/fields?view=overview&crop={{ filter_crop }}&ownership={{ filter_ownership }}">Overview</a>
-      <a class="view-switch-btn active" href="/fields/sheet?crop={{ filter_crop }}&ownership={{ filter_ownership }}">Sheet</a>
+      <a class="view-switch-btn" href="/fields?view=overview&crop={{ filter_crop }}{% if ownership_qs %}&{{ ownership_qs }}{% endif %}">Overview</a>
+      <a class="view-switch-btn active" href="/fields/sheet?crop={{ filter_crop }}{% if ownership_qs %}&{{ ownership_qs }}{% endif %}">Sheet</a>
     </div>
     <a class="btn ghost" href="/fields/new">Add field</a>
   </div>
@@ -31,18 +31,23 @@
       <option value="None" {% if filter_crop == 'None' %}selected{% endif %}>None</option>
     </select>
   </label>
-  <label>Ownership
-    <select name="ownership" onchange="this.form.submit()">
-      <option value="all" {% if filter_ownership == 'all' %}selected{% endif %}>All</option>
+  <fieldset class="filter-own">
+    <legend>Ownership <span class="muted">(multi-select)</span></legend>
+    <div class="filter-own-options">
       {% for key, label in ownership_labels.items() %}
-      <option value="{{ key }}" {% if filter_ownership == key %}selected{% endif %}>{{ label }}</option>
+      <label class="filter-own-check">
+        <input type="checkbox" name="ownership" value="{{ key }}"
+               {% if not filter_ownerships or key in filter_ownerships %}checked{% endif %}
+               onchange="this.form.submit()">
+        {{ label }}
+      </label>
       {% endfor %}
-    </select>
-  </label>
+    </div>
+  </fieldset>
 </form>
 
 {% if fields %}
-<form method="post" action="/fields/sheet/save" id="sheet-form" class="sheet-form">
+<form method="post" action="/fields/sheet/save" id="sheet-form" class="sheet-form" data-autosave-own>
   <div class="table-wrap sheet-wrap">
     <table class="sheet-table" id="sheet-table" data-sortable>
       <thead>
@@ -58,12 +63,15 @@
           <th>COP $/ac</th>
           <th>Plan cost $</th>
           <th>Ownership</th>
+          <th class="sheet-partner-col">Partners</th>
           <th>Notes</th>
-          <th class="sheet-actions-col">Op</th>
         </tr>
       </thead>
       <tbody>
         {% for f in fields %}
+        {% set partners = (share_partners_by_field.get(f.id) if share_partners_by_field else none) or [] %}
+        {% set partner_ids = partners|map(attribute='party_id')|list %}
+        {% set partner_encode %}{% for r in partners %}{{ r.party_id }}:{{ '%.2f'|format(r.pct) }}{% if not loop.last %},{% endif %}{% endfor %}{% endset %}
         <tr class="sheet-row crop-row {{ crop_tone(f.crop) }}" data-id="{{ f.id }}">
           <td class="sheet-name">
             <input type="hidden" name="field_id" value="{{ f.id }}">
@@ -91,10 +99,33 @@
               {% endfor %}
             </select>
           </td>
-          <td><input name="notes" type="text" value="{{ f.notes or '' }}" class="sheet-notes"></td>
-          <td class="sheet-actions-col">
-            <a class="sheet-op-link" href="/fields/{{ f.id }}/add-operation" title="Add operation">Add op</a>
+          <td class="sheet-partner-col sheet-partner-cell">
+            {# Always submitted (never disabled) so Save works in Safari #}
+            <input type="hidden" name="share_partners" class="sheet-partners-value" value="{{ partner_encode|trim }}">
+            <div class="sheet-partner-picker">
+              <button type="button" class="sheet-partner-toggle" aria-expanded="false">
+                <span class="sheet-partner-summary">{% if partners %}{{ partners|map(attribute='name')|join(', ') }}{% else %}— pick partners —{% endif %}</span>
+                <span class="sheet-partner-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="sheet-partner-menu" hidden>
+                <p class="sheet-partner-menu-hint">Check everyone you share this field with. Adjust % if needed (with Me they should total 100%).</p>
+                <p class="sheet-partner-sum-badge" data-sum-badge></p>
+                {% for p in farm_with_parties or [] %}
+                {% set selected = p.id in partner_ids %}
+                {% set pct_val = namespace(v='') %}
+                {% for r in partners if r.party_id == p.id %}{% set pct_val.v = '%.1f'|format(r.pct) %}{% endfor %}
+                <label class="sheet-partner-option">
+                  <input type="checkbox" class="sheet-partner-check" value="{{ p.id }}" data-name="{{ p.name }}" {% if selected %}checked{% endif %}>
+                  <span class="sheet-partner-option-name">{{ p.name }}</span>
+                  <input type="number" class="sheet-partner-pct" min="0" max="100" step="0.1"
+                         value="{{ pct_val.v }}" placeholder="%" {% if not selected %}disabled{% endif %}
+                         aria-label="{{ p.name }} share percent">
+                </label>
+                {% endfor %}
+              </div>
+            </div>
           </td>
+          <td><input name="notes" type="text" value="{{ f.notes or '' }}" class="sheet-notes"></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -115,7 +146,7 @@
 
   <div class="sheet-save-bar">
     <button class="btn primary" type="submit" id="sheet-save">Save all</button>
-    <span class="muted" id="sheet-dirty-hint">No unsaved changes</span>
+    <span class="muted" id="sheet-dirty-hint">Autosaves as you edit</span>
   </div>
 </form>
 {% else %}
@@ -129,6 +160,10 @@
   var form = document.getElementById("sheet-form");
   if (!form) return;
   var dirty = false;
+  var saving = false;
+  var saveTimer = null;
+  var hint = document.getElementById("sheet-dirty-hint");
+  var AUTO_MS = 900;
 
   function num(el) {
     if (!el) return 0;
@@ -144,6 +179,145 @@
     if (crop === "Corn") return cornCop;
     if (crop === "Soybeans") return soyCop;
     return 0;
+  }
+
+  function setHint(text, cls) {
+    if (!hint) return;
+    hint.textContent = text;
+    hint.classList.remove("is-saving", "is-saved", "is-error", "is-dirty");
+    if (cls) hint.classList.add(cls);
+  }
+
+  function encodePartners(row) {
+    var parts = [];
+    row.querySelectorAll(".sheet-partner-option").forEach(function (opt) {
+      var check = opt.querySelector(".sheet-partner-check");
+      var pctEl = opt.querySelector(".sheet-partner-pct");
+      if (!check || !check.checked) return;
+      var id = String(check.value || "").trim();
+      if (!id) return;
+      var pct = pctEl && String(pctEl.value || "").trim();
+      parts.push(pct ? (id + ":" + pct) : id);
+    });
+    return parts.join(",");
+  }
+
+  function syncPartnerHidden() {
+    document.querySelectorAll(".sheet-row").forEach(function (row) {
+      var own = row.querySelector(".sheet-own");
+      var hidden = row.querySelector(".sheet-partners-value");
+      if (!hidden) return;
+      if (!own || own.value !== "on_shares") {
+        hidden.value = "";
+      } else {
+        hidden.value = encodePartners(row);
+      }
+    });
+  }
+
+  function rowCountsAligned() {
+    var nId = form.querySelectorAll('input[name="field_id"]').length;
+    var nSp = form.querySelectorAll('input[name="share_partners"]').length;
+    return nId > 0 && nId === nSp;
+  }
+
+  function mePctForRow(row) {
+    var total = num(row.querySelector(".sheet-acres-total"));
+    var mine = num(row.querySelector(".sheet-acres-mine"));
+    if (total > 0) return Math.round((100.0 * mine / total) * 10) / 10;
+    return 50;
+  }
+
+  function updatePartnerPctBadge(row) {
+    if (!row) return;
+    var badge = row.querySelector("[data-sum-badge]");
+    if (!badge) return;
+    var own = row.querySelector(".sheet-own");
+    if (!own || own.value !== "on_shares") {
+      badge.textContent = "";
+      badge.classList.remove("is-warn", "is-ok");
+      return;
+    }
+    var mePct = mePctForRow(row);
+    var checked = [];
+    row.querySelectorAll(".sheet-partner-option").forEach(function (opt) {
+      var check = opt.querySelector(".sheet-partner-check");
+      var pctEl = opt.querySelector(".sheet-partner-pct");
+      if (!check || !check.checked) return;
+      var raw = pctEl && String(pctEl.value || "").trim();
+      var pct = raw ? parseFloat(raw.replace(",", "")) : NaN;
+      checked.push(isFinite(pct) ? pct : null);
+    });
+    if (!checked.length) {
+      badge.textContent = "Me " + mePct.toFixed(1) + "% · pick partners";
+      badge.classList.remove("is-ok");
+      badge.classList.add("is-warn");
+      return;
+    }
+    var known = checked.filter(function (p) { return p != null; });
+    var unknown = checked.length - known.length;
+    var knownSum = known.reduce(function (a, b) { return a + b; }, 0);
+    var partnerSum = knownSum;
+    if (unknown > 0) {
+      var left = Math.max(0, 100 - mePct - knownSum);
+      partnerSum = knownSum + left;
+    }
+    var total = mePct + partnerSum;
+    badge.textContent =
+      "Me " + mePct.toFixed(1) + "% + partners " + partnerSum.toFixed(1) +
+      "% ≈ " + total.toFixed(1) + "%";
+    var ok = Math.abs(total - 100) <= 0.5;
+    badge.classList.toggle("is-ok", ok);
+    badge.classList.toggle("is-warn", !ok);
+  }
+
+  function updatePartnerSummary(row) {
+    var names = [];
+    row.querySelectorAll(".sheet-partner-option").forEach(function (opt) {
+      var check = opt.querySelector(".sheet-partner-check");
+      if (check && check.checked) {
+        names.push(check.getAttribute("data-name") || check.value);
+      }
+    });
+    var summary = row.querySelector(".sheet-partner-summary");
+    if (summary) summary.textContent = names.length ? names.join(", ") : "— pick partners —";
+    var hidden = row.querySelector(".sheet-partners-value");
+    if (hidden) hidden.value = encodePartners(row);
+    var cell = row.querySelector(".sheet-partner-cell");
+    if (cell) cell.classList.toggle("is-needed", !names.length);
+    updatePartnerPctBadge(row);
+  }
+
+  function syncPartnerColumn() {
+    var anyShares = false;
+    document.querySelectorAll(".sheet-row").forEach(function (row) {
+      var own = row.querySelector(".sheet-own");
+      var cell = row.querySelector(".sheet-partner-cell");
+      var onShares = !!(own && own.value === "on_shares");
+      if (onShares) anyShares = true;
+      if (cell) cell.classList.toggle("is-active", onShares);
+      if (!onShares) {
+        var menu = row.querySelector(".sheet-partner-menu");
+        var toggle = row.querySelector(".sheet-partner-toggle");
+        if (menu) menu.hidden = true;
+        if (toggle) toggle.setAttribute("aria-expanded", "false");
+      }
+      updatePartnerSummary(row);
+    });
+    document.querySelectorAll(".sheet-partner-col").forEach(function (el) {
+      el.classList.toggle("is-open", anyShares);
+      el.classList.toggle("is-closed", !anyShares);
+    });
+  }
+
+  function closeAllPartnerMenus(except) {
+    document.querySelectorAll(".sheet-partner-picker").forEach(function (picker) {
+      if (except && picker === except) return;
+      var menu = picker.querySelector(".sheet-partner-menu");
+      var toggle = picker.querySelector(".sheet-partner-toggle");
+      if (menu) menu.hidden = true;
+      if (toggle) toggle.setAttribute("aria-expanded", "false");
+    });
   }
 
   function recalc() {
@@ -182,20 +356,180 @@
 
   function markDirty() {
     dirty = true;
-    var hint = document.getElementById("sheet-dirty-hint");
-    if (hint) hint.textContent = "Unsaved changes";
+    setHint("Unsaved changes…", "is-dirty");
+    scheduleAutosave();
   }
 
-  form.addEventListener("input", function () { markDirty(); recalc(); });
-  form.addEventListener("change", function () { markDirty(); recalc(); });
-  form.addEventListener("submit", function () { dirty = false; });
+  function scheduleAutosave(ms) {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      saveTimer = null;
+      autosave();
+    }, ms == null ? AUTO_MS : ms);
+  }
 
-  window.addEventListener("beforeunload", function (e) {
-    if (!dirty) return;
-    e.preventDefault();
-    e.returnValue = "";
+  function autosave(forceBeacon) {
+    if (!dirty && !forceBeacon) return;
+    if (saving && !forceBeacon) {
+      scheduleAutosave(400);
+      return;
+    }
+    syncPartnerHidden();
+    if (!rowCountsAligned()) {
+      setHint("Save blocked — field rows out of sync (reload page)", "is-error");
+      dirty = true;
+      return;
+    }
+    var fd = new FormData(form);
+
+    if (forceBeacon && typeof navigator.sendBeacon === "function") {
+      try {
+        var ok = navigator.sendBeacon(
+          form.action + (form.action.indexOf("?") >= 0 ? "&" : "?") + "format=json",
+          fd
+        );
+        if (ok) dirty = false;
+      } catch (err) {}
+      return;
+    }
+
+    // Clear dirty now; any edit during the request will set it again
+    dirty = false;
+    saving = true;
+    setHint("Saving…", "is-saving");
+    fetch(form.action, {
+      method: "POST",
+      body: fd,
+      headers: {
+        "X-Requested-With": "fetch",
+        "Accept": "application/json"
+      },
+      credentials: "same-origin"
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok || !data || !data.ok) {
+          var err = new Error((data && (data.error || data.warning)) || "save failed");
+          err.data = data;
+          throw err;
+        }
+        return data;
+      });
+    }).then(function (data) {
+      saving = false;
+      if (dirty) {
+        setHint("Unsaved changes…", "is-dirty");
+        scheduleAutosave(350);
+        return;
+      }
+      var n = data.saved != null ? data.saved : 0;
+      if (data.warning) {
+        setHint(data.warning, "is-error");
+      } else {
+        setHint(n ? ("Saved · " + n + " field" + (n === 1 ? "" : "s") + " updated") : "All changes saved", "is-saved");
+      }
+    }).catch(function (err) {
+      saving = false;
+      dirty = true;
+      var msg = (err && err.message) ? err.message : "Save failed — click Save all or keep editing";
+      if (msg === "save failed") msg = "Save failed — click Save all or keep editing";
+      setHint(msg, "is-error");
+    });
+  }
+
+  form.addEventListener("click", function (e) {
+    var toggle = e.target.closest(".sheet-partner-toggle");
+    if (toggle) {
+      e.preventDefault();
+      var row = toggle.closest(".sheet-row");
+      var own = row && row.querySelector(".sheet-own");
+      if (!own || own.value !== "on_shares") return;
+      var picker = toggle.closest(".sheet-partner-picker");
+      var menu = picker && picker.querySelector(".sheet-partner-menu");
+      if (!menu) return;
+      var open = menu.hidden;
+      closeAllPartnerMenus(picker);
+      menu.hidden = !open;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      return;
+    }
   });
 
+  form.addEventListener("change", function (e) {
+    var t = e.target;
+    if (!t) return;
+    markDirty();
+    if (t.classList.contains("sheet-own")) {
+      syncPartnerColumn();
+    }
+    if (t.classList.contains("sheet-partner-check")) {
+      var opt = t.closest(".sheet-partner-option");
+      var pctEl = opt && opt.querySelector(".sheet-partner-pct");
+      if (pctEl) {
+        pctEl.disabled = !t.checked;
+        if (t.checked && !pctEl.value) pctEl.value = "";
+        if (!t.checked) pctEl.value = "";
+      }
+      updatePartnerSummary(t.closest(".sheet-row"));
+    }
+    if (t.classList.contains("sheet-partner-pct")) {
+      updatePartnerSummary(t.closest(".sheet-row"));
+    }
+    recalc();
+    // Selects / checkboxes — save a bit sooner
+    scheduleAutosave(500);
+  });
+
+  form.addEventListener("input", function (e) {
+    markDirty();
+    if (e.target && (
+      e.target.classList.contains("sheet-partner-pct") ||
+      e.target.classList.contains("sheet-acres-total") ||
+      e.target.classList.contains("sheet-acres-mine")
+    )) {
+      updatePartnerSummary(e.target.closest(".sheet-row"));
+    }
+    recalc();
+  });
+
+  form.addEventListener("submit", function (e) {
+    // Manual Save all still works as a full POST redirect; cancel pending autosave
+    if (saveTimer) clearTimeout(saveTimer);
+    dirty = false;
+    syncPartnerHidden();
+    if (!rowCountsAligned()) {
+      e.preventDefault();
+      setHint("Save blocked — field rows out of sync (reload page)", "is-error");
+      dirty = true;
+    }
+  });
+
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest(".sheet-partner-picker")) closeAllPartnerMenus();
+  });
+
+  // Flush when leaving / hiding the tab
+  window.addEventListener("pagehide", function () {
+    if (saveTimer) clearTimeout(saveTimer);
+    if (dirty) autosave(true);
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden" && dirty) {
+      if (saveTimer) clearTimeout(saveTimer);
+      autosave(true);
+    }
+  });
+  window.addEventListener("beforeunload", function (e) {
+    if (!dirty) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    autosave(true);
+    // Only warn if we still think something is pending
+    if (dirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+
+  syncPartnerColumn();
   recalc();
 })();
 </script>

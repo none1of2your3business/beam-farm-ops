@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone %}
+{% block title %}Budget sheet — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">Budget · spreadsheet</p>
+    <h1>Budget sheet</h1>
+    <p class="lede">Enter $/ac by category. Row color tracks projected profit (green) or loss (red). Autosaves as you edit.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <div class="view-switch" role="tablist" aria-label="Budget view">
+      <a class="view-switch-btn" href="/budget/fields">Desk</a>
+      <a class="view-switch-btn active" href="/budget/sheet">Sheet</a>
+    </div>
+  </div>
+</section>
+
+{% if saved is not none and saved != '' %}
+<p class="banner-ok">Saved {{ saved }} field{% if saved != '1' %}s{% endif %}.</p>
+{% endif %}
+
+{% if cards %}
+<form method="post" action="/budget/sheet/save" id="budget-sheet-form" class="sheet-form" data-autosave-own>
+  <div class="table-wrap sheet-wrap bud-sheet-wrap">
+    <table class="sheet-table bud-sheet" id="budget-sheet">
+      <thead>
+        <tr>
+          <th class="sheet-name">Field</th>
+          <th>Crop</th>
+          <th>Acres</th>
+          {% for key, label in categories %}
+          <th>{{ label }}</th>
+          {% endfor %}
+          <th>Price $/bu</th>
+          <th>Margin $/ac</th>
+          <th>Plan $</th>
+          <th>P/L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in cards %}
+        <tr class="sheet-row bud-sheet-row tone-{{ c.tone }}" data-id="{{ c.field_id }}" data-acres="{{ c.acres }}" data-bu="{{ c.expected_bu or '' }}" data-board-price="{{ c.price if c.price_override is none and c.price is not none else '' }}">
+          <td class="sheet-name">
+            <input type="hidden" name="field_id" value="{{ c.field_id }}">
+            <a href="/budget/fields/{{ c.field_id }}">{{ c.name }}</a>
+          </td>
+          <td><span class="crop-badge {{ crop_tone(c.crop) }}">{{ c.crop }}</span></td>
+          <td class="sheet-calc">{{ "{:,.1f}".format(c.acres) }}</td>
+          {% for line in c.lines %}
+          <td>
+            <input name="{{ line.category }}" type="number" step="0.01" min="0"
+                   value="{{ '%.2f'|format(line.amount_per_ac) }}"
+                   class="sheet-num bud-cat" data-cat="{{ line.category }}">
+          </td>
+          {% endfor %}
+          <td>
+            <input name="price_override" type="number" step="0.01" min="0"
+                   value="{% if c.price_override is not none %}{{ '%.2f'|format(c.price_override) }}{% endif %}"
+                   class="sheet-num bud-price" placeholder="{% if c.price is not none %}{{ '%.2f'|format(c.price) }}{% else %}—{% endif %}">
+          </td>
+          <td>
+            <input name="margin_goal_ac" type="number" step="0.01"
+                   value="{{ '%.2f'|format(c.margin_goal_ac) }}"
+                   class="sheet-num bud-margin">
+          </td>
+          <td class="sheet-calc bud-plan-cell">—</td>
+          <td class="sheet-calc bud-pl-cell">—</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="sheet-save-bar">
+    <button class="btn primary" type="submit" id="budget-sheet-save">Save all</button>
+    <span class="muted" id="budget-sheet-hint">Autosaves as you edit</span>
+  </div>
+</form>
+{% else %}
+<p class="empty">No fields yet. <a href="/fields/new">Add a field</a>.</p>
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById("budget-sheet-form");
+  if (!form) return;
+  var hint = document.getElementById("budget-sheet-hint");
+  var dirty = false, saving = false, saveTimer = null;
+
+  function num(el) {
+    if (!el) return 0;
+    var v = parseFloat(String(el.value || "").replace(",", ""));
+    return isFinite(v) ? v : 0;
+  }
+
+  function setHint(text, cls) {
+    if (!hint) return;
+    hint.textContent = text;
+    hint.className = "muted" + (cls ? (" " + cls) : "");
+  }
+
+  function recalcRow(row) {
+    var acres = parseFloat(row.getAttribute("data-acres") || "0") || 0;
+    var buAttr = row.getAttribute("data-bu");
+    var bu = buAttr ? parseFloat(buAttr) : NaN;
+    var planAc = 0;
+    row.querySelectorAll(".bud-cat").forEach(function (inp) { planAc += num(inp); });
+    var plan = planAc * acres;
+    var priceEl = row.querySelector(".bud-price");
+    var price = num(priceEl);
+    if (!price) {
+      var bp = parseFloat(row.getAttribute("data-board-price") || "");
+      if (isFinite(bp)) price = bp;
+    }
+    var revenue = isFinite(bu) && price ? bu * price : null;
+    var profit = revenue != null ? revenue - plan : null;
+    var planCell = row.querySelector(".bud-plan-cell");
+    var plCell = row.querySelector(".bud-pl-cell");
+    if (planCell) planCell.textContent = "$" + Math.round(plan).toLocaleString("en-US");
+    if (plCell) {
+      if (profit == null) plCell.textContent = "—";
+      else plCell.textContent = (profit >= 0 ? "+" : "") + "$" + Math.round(profit).toLocaleString("en-US");
+    }
+    row.classList.remove("tone-profit", "tone-loss", "tone-tight", "tone-neutral");
+    var tone = "neutral";
+    if (profit != null) {
+      if (profit < -0.5) tone = "loss";
+      else if (acres > 0 && profit / acres >= 25) tone = "profit";
+      else if (revenue && profit / revenue >= 0.08) tone = "profit";
+      else tone = "tight";
+    }
+    row.classList.add("tone-" + tone);
+  }
+
+  function recalcAll() {
+    form.querySelectorAll(".bud-sheet-row").forEach(recalcRow);
+  }
+
+  function schedule() {
+    dirty = true;
+    setHint("Unsaved changes…", "is-dirty");
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(autosave, 900);
+  }
+
+  function autosave() {
+    if (!dirty || saving) return;
+    dirty = false;
+    saving = true;
+    setHint("Saving…", "is-saving");
+    var fd = new FormData(form);
+    fetch(form.action, {
+      method: "POST",
+      body: fd,
+      headers: { "X-Requested-With": "fetch", "Accept": "application/json" },
+      credentials: "same-origin"
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok || !data || !data.ok) throw new Error((data && data.error) || "save failed");
+        return data;
+      });
+    }).then(function (data) {
+      saving = false;
+      if (dirty) { schedule(); return; }
+      setHint(data.saved ? ("Saved · " + data.saved + " fields") : "All changes saved", "is-saved");
+    }).catch(function (err) {
+      saving = false;
+      dirty = true;
+      setHint(err.message || "Save failed", "is-error");
+    });
+  }
+
+  form.addEventListener("input", function (e) {
+    if (e.target && e.target.closest(".bud-sheet-row")) {
+      recalcRow(e.target.closest(".bud-sheet-row"));
+      schedule();
+    }
+  });
+  form.addEventListener("submit", function () {
+    if (saveTimer) clearTimeout(saveTimer);
+    dirty = false;
+  });
+  window.addEventListener("pagehide", function () {
+    if (dirty) {
+      var fd = new FormData(form);
+      if (navigator.sendBeacon) navigator.sendBeacon(form.action + "?format=json", fd);
+    }
+  });
+  recalcAll();
+})();
+</script>
+{% endblock %}

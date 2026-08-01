@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Optional
 
@@ -84,6 +85,386 @@ def _money(v: Optional[float]) -> Optional[float]:
     return round(float(v), 2)
 
 
+# Seed unit sizes used to derive planted acres from units ÷ population.
+# acres = units × seeds_per_unit / population (seeds/ac)
+CORN_SEEDS_PER_UNIT = 80_000.0
+SOY_SEEDS_PER_UNIT = 140_000.0
+BECKS_SOY_SEEDS_PER_UNIT = 130_000.0
+
+
+def _norm_brand(brand: Any) -> str:
+    s = str(brand or "").strip().lower()
+    return s.replace("'", "").replace("’", "").replace(".", "")
+
+
+def seeds_per_unit(crop: Any = None, brand: Any = None) -> float:
+    """Seeds in one bag/unit for acre math."""
+    c = str(crop or "").strip().lower()
+    b = _norm_brand(brand)
+    if c.startswith("soy"):
+        if b.startswith("beck"):
+            return BECKS_SOY_SEEDS_PER_UNIT
+        return SOY_SEEDS_PER_UNIT
+    # Corn and anything else treated as corn unit size unless soy
+    return CORN_SEEDS_PER_UNIT
+
+
+def _fnum(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def population_from_link(link: Any) -> Optional[float]:
+    """Seeding rate (seeds/ac) from population column or rate text."""
+    pop = _fnum(getattr(link, "population", None))
+    if pop is not None and pop > 0:
+        return pop
+    rate = str(getattr(link, "rate", None) or "").strip().lower()
+    if not rate:
+        return None
+    # e.g. "140,000 seeds/ac" or "140k"
+    m = re.search(r"([\d,.]+)\s*k\b", rate)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")) * 1000.0
+        except ValueError:
+            pass
+    m = re.search(r"([\d,.]+)", rate)
+    if m:
+        try:
+            v = float(m.group(1).replace(",", ""))
+            return v if v > 0 else None
+        except ValueError:
+            return None
+    return None
+
+
+def planted_acres_from_units(
+    units: Any,
+    population: Any,
+    *,
+    crop: Any = None,
+    brand: Any = None,
+) -> Optional[float]:
+    """acres = units × seeds_per_unit / population. Never uses imported acres."""
+    u = _fnum(units)
+    pop = _fnum(population)
+    if u is None or u <= 0 or pop is None or pop <= 0:
+        return None
+    spu = seeds_per_unit(crop, brand)
+    return round((u * spu) / pop, 4)
+
+
+def link_planted_acres(link: Any, hybrid: Any = None) -> Optional[float]:
+    """Planted acres for a FieldHybrid from units + seeding rate."""
+    crop = getattr(hybrid, "crop", None) if hybrid else None
+    brand = getattr(hybrid, "brand", None) if hybrid else None
+    pop = population_from_link(link)
+    return planted_acres_from_units(
+        getattr(link, "units", None),
+        pop,
+        crop=crop,
+        brand=brand,
+    )
+
+
+def planting_coverage(
+    field: Any,
+    hybrid_links: list[tuple[Any, Any]],
+    *,
+    complete_pct: float = 0.98,
+    min_gap_acres: float = 0.5,
+) -> dict[str, Any]:
+    """Compare as-planted acres (from units × rate) to field acres_total.
+
+    status: none | incomplete | complete
+    Uses acres_total (physical coverage), not acres_mine (ownership share).
+    Planted acres are derived from units and population — imported acres ignored.
+    """
+    field_acres = float(getattr(field, "acres_total", 0) or 0)
+    rows: list[dict[str, Any]] = []
+    planted = 0.0
+    for link, hybrid in hybrid_links or []:
+        pop_f = population_from_link(link)
+        units_f = _fnum(getattr(link, "units", None))
+        crop = getattr(hybrid, "crop", None) if hybrid else None
+        brand = getattr(hybrid, "brand", None) if hybrid else None
+        ac_f = planted_acres_from_units(units_f, pop_f, crop=crop, brand=brand) or 0.0
+        if ac_f < 0:
+            ac_f = 0.0
+        planted += ac_f
+        name = getattr(hybrid, "name", None) if hybrid else None
+        spu = seeds_per_unit(crop, brand)
+        rows.append(
+            {
+                "link_id": getattr(link, "id", None),
+                "hybrid_id": getattr(link, "hybrid_id", None),
+                "hybrid_name": name or "Hybrid",
+                "brand": brand,
+                "crop": crop,
+                "acres": round(ac_f, 4),
+                "units": units_f,
+                "population": pop_f,
+                "seeds_per_unit": spu,
+                "rate": getattr(link, "rate", None),
+            }
+        )
+    planted = round(planted, 4)
+    remaining = round(max(0.0, field_acres - planted), 4) if field_acres > 0 else 0.0
+
+    if planted <= 0 and not rows:
+        status = "none"
+    elif planted <= 0 and rows:
+        # Have hybrid rows but can't compute acres (missing units/rate)
+        status = "incomplete" if field_acres > 0 else "none"
+    elif field_acres <= 0:
+        status = "incomplete" if rows else "none"
+        remaining = 0.0
+    elif remaining <= min_gap_acres or (field_acres > 0 and planted / field_acres >= complete_pct):
+        status = "complete"
+        remaining = 0.0 if planted >= field_acres else remaining
+    else:
+        status = "incomplete"
+
+    primary = None
+    if rows:
+        primary = max(rows, key=lambda r: float(r.get("acres") or 0))
+
+    return {
+        "status": status,
+        "planted_acres": planted,
+        "field_acres": round(field_acres, 4),
+        "remaining_acres": remaining,
+        "rows": rows,
+        "primary": primary,
+        "acres_basis": "units_x_rate",
+        "label": {
+            "none": "Planting = not started",
+            "incomplete": "Planting = incomplete",
+            "complete": "Planting = complete",
+        }.get(status, "Planting"),
+    }
+
+
+def estimate_units_for_acres(
+    *,
+    acres: float,
+    source_acres: Optional[float],
+    source_units: Optional[float],
+    population: Optional[float],
+    seeds_per_unit: float = SOY_SEEDS_PER_UNIT,
+) -> Optional[float]:
+    """Estimate seed units for additional acres from population or prior units/ac."""
+    if acres <= 0:
+        return None
+    if population and population > 0 and seeds_per_unit > 0:
+        return round((population * acres) / seeds_per_unit, 4)
+    if source_acres and source_acres > 0 and source_units and source_units > 0:
+        return round(source_units * (acres / source_acres), 4)
+    return None
+
+
+def apply_planting_fill(
+    db: Any,
+    field: Any,
+    *,
+    mode: str,
+    acres: float,
+    units: Optional[float] = None,
+    source_link_id: Optional[int] = None,
+    hybrid_id: Optional[int] = None,
+    rate: Optional[str] = None,
+    population: Optional[float] = None,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    """Fill remaining planting acres by extending a link or adding another hybrid."""
+    from sqlalchemy import select
+
+    from app.models import FieldHybrid, Hybrid
+
+    acres = float(acres or 0)
+    if acres <= 0:
+        return {"ok": False, "error": "Acres to add must be greater than 0."}
+
+    mode = (mode or "").strip().lower()
+    note_bit = (notes or "").strip() or None
+    units_override = _fnum(units)
+
+    def _sync_acres(link: Any, hybrid: Any) -> None:
+        calc = link_planted_acres(link, hybrid)
+        if calc is not None:
+            link.acres = calc
+
+    if mode == "extend":
+        if not source_link_id:
+            return {"ok": False, "error": "Pick which planted hybrid to extend."}
+        link = db.get(FieldHybrid, int(source_link_id))
+        if not link or link.field_id != field.id:
+            return {"ok": False, "error": "Planted hybrid row not found on this field."}
+        hybrid = db.get(Hybrid, link.hybrid_id)
+        pop = population_from_link(link)
+        if population is not None:
+            pop = population
+            link.population = population
+        spu = seeds_per_unit(
+            getattr(hybrid, "crop", None) if hybrid else None,
+            getattr(hybrid, "brand", None) if hybrid else None,
+        )
+        old_units = _fnum(getattr(link, "units", None)) or 0.0
+        add_units = units_override
+        if add_units is None:
+            add_units = estimate_units_for_acres(
+                acres=acres,
+                source_acres=None,
+                source_units=None,
+                population=pop,
+                seeds_per_unit=spu,
+            )
+        if add_units is None:
+            return {
+                "ok": False,
+                "error": "Need a seeding rate (population) on that hybrid to extend by acres.",
+            }
+        link.units = round(old_units + float(add_units), 4)
+        if rate and not link.rate:
+            link.rate = rate.strip()
+        if note_bit:
+            prev = (link.notes or "").strip()
+            fill_note = f"Filled +{acres:g} ac / +{float(add_units):g} units"
+            link.notes = f"{prev} · {fill_note}".strip(" ·") if prev else fill_note
+        _sync_acres(link, hybrid)
+        return {
+            "ok": True,
+            "mode": "extend",
+            "hybrid_name": hybrid.name if hybrid else "Hybrid",
+            "acres_added": acres,
+            "units_added": float(add_units),
+            "link_id": link.id,
+        }
+
+    if mode == "new":
+        if not hybrid_id:
+            return {"ok": False, "error": "Select a hybrid / variety."}
+        hybrid = db.get(Hybrid, int(hybrid_id))
+        if not hybrid:
+            return {"ok": False, "error": "Hybrid not found."}
+        pop = population
+        rate_s = (rate or "").strip() or None
+        if pop is not None and not rate_s:
+            rate_s = f"{pop:g} seeds/ac"
+        spu = seeds_per_unit(hybrid.crop, hybrid.brand)
+        add_units = units_override
+        if add_units is None:
+            add_units = estimate_units_for_acres(
+                acres=acres,
+                source_acres=None,
+                source_units=None,
+                population=pop,
+                seeds_per_unit=spu,
+            )
+        if add_units is None:
+            return {"ok": False, "error": "Enter population (seeds/ac) to size the fill."}
+
+        existing = db.scalar(
+            select(FieldHybrid).where(
+                FieldHybrid.field_id == field.id,
+                FieldHybrid.hybrid_id == hybrid.id,
+            )
+        )
+        if existing:
+            old_units = _fnum(getattr(existing, "units", None)) or 0.0
+            existing.units = round(old_units + float(add_units), 4)
+            if pop is not None:
+                existing.population = pop
+            if rate_s:
+                existing.rate = rate_s
+            if note_bit:
+                prev = (existing.notes or "").strip()
+                fill_note = f"Filled +{acres:g} ac / +{float(add_units):g} units"
+                existing.notes = f"{prev} · {fill_note}".strip(" ·") if prev else fill_note
+            link = existing
+        else:
+            link = FieldHybrid(
+                field_id=field.id,
+                hybrid_id=hybrid.id,
+                units=float(add_units),
+                population=pop,
+                rate=rate_s,
+                notes=note_bit or f"Filled {acres:g} ac ({float(add_units):g} units) to complete planting",
+            )
+            db.add(link)
+        _sync_acres(link, hybrid)
+        db.flush()
+        return {
+            "ok": True,
+            "mode": "new",
+            "hybrid_name": hybrid.name,
+            "acres_added": acres,
+            "units_added": float(add_units),
+            "link_id": link.id,
+        }
+
+    return {"ok": False, "error": "Choose extend current hybrid or add another."}
+
+
+def hybrid_link_cost(
+    link: Any,
+    hybrid: Any,
+    field_acres: float,
+) -> tuple[Optional[float], str]:
+    """
+    Cost for a planted hybrid on a field.
+
+    Prefer as-planted units × catalog cost_per_unit (accurate P&L).
+    Else catalog cost_per_acre × planted acres from units×rate (not imported acres).
+    """
+    units = _fnum(getattr(link, "units", None))
+    plant_acres = link_planted_acres(link, hybrid)
+    if plant_acres is None or plant_acres <= 0:
+        plant_acres = float(field_acres or 0) or None
+
+    cpu = getattr(hybrid, "cost_per_unit", None) if hybrid else None
+    cpa = getattr(hybrid, "cost_per_acre", None) if hybrid else None
+    try:
+        cpu = float(cpu) if cpu is not None else None
+    except (TypeError, ValueError):
+        cpu = None
+    try:
+        cpa = float(cpa) if cpa is not None else None
+    except (TypeError, ValueError):
+        cpa = None
+
+    rate = getattr(link, "rate", None)
+    bits: list[str] = []
+    if rate:
+        bits.append(str(rate))
+    calc = link_planted_acres(link, hybrid)
+    if calc is not None:
+        bits.append(f"{calc:g} ac from units")
+
+    if units is not None and units > 0 and cpu is not None:
+        amt = units * cpu
+        bits.append(f"{units:g} units × ${cpu:.2f}")
+        return _money(amt), " · ".join(bits)
+
+    if cpa is not None and plant_acres:
+        amt = cpa * plant_acres
+        bits.append(f"${cpa:.2f}/ac × {plant_acres:g} ac")
+        return _money(amt), " · ".join(bits)
+
+    if units is not None and units > 0:
+        bits.append(f"{units:g} units · set cost/unit on hybrid for $")
+        return None, " · ".join(bits)
+
+    if cpu is not None:
+        bits.append(f"${cpu:.2f}/{getattr(hybrid, 'unit_label', None) or 'unit'} · need units on field")
+    return None, " · ".join(bits)
+
+
 def build_field_ledger(
     field: Any,
     *,
@@ -97,26 +478,16 @@ def build_field_ledger(
     settings: Any,
     board: dict[str, Any],
     contracts: list[Any],
-    insurance_premium: Optional[float] = None,
-    budget_cop_ac: Optional[float] = None,
 ) -> dict[str, Any]:
     """
     Chronological ledger + economics strip for one field season.
 
     Plans appear as estimate activity (est_amount) and do NOT count in running cost.
-    Voided ops / assigns / spray / hybrid links are skipped.
-    Spray/hybrid CPA uses treated_acres when set, else field acres.
     """
     acres = _acres(field)
     rent = float(getattr(field, "rent_my_share", 0) or 0)
     crop = getattr(field, "crop", "") or ""
     events: list[dict[str, Any]] = []
-
-    def _bill_acres(link: Any) -> float:
-        ta = getattr(link, "treated_acres", None)
-        if ta is not None and float(ta) > 0:
-            return float(ta)
-        return acres
 
     if rent:
         events.append(
@@ -125,39 +496,20 @@ def build_field_ledger(
                 "undated": True,
                 "type": "rent",
                 "type_label": "Rent",
-                "title": "Cash Rent/Property Taxes (my share)",
+                "title": "Cash rent (my share)",
                 "detail": f"{acres:g} ac × ${float(getattr(field, 'rent_per_acre', 0) or 0):.2f}/ac",
                 "amount": _money(rent),
                 "est_amount": None,
                 "counts": True,
                 "sort_key": (0, date.min, 0),
-                "ref": None,
-            }
-        )
-
-    ins = float(insurance_premium) if insurance_premium else 0.0
-    if ins > 0:
-        events.append(
-            {
-                "date": None,
-                "undated": True,
-                "type": "insurance",
-                "type_label": "Insurance",
-                "title": "Crop insurance premium (allocated)",
-                "detail": f"${ins / acres:.2f}/ac" if acres else "",
-                "amount": _money(ins),
-                "est_amount": None,
-                "counts": True,
-                "sort_key": (0, date.min, 1),
-                "ref": None,
             }
         )
 
     for o in ops:
-        if getattr(o, "voided", 0):
-            continue
         amt = float(getattr(o, "cost", 0) or 0)
         d = getattr(o, "op_date", None)
+        detail = getattr(o, "description", None) or ""
+        from_budget = "[budget_pass]" in detail or "[budget_spray]" in detail
         events.append(
             {
                 "date": d,
@@ -165,18 +517,18 @@ def build_field_ledger(
                 "type": "op",
                 "type_label": "Op",
                 "title": getattr(o, "op_type", None) or "Operation",
-                "detail": getattr(o, "description", None) or "",
-                "amount": _money(amt),
-                "est_amount": None,
-                "counts": True,
+                "detail": detail,
+                "amount": _money(amt) if not from_budget else None,
+                "est_amount": _money(amt) if from_budget else None,
+                "counts": not from_budget,
                 "sort_key": (1 if d else 0, d or date.min, getattr(o, "id", 0) or 0),
-                "ref": ("op", getattr(o, "id", None)),
+                "source_kind": "op",
+                "source_id": getattr(o, "id", None),
+                "invoice_id": getattr(o, "invoice_id", None),
             }
         )
 
     for a in assigns:
-        if getattr(a, "voided", 0):
-            continue
         qty = float(getattr(a, "quantity", 0) or 0)
         unit = float(getattr(a, "unit_cost", 0) or 0)
         amt = qty * unit
@@ -197,29 +549,19 @@ def build_field_ledger(
                 "est_amount": None,
                 "counts": True,
                 "sort_key": (1 if d else 0, d or date.min, getattr(a, "id", 0) or 0),
-                "ref": ("assign", getattr(a, "id", None)),
+                "source_kind": "input",
+                "source_id": getattr(a, "id", None),
             }
         )
 
     for link, mix in spray_links:
-        if getattr(link, "voided", 0):
-            continue
         cpa = getattr(mix, "cost_per_acre", None) if mix else None
-        bill_ac = _bill_acres(link)
-        amt = float(cpa) * bill_ac if cpa is not None and bill_ac else None
+        amt = float(cpa) * acres if cpa is not None and acres else None
         d = getattr(link, "applied_date", None)
         timing = getattr(link, "timing_label", None) or (getattr(mix, "timing", None) if mix else None)
         title = getattr(mix, "name", None) if mix else f"Spray #{getattr(link, 'spray_mix_id', '?')}"
-        wx = []
-        if getattr(link, "weather_temp", None):
-            wx.append(f"{link.weather_temp}°F")
-        if getattr(link, "weather_wind", None):
-            wx.append(f"wind {link.weather_wind}")
-        detail = (timing or "")
-        if cpa is not None:
-            detail += f" · ${cpa:.2f}/ac × {bill_ac:g} ac"
-        if wx:
-            detail += (" · " if detail else "") + ", ".join(wx)
+        notes = getattr(link, "notes", None) or ""
+        from_budget = "[budget_spray]" in notes
         events.append(
             {
                 "date": d,
@@ -227,43 +569,27 @@ def build_field_ledger(
                 "type": "spray",
                 "type_label": "Spray",
                 "title": title,
-                "detail": detail,
-                "amount": _money(amt) if amt is not None else None,
-                "est_amount": None,
-                "counts": amt is not None,
+                "detail": (timing or "")
+                + (f" · ${cpa:.2f}/ac × {acres:g} ac" if cpa is not None else "")
+                + ((" · " + notes) if notes and not from_budget else ""),
+                "amount": _money(amt) if amt is not None and not from_budget else None,
+                "est_amount": _money(amt) if amt is not None and from_budget else None,
+                "counts": amt is not None and not from_budget,
                 "sort_key": (1 if d else 0, d or date.min, getattr(link, "id", 0) or 0),
-                "ref": ("spray", getattr(link, "id", None)),
+                "source_kind": "spray",
+                "source_id": getattr(link, "id", None),
             }
         )
 
     for link, hybrid in hybrid_links:
-        if getattr(link, "voided", 0):
-            continue
-        units = getattr(link, "units_applied", None)
-        cpu = getattr(hybrid, "cost_per_unit", None) if hybrid else None
-        cpa = getattr(hybrid, "cost_per_acre", None) if hybrid else None
-        bill_ac = _bill_acres(link)
-        amt = None
-        if units is not None and cpu is not None:
-            amt = float(units) * float(cpu)
-        elif cpa is not None and bill_ac:
-            amt = float(cpa) * bill_ac
+        amt, detail = hybrid_link_cost(link, hybrid, acres)
         d = getattr(link, "applied_date", None)
-        rate = getattr(link, "rate", None)
         title = getattr(hybrid, "name", None) if hybrid else f"Hybrid #{getattr(link, 'hybrid_id', '?')}"
-        unit_label = getattr(hybrid, "unit_label", None) if hybrid else None
-        detail_bits = []
-        if rate:
-            detail_bits.append(str(rate))
-        if units is not None:
-            ul = unit_label or "units"
-            detail_bits.append(f"{float(units):g} {ul}")
-        if units is not None and cpu is not None:
-            detail_bits.append(f"${float(cpu):.2f}/{unit_label or 'unit'} × {float(units):g}")
-        elif cpa is not None:
-            detail_bits.append(f"${cpa:.2f}/ac × {bill_ac:g} ac")
-        elif cpu is not None and units is None:
-            detail_bits.append(f"${float(cpu):.2f}/{unit_label or 'unit'} · units not set — $0")
+        brand = getattr(hybrid, "brand", None) if hybrid else None
+        if brand:
+            title = f"{title} ({brand})"
+        notes = getattr(link, "notes", None) or ""
+        from_budget = "[budget_seed]" in notes
         events.append(
             {
                 "date": d,
@@ -271,12 +597,13 @@ def build_field_ledger(
                 "type": "hybrid",
                 "type_label": "Hybrid",
                 "title": title,
-                "detail": " · ".join(detail_bits),
-                "amount": _money(amt) if amt is not None else None,
-                "est_amount": None,
-                "counts": amt is not None,
+                "detail": detail,
+                "amount": amt if not from_budget else None,
+                "est_amount": amt if from_budget else None,
+                "counts": amt is not None and not from_budget,
                 "sort_key": (1 if d else 0, d or date.min, getattr(link, "id", 0) or 0),
-                "ref": ("hybrid", getattr(link, "id", None)),
+                "source_kind": "hybrid",
+                "source_id": getattr(link, "id", None),
             }
         )
 
@@ -371,6 +698,13 @@ def build_field_ledger(
     proj_c = projected(contracted)
     proj_f = projected(futures)
 
+    # $/bu needed to cover running cost at expected (average) yield
+    be_price = None
+    if expected_bu is not None and float(expected_bu) > 0:
+        be_price = round(running_cost / float(expected_bu), 2)
+    elif expected_yld is not None and acres and float(expected_yld) > 0:
+        be_price = round(running_cost / (acres * float(expected_yld)), 2)
+
     def gap(proj: Optional[float]) -> Optional[float]:
         if proj is None:
             return None
@@ -380,38 +714,6 @@ def build_field_ledger(
         if be is None or expected_yld is None:
             return None
         return round(float(expected_yld) - float(be), 1)
-
-    def per_ac(total: Optional[float]) -> Optional[float]:
-        if total is None or not acres:
-            return None
-        return round(float(total) / acres, 2)
-
-    gap_c = gap(proj_c)
-    gap_f = gap(proj_f)
-
-    breakdown = {"rent": 0.0, "ops": 0.0, "inputs": 0.0, "sprays": 0.0, "hybrids": 0.0, "insurance": 0.0}
-    type_to_key = {
-        "rent": "rent",
-        "op": "ops",
-        "input": "inputs",
-        "spray": "sprays",
-        "hybrid": "hybrids",
-        "insurance": "insurance",
-    }
-    for e in events:
-        if not e.get("counts") or e.get("amount") is None:
-            continue
-        key = type_to_key.get(e.get("type"))
-        if key:
-            breakdown[key] += float(e["amount"])
-    for k in breakdown:
-        breakdown[k] = round(breakdown[k], 2)
-    breakdown["total"] = running_cost
-
-    budget_ac = float(budget_cop_ac) if budget_cop_ac is not None else None
-    budget_total = round(budget_ac * acres, 2) if budget_ac is not None and acres else None
-    vs_budget = round(running_cost - budget_total, 2) if budget_total is not None else None
-    vs_budget_ac = round(cost_ac - budget_ac, 2) if cost_ac is not None and budget_ac is not None else None
 
     return {
         "events": events,
@@ -424,21 +726,196 @@ def build_field_ledger(
         "marks": marks,
         "projected_contracted": proj_c,
         "projected_futures": proj_f,
-        "projected_futures_ac": per_ac(proj_f),
-        "projected_contracted_ac": per_ac(proj_c),
-        "gap_contracted": gap_c,
-        "gap_futures": gap_f,
-        "gap_contracted_ac": per_ac(gap_c),
-        "gap_futures_ac": per_ac(gap_f),
+        "gap_contracted": gap(proj_c),
+        "gap_futures": gap(proj_f),
         "be_yield_contracted": be_c,
         "be_yield_futures": be_f,
+        "be_price_at_yield": be_price,
         "vs_be_contracted": yld_vs(be_c),
         "vs_be_futures": yld_vs(be_f),
-        "cost_breakdown": breakdown,
-        "insurance_premium": _money(ins) if ins else 0.0,
-        "budget_cop_ac": budget_ac,
-        "budget_total": budget_total,
-        "vs_budget": vs_budget,
-        "vs_budget_ac": vs_budget_ac,
         "crop": crop,
     }
+
+
+def build_year_field_cards(
+    fields: list[Any],
+    *,
+    ops_by_field: dict[int, list[Any]],
+    assigns_by_field: dict[int, list[Any]],
+    products_by_id: dict[int, Any],
+    sprays_by_field: dict[int, list[tuple[Any, Any]]],
+    hybrids_by_field: dict[int, list[tuple[Any, Any]]],
+    plans_by_field: dict[int, list[Any]],
+    soils_by_field: dict[int, list[Any]],
+    settings: Any,
+    board: dict[str, Any],
+    contracts: list[Any],
+) -> list[dict[str, Any]]:
+    """One ledger card per field for Fields main ops."""
+    cards: list[dict[str, Any]] = []
+    farm_total = 0.0
+    farm_acres = 0.0
+    for field in fields:
+        fid = getattr(field, "id", None)
+        ledger = build_field_ledger(
+            field,
+            ops=ops_by_field.get(fid, []),
+            assigns=assigns_by_field.get(fid, []),
+            products_by_id=products_by_id,
+            spray_links=sprays_by_field.get(fid, []),
+            hybrid_links=hybrids_by_field.get(fid, []),
+            plans=plans_by_field.get(fid, []),
+            soils=soils_by_field.get(fid, []),
+            settings=settings,
+            board=board,
+            contracts=contracts,
+        )
+        # Ops list for the hub: cost-bearing + hybrid/spray activity (skip soil noise unless alone)
+        op_events = [
+            e
+            for e in ledger["events"]
+            if e.get("type") in ("rent", "op", "input", "spray", "hybrid", "plan")
+        ]
+        # Compact “done” labels for overview cards (skip rent — always known)
+        completed = [
+            e
+            for e in op_events
+            if e.get("type") in ("op", "input", "spray", "hybrid")
+        ]
+        planting = planting_coverage(field, hybrids_by_field.get(fid, []))
+        farm_total += float(ledger["running_cost"] or 0)
+        farm_acres += float(ledger["acres"] or 0)
+        cards.append(
+            {
+                "field": field,
+                "ledger": ledger,
+                "events": op_events,
+                "completed": completed,
+                "event_count": len(op_events),
+                "completed_count": len(completed),
+                "running_cost": ledger["running_cost"],
+                "cost_ac": ledger["cost_ac"],
+                "acres": ledger["acres"],
+                "be_yield_contracted": ledger["be_yield_contracted"],
+                "be_yield_futures": ledger["be_yield_futures"],
+                "be_price_at_yield": ledger["be_price_at_yield"],
+                "marks": ledger["marks"],
+                "expected_yield": ledger["expected_yield"],
+                "planting": planting,
+            }
+        )
+    return cards
+
+
+def load_year_field_cards(db: Any, year: Any, fields: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load ledger inputs from DB and build per-field cards + year rollup.
+
+    Returns (cards, meta) where meta has year_cost, year_acres, year_cost_ac,
+    unmapped_plantings, board, contracts.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import func, select
+
+    from app import cme_quotes
+    from app.models import (
+        AppSettings,
+        FieldAssignment,
+        FieldHybrid,
+        FieldOperation,
+        FieldPlan,
+        FieldSprayMix,
+        GrainContract,
+        Hybrid,
+        InputProduct,
+        PlantingRecord,
+        SoilTest,
+        SprayMix,
+    )
+
+    meta: dict[str, Any] = {
+        "year_cost": 0.0,
+        "year_acres": 0.0,
+        "year_cost_ac": None,
+        "unmapped_plantings": 0,
+        "board": {},
+        "contracts": [],
+        "settings": None,
+    }
+    if not year or not fields:
+        return [], meta
+
+    fids = [f.id for f in fields]
+    settings = db.scalar(select(AppSettings).limit(1))
+    board = cme_quotes.board_from_settings(settings)
+    contracts = list(
+        db.scalars(
+            select(GrainContract).where(
+                GrainContract.crop_year_id == year.id,
+                GrainContract.status == "open",
+            )
+        )
+    )
+    meta["settings"] = settings
+    meta["board"] = board
+    meta["contracts"] = contracts
+
+    ops_by: dict[int, list] = defaultdict(list)
+    for o in db.scalars(select(FieldOperation).where(FieldOperation.field_id.in_(fids))):
+        ops_by[o.field_id].append(o)
+
+    assigns_by: dict[int, list] = defaultdict(list)
+    for a in db.scalars(select(FieldAssignment).where(FieldAssignment.field_id.in_(fids))):
+        assigns_by[a.field_id].append(a)
+
+    products = {p.id: p for p in db.scalars(select(InputProduct))}
+
+    hybrids_map = {h.id: h for h in db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id))}
+    hybrids_by: dict[int, list] = defaultdict(list)
+    for link in db.scalars(select(FieldHybrid).where(FieldHybrid.field_id.in_(fids))):
+        hybrids_by[link.field_id].append((link, hybrids_map.get(link.hybrid_id)))
+
+    sprays_map = {s.id: s for s in db.scalars(select(SprayMix).where(SprayMix.crop_year_id == year.id))}
+    sprays_by: dict[int, list] = defaultdict(list)
+    for link in db.scalars(select(FieldSprayMix).where(FieldSprayMix.field_id.in_(fids))):
+        sprays_by[link.field_id].append((link, sprays_map.get(link.spray_mix_id)))
+
+    plans_by: dict[int, list] = defaultdict(list)
+    for p in db.scalars(select(FieldPlan).where(FieldPlan.field_id.in_(fids))):
+        plans_by[p.field_id].append(p)
+
+    soils_by: dict[int, list] = defaultdict(list)
+    for s in db.scalars(select(SoilTest).where(SoilTest.field_id.in_(fids))):
+        soils_by[s.field_id].append(s)
+
+    meta["unmapped_plantings"] = (
+        db.scalar(
+            select(func.count())
+            .select_from(PlantingRecord)
+            .where(
+                PlantingRecord.crop_year_id == year.id,
+                PlantingRecord.field_id.is_(None),
+            )
+        )
+        or 0
+    )
+
+    cards = build_year_field_cards(
+        fields,
+        ops_by_field=ops_by,
+        assigns_by_field=assigns_by,
+        products_by_id=products,
+        sprays_by_field=sprays_by,
+        hybrids_by_field=hybrids_by,
+        plans_by_field=plans_by,
+        soils_by_field=soils_by,
+        settings=settings,
+        board=board,
+        contracts=contracts,
+    )
+    year_cost = round(sum(float(c["running_cost"] or 0) for c in cards), 2)
+    year_acres = round(sum(float(c["acres"] or 0) for c in cards), 2)
+    meta["year_cost"] = year_cost
+    meta["year_acres"] = year_acres
+    meta["year_cost_ac"] = round(year_cost / year_acres, 2) if year_acres else None
+    return cards, meta

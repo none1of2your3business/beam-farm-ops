@@ -62,6 +62,8 @@ class Field(Base):
     lease_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     rent_per_acre: Mapped[float] = mapped_column(Float, default=0.0)
     expected_yield: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # One-way miles from main shop/operation (budget travel cost)
+    distance_miles: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -75,6 +77,10 @@ class Field(Base):
         back_populates="field",
         cascade="all, delete-orphan",
         order_by="FieldShare.sort_order",
+    )
+    budgets: Mapped[list["FieldBudget"]] = relationship(
+        back_populates="field",
+        cascade="all, delete-orphan",
     )
 
     @property
@@ -216,11 +222,37 @@ class FieldHybrid(Base):
     field_id: Mapped[int] = mapped_column(ForeignKey("fields.id"), index=True)
     hybrid_id: Mapped[int] = mapped_column(ForeignKey("hybrids.id"), index=True)
     rate: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    units_applied: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    treated_acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # As-planted from Panorama / Precision Planting seasonal inputs
+    acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    units: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    population: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    client_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     applied_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    voided: Mapped[int] = mapped_column(Integer, default=0)
+    invoice_id: Mapped[Optional[int]] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+
+
+class PlantingRecord(Base):
+    """As-planted hybrid row from Panorama Seasonal Inputs (may be field-level or farm totals)."""
+
+    __tablename__ = "planting_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    crop_year_id: Mapped[int] = mapped_column(ForeignKey("crop_years.id"), index=True)
+    import_batch_id: Mapped[Optional[int]] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
+    field_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fields.id"), nullable=True, index=True)
+    hybrid_id: Mapped[Optional[int]] = mapped_column(ForeignKey("hybrids.id"), nullable=True, index=True)
+    crop: Mapped[str] = mapped_column(String(40), default="Corn")
+    hybrid_name: Mapped[str] = mapped_column(String(160))
+    client_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    farm_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    field_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    units: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    population: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(80), default="panorama_seasonal_inputs")
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class SprayMix(Base):
@@ -244,7 +276,6 @@ class SprayMixLine(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     spray_mix_id: Mapped[int] = mapped_column(ForeignKey("spray_mixes.id"), index=True)
-    product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("input_products.id"), nullable=True, index=True)
     product_name: Mapped[str] = mapped_column(String(160))
     rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     rate_unit: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)  # oz/ac | pt/ac | qt/ac | lb/ac
@@ -263,10 +294,7 @@ class FieldSprayMix(Base):
     timing_label: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     applied_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    treated_acres: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    weather_temp: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
-    weather_wind: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
-    voided: Mapped[int] = mapped_column(Integer, default=0)
+    invoice_id: Mapped[Optional[int]] = mapped_column(ForeignKey("invoices.id"), nullable=True)
 
 
 class FieldPlan(Base):
@@ -275,16 +303,13 @@ class FieldPlan(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     field_id: Mapped[int] = mapped_column(ForeignKey("fields.id"), index=True)
     crop_year_id: Mapped[int] = mapped_column(ForeignKey("crop_years.id"), index=True)
-    plan_type: Mapped[str] = mapped_column(String(40))  # planting | fertilizer | spray | work_order | …
+    plan_type: Mapped[str] = mapped_column(String(40))  # planting | fertilizer | spray
     title: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(40), default="planned")
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     target_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     completed_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     estimated_cost_per_acre: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    assigned_to: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
-    priority: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # high | normal | low
-    op_kind: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)  # wizard preselect
 
 
 class InputProduct(Base):
@@ -321,7 +346,7 @@ class FieldAssignment(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     unit_cost: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    voided: Mapped[int] = mapped_column(Integer, default=0)
+    invoice_id: Mapped[Optional[int]] = mapped_column(ForeignKey("invoices.id"), nullable=True)
 
 
 class FieldOperation(Base):
@@ -334,7 +359,8 @@ class FieldOperation(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cost: Mapped[float] = mapped_column(Float, default=0.0)
     billable: Mapped[int] = mapped_column(Integer, default=0)
-    voided: Mapped[int] = mapped_column(Integer, default=0)
+    # Set when this operation was billed on an invoice
+    invoice_id: Mapped[Optional[int]] = mapped_column(ForeignKey("invoices.id"), nullable=True)
 
 
 class Invoice(Base):
@@ -347,6 +373,7 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(40), default="unpaid")
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     total: Mapped[float] = mapped_column(Float, default=0.0)
+    field_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fields.id"), nullable=True)
 
 
 class InvoiceLine(Base):
@@ -358,6 +385,9 @@ class InvoiceLine(Base):
     quantity: Mapped[float] = mapped_column(Float, default=1.0)
     rate: Mapped[float] = mapped_column(Float, default=0.0)
     field_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fields.id"), nullable=True)
+    field_operation_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("field_operations.id"), nullable=True
+    )
 
 
 class GrainBin(Base):
@@ -367,7 +397,17 @@ class GrainBin(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True)
     crop: Mapped[str] = mapped_column(String(40), default="Corn")
     capacity_bu: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Partner whose farms this grain/bin is for — same idea as contracts
+    with_party_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parties.id"), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    with_party: Mapped[Optional["Party"]] = relationship()
+
+    @property
+    def with_label(self) -> str:
+        if self.with_party is not None and self.with_party.name:
+            return self.with_party.name
+        return "Me"
 
 
 class BinShare(Base):
@@ -377,6 +417,13 @@ class BinShare(Base):
     bin_id: Mapped[int] = mapped_column(ForeignKey("grain_bins.id"), index=True)
     owner_name: Mapped[str] = mapped_column(String(160))
     bushels: Mapped[float] = mapped_column(Float, default=0.0)
+    share_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # When Me's inventory went empty→nonempty for the current counting period.
+    carry_start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Lifetime carry $ for Me on this bin (kept when empty for analysis).
+    carry_accrued: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # carry_accrued value when the current counting period started.
+    carry_period_base: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 class GrainMovement(Base):
@@ -397,6 +444,8 @@ class GrainMovement(Base):
     net_bu: Mapped[float] = mapped_column(Float, default=0.0)
     ticket_number: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     destination: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    hauler: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    freight_per_bu: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
@@ -408,6 +457,8 @@ class GrainContract(Base):
     crop: Mapped[str] = mapped_column(String(40), default="Corn")
     contract_type: Mapped[str] = mapped_column(String(60), default="cash")
     buyer: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    # Partner whose farms this contract is used for — NOT a share of the contract itself
+    with_party_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parties.id"), nullable=True)
     bushels: Mapped[float] = mapped_column(Float, default=0.0)
     delivered_bu: Mapped[float] = mapped_column(Float, default=0.0)
     futures_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -417,7 +468,28 @@ class GrainContract(Base):
     delivery_start: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     delivery_end: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="open")
+    contract_number: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    with_party: Mapped[Optional["Party"]] = relationship()
+
+    @property
+    def with_label(self) -> str:
+        if self.with_party is not None and self.with_party.name:
+            return self.with_party.name
+        return "Me"
+
+    @property
+    def number_label(self) -> str:
+        cno = (self.contract_number or "").strip()
+        if cno:
+            return cno
+        notes = (self.notes or "").strip()
+        if notes.startswith("import:"):
+            parsed = notes[7:].strip()
+            if parsed:
+                return parsed
+        return f"#{self.id}"
 
 
 class ProductionEstimate(Base):
@@ -593,6 +665,9 @@ class AppSettings(Base):
     # Risk stress shocks ($/bu drop)
     corn_stress_shock: Mapped[float] = mapped_column(Float, default=0.50)
     soy_stress_shock: Mapped[float] = mapped_column(Float, default=1.00)
+    # Basis risk shocks ($/bu widen)
+    corn_basis_shock: Mapped[float] = mapped_column(Float, default=0.20)
+    soy_basis_shock: Mapped[float] = mapped_column(Float, default=0.30)
     # Cost of carry
     carry_interest_apr: Mapped[float] = mapped_column(Float, default=7.0)
     corn_storage_per_bu_mo: Mapped[float] = mapped_column(Float, default=0.03)
@@ -603,6 +678,194 @@ class AppSettings(Base):
     carry_mark_mode: Mapped[str] = mapped_column(String(20), default="cash")
     # Show monthly carry $ on grain bins overview
     bins_show_carry: Mapped[int] = mapped_column(Integer, default=0)
+    # Editable field-operation $/ac catalog (JSON overrides of defaults)
+    operation_rates_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Budget category defaults by crop: {"Corn": {"seed": 120, ...}, "Soybeans": {...}}
+    budget_defaults_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Travel for budget passes: average road speed + equipment+operator $/hour
+    budget_travel_speed_mph: Mapped[float] = mapped_column(Float, default=30.0)
+    budget_travel_rate_per_hr: Mapped[float] = mapped_column(Float, default=150.0)
+
+
+class FertilizerProduct(Base):
+    """Fertilizer catalog for field budgets (liquid/dry, $/ton, density, apply unit)."""
+
+    __tablename__ = "fertilizer_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    # liquid | dry
+    form: Mapped[str] = mapped_column(String(20), default="dry")
+    # Sold per ton (weighted average from purchases when lots are logged)
+    price_per_ton: Mapped[float] = mapped_column(Float, default=0.0)
+    # Cumulative tons from purchase lots (for weighted average)
+    tons_purchased: Mapped[float] = mapped_column(Float, default=0.0)
+    # For liquids: lb per gallon (e.g. 32-0-0 ≈ 11.08)
+    density_lb_per_gal: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # How rate is entered on the field: gal | lb
+    apply_unit: Mapped[str] = mapped_column(String(20), default="lb")
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[int] = mapped_column(Integer, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    purchases: Mapped[list["FertilizerPurchase"]] = relationship(
+        back_populates="product",
+        cascade="all, delete-orphan",
+        order_by="FertilizerPurchase.id.desc()",
+    )
+
+
+class FertilizerPurchase(Base):
+    """One buy lot of a fertilizer product — rolls into weighted avg $/ton."""
+
+    __tablename__ = "fertilizer_purchases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("fertilizer_products.id"), index=True)
+    crop_year_id: Mapped[Optional[int]] = mapped_column(ForeignKey("crop_years.id"), nullable=True, index=True)
+    purchase_date: Mapped[date] = mapped_column(Date)
+    vendor: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    # Quantity in tons
+    tons: Mapped[float] = mapped_column(Float, default=0.0)
+    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    product: Mapped["FertilizerProduct"] = relationship(back_populates="purchases")
+
+
+class FieldBudget(Base):
+    """Season budget for one field — seed/fert/passes/spray/travel + P/L assumptions."""
+
+    __tablename__ = "field_budgets"
+    __table_args__ = (UniqueConstraint("field_id", "crop_year_id", name="uq_field_budget_year"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    field_id: Mapped[int] = mapped_column(ForeignKey("fields.id"), index=True)
+    crop_year_id: Mapped[int] = mapped_column(ForeignKey("crop_years.id"), index=True)
+    price_override: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    margin_goal_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Legacy single-hybrid fields (migrated into seed_lines when present)
+    seed_hybrid_id: Mapped[Optional[int]] = mapped_column(ForeignKey("hybrids.id"), nullable=True)
+    seed_population: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    seed_bag_kernels: Mapped[float] = mapped_column(Float, default=80000.0)
+    seed_cost_per_bag: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    field: Mapped["Field"] = relationship(back_populates="budgets")
+    seed_hybrid: Mapped[Optional["Hybrid"]] = relationship()
+    lines: Mapped[list["FieldBudgetLine"]] = relationship(
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        order_by="FieldBudgetLine.sort_order",
+    )
+    seed_lines: Mapped[list["FieldBudgetSeedLine"]] = relationship(
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        order_by="FieldBudgetSeedLine.sort_order",
+    )
+    fert_lines: Mapped[list["FieldBudgetFertLine"]] = relationship(
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        order_by="FieldBudgetFertLine.sort_order",
+    )
+    passes: Mapped[list["FieldBudgetPass"]] = relationship(
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        order_by="FieldBudgetPass.sort_order",
+    )
+    spray_passes: Mapped[list["FieldBudgetSprayPass"]] = relationship(
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        order_by="FieldBudgetSprayPass.sort_order",
+    )
+
+
+class FieldBudgetSeedLine(Base):
+    """One hybrid/variety allocation on a field budget (acres + pop + $/bag)."""
+
+    __tablename__ = "field_budget_seed_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("field_budgets.id"), index=True)
+    hybrid_id: Mapped[Optional[int]] = mapped_column(ForeignKey("hybrids.id"), nullable=True, index=True)
+    acres: Mapped[float] = mapped_column(Float, default=0.0)
+    population: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bag_kernels: Mapped[float] = mapped_column(Float, default=80000.0)
+    cost_per_bag: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    budget: Mapped["FieldBudget"] = relationship(back_populates="seed_lines")
+    hybrid: Mapped[Optional["Hybrid"]] = relationship()
+
+
+class FieldBudgetLine(Base):
+    """Rollup category $/ac (kept in sync from detailed seed/fert/pass/spray/travel)."""
+
+    __tablename__ = "field_budget_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("field_budgets.id"), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    amount_per_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    budget: Mapped["FieldBudget"] = relationship(back_populates="lines")
+
+
+class FieldBudgetFertLine(Base):
+    __tablename__ = "field_budget_fert_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("field_budgets.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("fertilizer_products.id"), index=True)
+    rate_per_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    budget: Mapped["FieldBudget"] = relationship(back_populates="fert_lines")
+    product: Mapped["FertilizerProduct"] = relationship()
+
+
+class FieldBudgetPass(Base):
+    """Machinery / tillage / plant / harvest pass (self or hired) + travel trips."""
+
+    __tablename__ = "field_budget_passes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("field_budgets.id"), index=True)
+    pass_key: Mapped[str] = mapped_column(String(60), index=True)
+    pass_label: Mapped[str] = mapped_column(String(120))
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    is_hired: Mapped[int] = mapped_column(Integer, default=0)
+    hired_rate_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    self_rate_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    round_trips: Mapped[float] = mapped_column(Float, default=1.0)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    budget: Mapped["FieldBudget"] = relationship(back_populates="passes")
+
+
+class FieldBudgetSprayPass(Base):
+    """Spray pass with a tank mix (+ optional hire + travel trips)."""
+
+    __tablename__ = "field_budget_spray_passes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("field_budgets.id"), index=True)
+    label: Mapped[str] = mapped_column(String(120), default="Spray pass")
+    spray_mix_id: Mapped[Optional[int]] = mapped_column(ForeignKey("spray_mixes.id"), nullable=True)
+    is_hired: Mapped[int] = mapped_column(Integer, default=0)
+    hired_rate_ac: Mapped[float] = mapped_column(Float, default=0.0)
+    round_trips: Mapped[float] = mapped_column(Float, default=1.0)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    budget: Mapped["FieldBudget"] = relationship(back_populates="spray_passes")
+    spray_mix: Mapped[Optional["SprayMix"]] = relationship()
 
 
 class ProductReturn(Base):
@@ -613,7 +876,6 @@ class ProductReturn(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("input_products.id"), index=True)
     field_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fields.id"), nullable=True)
-    assignment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("field_assignments.id"), nullable=True)
     return_date: Mapped[date] = mapped_column(Date)
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     unit_cost: Mapped[float] = mapped_column(Float, default=0.0)
@@ -813,3 +1075,23 @@ class ImportMappingTemplate(Base):
     import_type: Mapped[str] = mapped_column(String(80), default="generic")
     mapping_json: Mapped[str] = mapped_column(Text, default="{}")
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class LookupValue(Base):
+    """Farm-editable dropdown / list values (haulers, crops, vendors, etc.)."""
+
+    __tablename__ = "lookup_values"
+    __table_args__ = (UniqueConstraint("category", "name", name="uq_lookup_cat_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    category: Mapped[str] = mapped_column(String(60), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    label: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    numeric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, default=1)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    @property
+    def display(self) -> str:
+        return (self.label or self.name or "").strip()

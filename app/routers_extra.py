@@ -6,17 +6,21 @@ from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Optional
+import csv
+import io
 import json
 import re
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.flash import redirect_flash
+from app.formutil import parse_date, parse_float
 from app.duplicates import (
     confirm_if_duplicates,
     find_assignment_dups,
@@ -39,7 +43,10 @@ from app.models import (
     FieldHybrid,
     FieldOperation,
     FieldPlan,
+    FieldShare,
     FieldSprayMix,
+    FertilizerProduct,
+    FertilizerPurchase,
     GrainBin,
     BinShare,
     GrainContract,
@@ -53,6 +60,7 @@ from app.models import (
     PanoramaConnection,
     PanoramaSyncLog,
     Party,
+    PlantingRecord,
     ProductionEstimate,
     ProductReturn,
     SprayMix,
@@ -64,6 +72,8 @@ from app.models import (
     ContractEvent,
     MarketingTarget,
     BinConditionNote,
+    TruckingRate,
+    TruckLoad,
 )
 from app import panorama as panorama_api
 from app import permissions as perms
@@ -81,6 +91,72 @@ CONTRACT_TYPES = [
     "accumulator",
     "custom",
 ]
+
+CONTRACT_STATUSES = ["open", "closed", "cancelled"]
+
+
+def _safe_next(raw: str | None, default: str = "/risk/contracts") -> str:
+    dest = (raw or "").strip() or default
+    if not dest.startswith("/") or dest.startswith("//"):
+        return default
+    return dest
+
+
+def _next_with_query(dest: str, **params: str) -> str:
+    parts = [f"{k}={quote(str(v))}" for k, v in params.items() if v is not None and str(v) != ""]
+    if not parts:
+        return dest
+    sep = "&" if "?" in dest else "?"
+    return f"{dest}{sep}{'&'.join(parts)}"
+
+
+def _as_form_list(vals):
+    if vals is None:
+        return []
+    if isinstance(vals, (str, int, float)):
+        return [vals]
+    return list(vals)
+
+
+def _ticket_lookups(db: Session) -> dict[str, list]:
+    """Haulers, destinations, and $/bu freight rates from editable Lists (+ seed harvest)."""
+    from app import lookups as lu
+
+    haulers = set(lu.names(db, lu.HAULER))
+    destinations = set(lu.names(db, lu.DESTINATION))
+    rates = set(lu.freight_rates(db))
+
+    # Keep harvesting so brand-new free-text history still appears until Lists catch up
+    for row in db.scalars(select(GrainMovement).order_by(GrainMovement.id.desc()).limit(500)):
+        if row.hauler and row.hauler.strip():
+            haulers.add(row.hauler.strip())
+        if row.destination and row.destination.strip():
+            destinations.add(row.destination.strip())
+        if row.freight_per_bu is not None:
+            rates.add(round(float(row.freight_per_bu), 4))
+
+    for row in db.scalars(select(TruckingRate)):
+        if row.hauler and row.hauler.strip():
+            haulers.add(row.hauler.strip())
+        if row.destination and row.destination.strip() and row.destination.strip() != "—":
+            destinations.add(row.destination.strip())
+        if row.rate_per_bu is not None:
+            rates.add(round(float(row.rate_per_bu), 4))
+
+    return {
+        "haulers": sorted(haulers, key=str.lower),
+        "destinations": sorted(destinations, key=str.lower),
+        "freight_rates": sorted(rates),
+    }
+
+
+def _pick_listed_or_new(listed: str, new: str) -> str | None:
+    """Prefer a newly typed value; otherwise use the dropdown selection."""
+    typed = (new or "").strip()
+    if typed:
+        return typed
+    chosen = (listed or "").strip()
+    return chosen or None
 
 
 def _user(request: Request):
@@ -111,23 +187,11 @@ def _need(request: Request, module: str):
 
 
 def _f(value: str, default: float | None = 0.0) -> float | None:
-    value = (value or "").strip().replace(",", "")
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
+    return parse_float(value, default=default)
 
 
 def _d(value: str) -> date | None:
-    value = (value or "").strip()
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
+    return parse_date(value)
 
 
 # ---------- Trials ----------
@@ -530,6 +594,72 @@ def _year_field_fallback(db: Session) -> int:
     return field.id
 
 
+def _start_planting_import(
+    db: Session,
+    *,
+    user: dict,
+    filename: str,
+    content: bytes,
+) -> ImportBatch:
+    from app import planting_import as pimp
+    from app.activity import log_activity
+
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (filename or "planting.csv"))
+    upload_root = Path(__file__).resolve().parent.parent / "data" / "uploads"
+    upload_root.mkdir(parents=True, exist_ok=True)
+    path = upload_root / f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{safe}"
+    path.write_bytes(content)
+    # Also keep a copy in panorama uploads
+    panorama_api.save_uploaded_file(filename or safe, content)
+
+    parsed = pimp.parse_csv_bytes(content, filename=filename or safe)
+    year = _year(db)
+    fields = []
+    hybrids = []
+    if year:
+        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id).order_by(Field.name)))
+        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+    rows = pimp.match_fields(parsed.get("rows") or [], fields)
+    rows = pimp.match_hybrids(rows, hybrids)
+    payload = {
+        "filename": filename or safe,
+        "path": str(path),
+        "headers": parsed.get("headers") or [],
+        "column_map": parsed.get("column_map") or {},
+        "crop": parsed.get("crop") or "Corn",
+        "has_field_column": bool(parsed.get("has_field_column")),
+        "has_client_column": bool(parsed.get("has_client_column")),
+        "is_seasonal_inputs": bool(parsed.get("is_seasonal_inputs")),
+        "parse_ok": bool(parsed.get("ok")),
+        "parse_error": parsed.get("error"),
+        "rows": rows,
+        "summary": pimp.summarize(rows),
+    }
+    batch = ImportBatch(
+        filename=path.name,
+        import_type="panorama_planting",
+        status="pending_review" if parsed.get("ok") else "error",
+        row_count=len(rows),
+        notes=(
+            parsed.get("error")
+            or f"Seasonal inputs · {len(rows)} hybrid rows · review then import"
+        ),
+        payload_json=pimp.dump_payload(payload),
+    )
+    db.add(batch)
+    db.add(
+        PanoramaSyncLog(
+            action="planting_upload",
+            detail=f"{path.name}: {len(rows)} hybrid rows",
+            ok=1 if parsed.get("ok") else 0,
+        )
+    )
+    log_activity(db, user.get("username"), "planting_upload", path.name)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
 @router.post("/panorama/upload")
 async def panorama_upload(
     request: Request,
@@ -540,7 +670,27 @@ async def panorama_upload(
     if isinstance(user, RedirectResponse):
         return user
     content = await file.read()
-    path = panorama_api.save_uploaded_file(file.filename or "panorama.bin", content)
+    name = file.filename or "panorama.bin"
+    lower = name.lower()
+
+    # Seasonal Inputs / planting CSV → guided review
+    if lower.endswith((".csv", ".txt")):
+        from app import planting_import as pimp
+
+        # Peek headers — if it looks like planting data, open the wizard
+        try:
+            text = content.decode("utf-8-sig", errors="replace")
+            first = next(csv.reader(io.StringIO(text)), [])
+        except Exception:  # noqa: BLE001
+            first = []
+        if pimp.is_seasonal_inputs_headers([str(h) for h in first]) or (
+            any("hybrid" in str(h).lower() for h in first)
+            and any("unit" in str(h).lower() or "area" in str(h).lower() for h in first)
+        ):
+            batch = _start_planting_import(db, user=user, filename=name, content=content)
+            return RedirectResponse(f"/panorama/planting/{batch.id}", status_code=303)
+
+    path = panorama_api.save_uploaded_file(name, content)
     conn = db.scalar(select(PanoramaConnection).limit(1))
     if not conn:
         conn = PanoramaConnection(status="file_only")
@@ -568,9 +718,426 @@ async def panorama_upload(
     return RedirectResponse("/panorama?msg=File+uploaded", status_code=303)
 
 
+@router.get("/panorama/planting/{batch_id}", response_class=HTMLResponse)
+def panorama_planting_review(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    from app import planting_import as pimp
+
+    user = _need(request, "panorama")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.import_type != "panorama_planting":
+        return RedirectResponse("/panorama", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    year = _year(db)
+    fields = []
+    if year:
+        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id).order_by(Field.name)))
+    return templates.TemplateResponse(
+        "panorama_planting.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "panorama",
+            "farm_name": _farm(db),
+            "batch": batch,
+            "payload": payload,
+            "rows": payload.get("rows") or [],
+            "summary": payload.get("summary") or pimp.summarize(payload.get("rows") or []),
+            "fields": fields,
+            "year": year,
+            "message": request.query_params.get("msg"),
+            "error": request.query_params.get("err") or payload.get("parse_error"),
+        },
+    )
+
+
+@router.post("/panorama/planting/{batch_id}/save")
+def panorama_planting_save(
+    request: Request,
+    batch_id: int,
+    row_idx: list[int] = Form(default=[]),
+    include: list[str] = Form(default=[]),
+    field_id: list[str] = Form(default=[]),
+    hybrid_name: list[str] = Form(default=[]),
+    acres: list[str] = Form(default=[]),
+    units: list[str] = Form(default=[]),
+    population: list[str] = Form(default=[]),
+    client_name: list[str] = Form(default=[]),
+    field_name: list[str] = Form(default=[]),
+    crop: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    from app import planting_import as pimp
+
+    user = _need(request, "panorama")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.import_type != "panorama_planting":
+        return RedirectResponse("/panorama", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    rows = list(payload.get("rows") or [])
+    include_set = {int(x) for x in include if str(x).isdigit()}
+
+    def as_list(vals):
+        if vals is None:
+            return []
+        if isinstance(vals, (str, int, float)):
+            return [vals]
+        return list(vals)
+
+    idxs = [int(x) for x in as_list(row_idx)]
+    fields_l = as_list(field_id)
+    hybrids_l = as_list(hybrid_name)
+    acres_l = as_list(acres)
+    units_l = as_list(units)
+    pop_l = as_list(population)
+    clients_l = as_list(client_name)
+    field_names_l = as_list(field_name)
+    crops_l = as_list(crop)
+
+    for i, idx in enumerate(idxs):
+        if idx < 0 or idx >= len(rows):
+            continue
+        r = dict(rows[idx])
+        r["include"] = idx in include_set
+        fid_raw = str(fields_l[i] if i < len(fields_l) else "").strip()
+        r["field_id"] = int(fid_raw) if fid_raw.isdigit() else None
+        if r["field_id"]:
+            r["field_match"] = "manual"
+        name = str(hybrids_l[i] if i < len(hybrids_l) else r.get("hybrid_name") or "").strip()
+        if name:
+            r["hybrid_name"] = name
+        r["acres"] = _f(str(acres_l[i] if i < len(acres_l) else ""), None)
+        r["units"] = _f(str(units_l[i] if i < len(units_l) else ""), None)
+        r["population"] = _f(str(pop_l[i] if i < len(pop_l) else ""), None)
+        r["client_name"] = str(clients_l[i] if i < len(clients_l) else r.get("client_name") or "").strip() or None
+        r["field_name"] = str(field_names_l[i] if i < len(field_names_l) else r.get("field_name") or "").strip() or None
+        crop_v = str(crops_l[i] if i < len(crops_l) else r.get("crop") or "Corn").strip() or "Corn"
+        r["crop"] = crop_v
+        rows[idx] = r
+
+    year = _year(db)
+    fields = []
+    hybrids = []
+    if year:
+        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id)))
+        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+    # Re-tag hybrid match after edits
+    rows = pimp.match_hybrids(rows, hybrids)
+    # Keep manual field_ids
+    payload["rows"] = rows
+    payload["summary"] = pimp.summarize(rows)
+    batch.payload_json = pimp.dump_payload(payload)
+    batch.row_count = payload["summary"]["row_count"]
+    db.commit()
+    return RedirectResponse(f"/panorama/planting/{batch_id}?msg=Saved+review", status_code=303)
+
+
+@router.post("/panorama/planting/{batch_id}/commit")
+def panorama_planting_commit(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    from app import planting_import as pimp
+    from app.activity import log_activity
+
+    user = _need(request, "panorama")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.import_type != "panorama_planting":
+        return RedirectResponse("/panorama", status_code=303)
+    year = _year(db)
+    if not year:
+        return RedirectResponse(f"/panorama/planting/{batch_id}?err=No+active+crop+year", status_code=303)
+    payload = pimp.load_payload(batch.payload_json)
+    rows = [r for r in (payload.get("rows") or []) if r.get("include")]
+    if not rows:
+        return RedirectResponse(f"/panorama/planting/{batch_id}?err=No+rows+selected", status_code=303)
+
+    # Cache hybrids by (crop, name lower)
+    existing = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+    hybrid_by: dict[tuple[str, str], Hybrid] = {
+        ((h.crop or "Corn"), (h.name or "").strip().lower()): h for h in existing if h.name
+    }
+
+    created_hybrids = 0
+    assigned = 0
+    records = 0
+    for r in rows:
+        name = (r.get("hybrid_name") or "").strip()
+        if not name:
+            continue
+        crop = (r.get("crop") or payload.get("crop") or "Corn").strip() or "Corn"
+        key = (crop, name.lower())
+        hybrid = hybrid_by.get(key)
+        if not hybrid:
+            hybrid = Hybrid(
+                crop_year_id=year.id,
+                crop=crop,
+                name=name,
+                unit_label="unit",
+                notes="Imported from Panorama Seasonal Inputs",
+            )
+            db.add(hybrid)
+            db.flush()
+            hybrid_by[key] = hybrid
+            created_hybrids += 1
+
+        acres = r.get("acres")
+        units = r.get("units")
+        population = r.get("population")
+        client = (r.get("client_name") or "").strip() or None
+        farm = (r.get("farm_name") or "").strip() or None
+        field_name = (r.get("field_name") or "").strip() or None
+        field_id = r.get("field_id")
+        if field_id and not db.get(Field, int(field_id)):
+            field_id = None
+
+        rate = None
+        if population is not None:
+            rate = f"{int(round(float(population))):,} seeds/ac"
+
+        db.add(
+            PlantingRecord(
+                crop_year_id=year.id,
+                import_batch_id=batch.id,
+                field_id=int(field_id) if field_id else None,
+                hybrid_id=hybrid.id,
+                crop=crop,
+                hybrid_name=name,
+                client_name=client,
+                farm_name=farm,
+                field_name=field_name,
+                acres=float(acres) if acres is not None else None,
+                units=float(units) if units is not None else None,
+                population=float(population) if population is not None else None,
+                source="panorama_seasonal_inputs",
+            )
+        )
+        records += 1
+
+        if field_id:
+            # Upsert FieldHybrid for this field+hybrid
+            fh = db.scalar(
+                select(FieldHybrid).where(
+                    FieldHybrid.field_id == int(field_id),
+                    FieldHybrid.hybrid_id == hybrid.id,
+                )
+            )
+            if fh is None:
+                fh = FieldHybrid(field_id=int(field_id), hybrid_id=hybrid.id)
+                db.add(fh)
+            fh.acres = float(acres) if acres is not None else fh.acres
+            fh.units = float(units) if units is not None else fh.units
+            fh.population = float(population) if population is not None else fh.population
+            fh.client_name = client or fh.client_name
+            if rate:
+                fh.rate = rate
+            # Acres from units × seeds/unit ÷ population (import acres often missing/0)
+            from app.field_ledger import planted_acres_from_units
+
+            calc_ac = planted_acres_from_units(
+                fh.units,
+                fh.population,
+                crop=hybrid.crop,
+                brand=hybrid.brand,
+            )
+            if calc_ac is not None:
+                fh.acres = calc_ac
+            assigned += 1
+
+    batch.status = "imported"
+    batch.row_count = records
+    batch.notes = (
+        f"Imported {records} planting rows · {created_hybrids} new hybrids · "
+        f"{assigned} field assigns"
+    )
+    db.add(
+        PanoramaSyncLog(
+            action="planting_import",
+            detail=batch.notes,
+            ok=1,
+        )
+    )
+    log_activity(db, user.get("username"), "planting_import", batch.notes)
+    # Auto machinery cost for corn fields that are now fully planted
+    from app.models import Field as FieldModel
+    from app.op_cost_ensure import ensure_all_completed_corn_planting_costs
+
+    if year:
+        planted_fields = list(
+            db.scalars(select(FieldModel).where(FieldModel.crop_year_id == year.id))
+        )
+        ensure_all_completed_corn_planting_costs(db, planted_fields)
+    db.commit()
+    return RedirectResponse(
+        f"/panorama/planted?msg=Imported+{records}+rows",
+        status_code=303,
+    )
+
+
+@router.get("/panorama/planted", response_class=HTMLResponse)
+def panorama_planted(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "panorama")
+    if isinstance(user, RedirectResponse):
+        return user
+    year = _year(db)
+    rows = []
+    if year:
+        rows = list(
+            db.scalars(
+                select(PlantingRecord)
+                .where(PlantingRecord.crop_year_id == year.id)
+                .order_by(PlantingRecord.crop, PlantingRecord.hybrid_name, PlantingRecord.id)
+            )
+        )
+    field_name = {}
+    if year:
+        for f in db.scalars(select(Field).where(Field.crop_year_id == year.id)):
+            field_name[f.id] = f.name
+    return templates.TemplateResponse(
+        "panorama_planted.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "panorama",
+            "farm_name": _farm(db),
+            "year": year,
+            "rows": rows,
+            "field_name": field_name,
+            "message": request.query_params.get("msg"),
+            "total_acres": round(sum((r.acres or 0) for r in rows), 1),
+            "total_units": round(sum((r.units or 0) for r in rows), 2),
+        },
+    )
+
+
 # ---------- Grain bins ----------
+def _split_bushels_by_pct(total: float, owners: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Split total bu by ownership %; last owner gets remainder so the sum matches."""
+    if not owners:
+        return [("Me", round(total, 1))]
+    if len(owners) == 1:
+        return [(owners[0][0], round(total, 1))]
+    out: list[tuple[str, float]] = []
+    used = 0.0
+    for i, (name, pct) in enumerate(owners):
+        if i == len(owners) - 1:
+            amt = round(float(total) - used, 1)
+        else:
+            amt = round(float(total) * float(pct) / 100.0, 1)
+            used += amt
+        out.append((name, amt))
+    return out
+
+
+def _bin_ownership_pcts(db: Session, bin_row: GrainBin) -> list[tuple[str, float]]:
+    """
+    Ownership shares for a bin.
+    Prefer explicit BinShare.share_pct values that total ~100%.
+    If the bin is farmed-with a party and % aren't set, default to Me 50% / partner 50%.
+    """
+    shares = list(db.scalars(select(BinShare).where(BinShare.bin_id == bin_row.id)))
+    named: list[tuple[str, float]] = []
+    for s in shares:
+        name = (s.owner_name or "").strip()
+        if not name:
+            continue
+        if s.share_pct is not None and float(s.share_pct) > 0:
+            named.append((name, float(s.share_pct)))
+    total = sum(p for _, p in named)
+    if named and abs(total - 100.0) <= 1.5:
+        return named
+
+    partner = None
+    if bin_row.with_party_id:
+        party = getattr(bin_row, "with_party", None) or db.get(Party, bin_row.with_party_id)
+        if party and (party.name or "").strip():
+            partner = party.name.strip()
+    if partner:
+        return [("Me", 50.0), (partner, 50.0)]
+    return [("Me", 100.0)]
+
+
+def _ensure_bin_ownership_shares(db: Session, bin_row: GrainBin) -> list[tuple[str, float]]:
+    """Create/update BinShare rows so Me + farmed-with party have the right share %."""
+    pcts = _bin_ownership_pcts(db, bin_row)
+    existing = {
+        (s.owner_name or "").strip().lower(): s
+        for s in db.scalars(select(BinShare).where(BinShare.bin_id == bin_row.id))
+    }
+    keep: set[str] = set()
+    for name, pct in pcts:
+        key = name.lower()
+        keep.add(key)
+        row = existing.get(key)
+        if not row:
+            row = BinShare(bin_id=bin_row.id, owner_name=name, bushels=0.0, share_pct=pct)
+            db.add(row)
+            db.flush()
+        else:
+            row.owner_name = name
+            row.share_pct = pct
+    # Drop empty extra owners that are no longer part of ownership
+    for key, row in existing.items():
+        if key not in keep and (row.bushels or 0) <= 0 and key != "me":
+            db.delete(row)
+    return pcts
+
+
+def _set_bin_total_by_ownership(
+    db: Session, bin_row: GrainBin, total: float
+) -> list[tuple[str, float]]:
+    """Set bin on-hand to a total, splitting bushels by ownership %. Carry keeps running if Me stays nonempty."""
+    pcts = _ensure_bin_ownership_shares(db, bin_row)
+    splits = _split_bushels_by_pct(max(0.0, float(total or 0)), pcts)
+    pct_by = {n.lower(): p for n, p in pcts}
+    for name, bu in splits:
+        share = db.scalar(
+            select(BinShare).where(BinShare.bin_id == bin_row.id, BinShare.owner_name == name)
+        )
+        if not share:
+            share = BinShare(
+                bin_id=bin_row.id,
+                owner_name=name,
+                bushels=0.0,
+                share_pct=pct_by.get(name.lower()),
+            )
+            db.add(share)
+            db.flush()
+        old = float(share.bushels or 0)
+        share.bushels = bu
+        if share.share_pct is None:
+            share.share_pct = pct_by.get(name.lower())
+        _touch_me_carry_start(share, old, bu)
+    return splits
+
+
+def _fill_bin_by_ownership(db: Session, bin_row: GrainBin, cap: float) -> list[tuple[str, float]]:
+    """Fill bin to capacity, splitting bushels by ownership %."""
+    return _set_bin_total_by_ownership(db, bin_row, cap)
+
+
+def _add_to_bin_by_ownership(
+    db: Session, bin_row: GrainBin, add_bu: float
+) -> tuple[float, list[tuple[str, float]]]:
+    """Add bushels to current total, then re-split the new total by ownership %."""
+    current = sum(
+        float(s.bushels or 0)
+        for s in db.scalars(select(BinShare).where(BinShare.bin_id == bin_row.id))
+    )
+    new_total = max(0.0, current + float(add_bu or 0))
+    return new_total, _set_bin_total_by_ownership(db, bin_row, new_total)
+
+
 def _bin_cards(db: Session):
-    bins = list(db.scalars(select(GrainBin).order_by(GrainBin.crop, GrainBin.name)))
+    bins = list(
+        db.scalars(
+            select(GrainBin)
+            .options(joinedload(GrainBin.with_party))
+            .order_by(GrainBin.crop, GrainBin.name)
+        ).unique()
+    )
     shares = list(db.scalars(select(BinShare)))
     by_bin: dict[int, list] = {}
     for s in shares:
@@ -578,6 +1145,7 @@ def _bin_cards(db: Session):
     bin_cards = []
     for b in bins:
         share_list = by_bin.get(b.id, [])
+        ownership = _bin_ownership_pcts(db, b)
         total = round(sum((s.bushels or 0) for s in share_list), 1)
         me_share = next((s for s in share_list if (s.owner_name or "").lower() == "me"), None)
         if me_share is None and share_list:
@@ -589,10 +1157,34 @@ def _bin_cards(db: Session):
             pct = round(100.0 * total / cap, 1)
         fill = min(100.0, max(0.0, pct if pct is not None else 0.0))
         over = bool(cap and total > cap)
+        # Display shares in ownership order with % labels
+        bu_by = {(s.owner_name or "").strip().lower(): (s.bushels or 0) for s in share_list}
+        display_shares = []
+        for name, sp in ownership:
+            display_shares.append(
+                {
+                    "owner_name": name,
+                    "share_pct": sp,
+                    "bushels": bu_by.get(name.lower(), 0),
+                }
+            )
+        for s in share_list:
+            key = (s.owner_name or "").strip().lower()
+            if key and not any(d["owner_name"].lower() == key for d in display_shares):
+                display_shares.append(
+                    {
+                        "owner_name": s.owner_name,
+                        "share_pct": s.share_pct,
+                        "bushels": s.bushels or 0,
+                    }
+                )
         bin_cards.append(
             {
                 "bin": b,
                 "shares": share_list,
+                "display_shares": display_shares,
+                "ownership": ownership,
+                "is_shared": len(ownership) > 1,
                 "total_bu": total,
                 "me_bu": me_bu,
                 "capacity": cap,
@@ -615,7 +1207,7 @@ def _bin_cards(db: Session):
 
 
 @router.get("/bins", response_class=HTMLResponse)
-def bins_page(request: Request, view: Optional[str] = None, db: Session = Depends(get_db), preselect_field_id: Optional[str] = None):
+def bins_page(request: Request, view: Optional[str] = None, db: Session = Depends(get_db)):
     user = _need(request, "grain")
     if isinstance(user, RedirectResponse):
         return user
@@ -631,23 +1223,128 @@ def bins_page(request: Request, view: Optional[str] = None, db: Session = Depend
                     GrainContract.status == "open",
                     GrainContract.crop_year_id == year.id,
                 )
+                .options(joinedload(GrainContract.with_party))
                 .order_by(GrainContract.id.desc())
-            )
+            ).unique()
         )
     fields = []
+    field_shares: dict[str, list] = {}
     if year:
         fields = list(
             db.scalars(
-                select(Field).where(Field.crop_year_id == year.id).order_by(Field.name)
-            )
+                select(Field)
+                .where(Field.crop_year_id == year.id)
+                .options(joinedload(Field.shares).joinedload(FieldShare.party))
+                .order_by(Field.name)
+            ).unique()
         )
+        for f in fields:
+            rows = []
+            for s in list(f.shares or []):
+                name = s.display_name
+                if not name:
+                    continue
+                rows.append(
+                    {
+                        "name": name,
+                        "share_pct": float(s.share_pct or 0),
+                        "is_me": bool(s.is_me),
+                        "party_id": int(s.party_id) if s.party_id else None,
+                    }
+                )
+            if not rows and f.ownership_mode == "on_shares" and f.my_share_pct is not None:
+                rows = [
+                    {
+                        "name": "Me",
+                        "share_pct": float(f.my_share_pct or 0),
+                        "is_me": True,
+                        "party_id": None,
+                    },
+                ]
+                rem = max(0.0, 100.0 - float(f.my_share_pct or 0))
+                if rem > 0 and f.party:
+                    rows.append(
+                        {
+                            "name": f.party.name,
+                            "share_pct": rem,
+                            "is_me": False,
+                            "party_id": int(f.party_id) if f.party_id else None,
+                        }
+                    )
+            if not rows:
+                rows = [
+                    {
+                        "name": "Me",
+                        "share_pct": 100.0,
+                        "is_me": True,
+                        "party_id": None,
+                    }
+                ]
+            field_shares[str(f.id)] = rows
     moves = list(db.scalars(select(GrainMovement).order_by(GrainMovement.id.desc()).limit(40)))
     notes = list(db.scalars(select(BinConditionNote).order_by(BinConditionNote.id.desc()).limit(40)))
     bin_name = {b.id: b.name for b in bins}
     field_name = {f.id: f.name for f in fields}
+    field_crops = {str(f.id): f.crop for f in fields}
+    ticket_lookups = _ticket_lookups(db)
+    bin_owners = {}
+    for b in bins:
+        pcts = _bin_ownership_pcts(db, b)
+        share_rows = by_bin.get(b.id, [])
+        bu_by = {(s.owner_name or "").strip().lower(): (s.bushels or 0) for s in share_rows}
+        bin_owners[str(b.id)] = [
+            {
+                "name": name,
+                "share_pct": pct,
+                "bushels": bu_by.get(name.lower(), 0),
+            }
+            for name, pct in pcts
+        ]
+    bin_crops = {str(b.id): b.crop for b in bins}
+    owner_names: set[str] = {"Me"}
+    for entries in bin_owners.values():
+        for e in entries:
+            if e["name"]:
+                owner_names.add(e["name"])
+    for m in moves:
+        if m.owner_name and m.owner_name.strip():
+            owner_names.add(m.owner_name.strip())
+    ticket_owners = sorted(owner_names, key=lambda n: (n.lower() != "me", n.lower()))
+    bin_name_map = {str(b.id): b.name for b in bins}
+    parties = list(db.scalars(select(Party).order_by(Party.name)))
+    # Same Me + parties list as field share partners / bins "farmed with".
+    preferred = {"partner", "landlord"}
+    preferred_list = [p for p in parties if (p.party_type or "").lower() in preferred]
+    farm_with_parties = preferred_list if preferred_list else list(parties)
+    rank = {"partner": 0, "landlord": 1, "customer": 2, "buyer": 3, "other": 4}
+    farm_with_parties = sorted(
+        farm_with_parties,
+        key=lambda p: (rank.get((p.party_type or "other").lower(), 9), (p.name or "").lower()),
+    )
+    ownership_parties = [{"name": "Me", "is_me": True, "party_id": None}] + [
+        {
+            "name": p.name,
+            "is_me": False,
+            "party_id": int(p.id),
+            "party_type": p.party_type or "",
+        }
+        for p in farm_with_parties
+        if (p.name or "").strip()
+    ]
+    bin_with_party = {
+        str(b.id): {
+            "party_id": int(b.with_party_id) if b.with_party_id else None,
+            "name": b.with_party.name if b.with_party else None,
+        }
+        for b in bins
+    }
+    with_party_preselect = None
+    added = (request.query_params.get("with_party_added") or "").strip()
+    if added.isdigit():
+        with_party_preselect = int(added)
 
     view_mode = (view or "overview").strip().lower()
-    if view_mode not in ("overview", "sheet", "ticket"):
+    if view_mode not in ("overview", "sheet", "ticket", "ticket_scale", "ticket_other", "new"):
         view_mode = "overview"
 
     corn_bu = sum(c["total_bu"] for c in bin_cards if c["bin"].crop == "Corn")
@@ -663,37 +1360,96 @@ def bins_page(request: Request, view: Optional[str] = None, db: Session = Depend
         "soy_cap": round(soy_cap, 0),
     }
 
-    show_carry = bool(settings and (settings.bins_show_carry or 0))
+    # Carry on Me's share only — accrued since grain entered, refreshed on every page open.
     carry_rates = {"Corn": None, "Soybeans": None}
-    carry_farm_mo = 0.0
-    if show_carry:
-        board = cme_quotes.board_from_settings(settings)
-        bin_bu = {"Corn": corn_bu, "Soybeans": soy_bu}
-        fallback = {
-            "Corn": settings.corn_price_assumption if settings else None,
-            "Soybeans": settings.soy_price_assumption if settings else None,
-        }
-        snap = mkt.build_carry_snapshot(settings, board, bin_bu, market_fallback=fallback)
-        for crop in ("Corn", "Soybeans"):
-            carry_rates[crop] = (snap["by_crop"].get(crop) or {}).get("rate")
-        for card in bin_cards:
-            crop = card["bin"].crop
-            rate = carry_rates.get(crop)
-            card["carry_mo"] = mkt.carry_farm_mo(card["total_bu"] or 0, rate)
-            if card["carry_mo"] is not None:
-                carry_farm_mo += card["carry_mo"]
-        carry_farm_mo = round(carry_farm_mo, 2)
-        stats["carry_corn_mo"] = (snap["by_crop"].get("Corn") or {}).get("farm_mo")
-        stats["carry_soy_mo"] = (snap["by_crop"].get("Soybeans") or {}).get("farm_mo")
-        stats["carry_total_mo"] = carry_farm_mo
+    board = cme_quotes.board_from_settings(settings)
+    me_bu_by_crop = {"Corn": 0.0, "Soybeans": 0.0}
+    for card in bin_cards:
+        crop = card["bin"].crop
+        if crop in me_bu_by_crop:
+            me_bu_by_crop[crop] += float(card["me_bu"] or 0)
+    fallback = {
+        "Corn": settings.corn_price_assumption if settings else None,
+        "Soybeans": settings.soy_price_assumption if settings else None,
+    }
+    snap = mkt.build_carry_snapshot(settings, board, me_bu_by_crop, market_fallback=fallback)
+    for crop in ("Corn", "Soybeans"):
+        carry_rates[crop] = (snap["by_crop"].get(crop) or {}).get("rate")
+
+    today = date.today()
+    carry_accrued_total = 0.0
+    carry_mo_me_total = 0.0
+    dirty_carry = False
+    for card in bin_cards:
+        crop = card["bin"].crop
+        rate = carry_rates.get(crop)
+        me_bu = float(card["me_bu"] or 0)
+        me_share = next(
+            (s for s in card["shares"] if (s.owner_name or "").lower() == "me"),
+            None,
+        )
+        frozen = float(me_share.carry_accrued or 0) if me_share is not None else 0.0
+        period_base = float(me_share.carry_period_base or 0) if me_share is not None else 0.0
+
+        if me_bu > 0:
+            # Counting: refresh accrued from period base + current inventory days
+            if me_share is not None and me_share.carry_start_date is None:
+                me_share.carry_start_date = today
+                me_share.carry_period_base = frozen
+                period_base = frozen
+                dirty_carry = True
+            start = me_share.carry_start_date if me_share is not None else today
+            days = max(0, (today - start).days) + 1 if start else 0
+            period = mkt.carry_accrued(me_bu, rate, days) or 0.0
+            accrued = round(period_base + period, 2)
+            if me_share is not None and abs(float(me_share.carry_accrued or 0) - accrued) > 0.001:
+                me_share.carry_accrued = accrued
+                dirty_carry = True
+            mo_me = mkt.carry_farm_mo(me_bu, rate)
+            card["carry_start"] = start
+            card["carry_days"] = days
+            card["carry_accrued"] = accrued
+            card["carry_counting"] = True
+            card["carry_mo"] = accrued
+            card["carry_mo_me"] = mo_me
+            carry_accrued_total += accrued
+            if mo_me is not None:
+                carry_mo_me_total += mo_me
+        else:
+            # Empty: stop counting, keep last accrued total for analysis
+            if me_share is not None and me_share.carry_start_date is not None:
+                me_share.carry_start_date = None
+                dirty_carry = True
+            card["carry_start"] = None
+            card["carry_days"] = 0
+            card["carry_accrued"] = frozen if frozen > 0 else None
+            card["carry_counting"] = False
+            card["carry_mo"] = frozen if frozen > 0 else None
+            card["carry_mo_me"] = None
+            if frozen > 0:
+                carry_accrued_total += frozen
+
+    if dirty_carry:
+        db.commit()
+
+    stats["carry_corn_mo"] = (snap["by_crop"].get("Corn") or {}).get("farm_mo")
+    stats["carry_soy_mo"] = (snap["by_crop"].get("Soybeans") or {}).get("farm_mo")
+    stats["carry_total_mo"] = round(carry_mo_me_total, 2)
+    stats["carry_accrued_total"] = round(carry_accrued_total, 2)
 
     active = {
         "sheet": "bins_sheet",
         "ticket": "bins_ticket",
+        "ticket_scale": "bins_ticket_scale",
+        "ticket_other": "bins_ticket",
+        "new": "bins_new",
     }.get(view_mode, "bins")
     template = {
         "sheet": "bins_sheet.html",
         "ticket": "bins_ticket.html",
+        "ticket_scale": "bins_ticket_scale.html",
+        "ticket_other": "bins_ticket_other.html",
+        "new": "bins_new.html",
     }.get(view_mode, "bins.html")
     ctx = {
         "request": request,
@@ -707,6 +1463,8 @@ def bins_page(request: Request, view: Optional[str] = None, db: Session = Depend
         "by_bin": by_bin,
         "contracts": contracts,
         "fields": fields,
+        "field_shares": field_shares,
+        "field_crops": field_crops,
         "moves": moves,
         "notes": notes,
         "bin_name": bin_name,
@@ -716,9 +1474,19 @@ def bins_page(request: Request, view: Optional[str] = None, db: Session = Depend
         "stats": stats,
         "saved": request.query_params.get("saved"),
         "settings": settings,
-        "bins_show_carry": show_carry,
         "carry_rates": carry_rates,
-        "preselect_field_id": int(preselect_field_id) if (preselect_field_id or "").isdigit() else None,
+        "ticket_haulers": ticket_lookups["haulers"],
+        "ticket_destinations": ticket_lookups["destinations"],
+        "ticket_freight_rates": ticket_lookups["freight_rates"],
+        "bin_owners": bin_owners,
+        "bin_crops": bin_crops,
+        "bin_name_map": bin_name_map,
+        "ticket_owners": ticket_owners,
+        "parties": parties,
+        "farm_with_parties": farm_with_parties,
+        "ownership_parties": ownership_parties,
+        "bin_with_party": bin_with_party,
+        "with_party_preselect": with_party_preselect,
     }
     return templates.TemplateResponse(template, ctx)
 
@@ -750,7 +1518,272 @@ def bins_sheet(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/bins/ticket", response_class=HTMLResponse)
 def bins_ticket_page(request: Request, db: Session = Depends(get_db)):
-    return bins_page(request, view="ticket", db=db, preselect_field_id=request.query_params.get("field_id"))
+    return bins_page(request, view="ticket", db=db)
+
+
+@router.get("/bins/ticket/scale", response_class=HTMLResponse)
+def bins_ticket_scale_page(request: Request, db: Session = Depends(get_db)):
+    return bins_page(request, view="ticket_scale", db=db)
+
+
+@router.get("/bins/ticket/other", response_class=HTMLResponse)
+def bins_ticket_other_page(request: Request, db: Session = Depends(get_db)):
+    return bins_page(request, view="ticket_other", db=db)
+
+
+@router.get("/bins/new", response_class=HTMLResponse)
+def bins_new_page(request: Request, db: Session = Depends(get_db)):
+    return bins_page(request, view="new", db=db)
+
+
+@router.get("/bins/ticket/new/owner", response_class=HTMLResponse)
+def bins_ticket_new_owner(request: Request, bin_id: Optional[int] = None, db: Session = Depends(get_db)):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bins, _cards, _groups, by_bin = _bin_cards(db)
+    bin_owners = {
+        str(bid): [
+            {"name": s.owner_name, "share_pct": s.share_pct, "bushels": s.bushels or 0}
+            for s in shares
+            if (s.owner_name or "").strip()
+        ]
+        for bid, shares in by_bin.items()
+    }
+    return templates.TemplateResponse(
+        "bins_ticket_new_owner.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "bins_ticket",
+            "farm_name": _farm(db),
+            "bins": bins,
+            "bin_owners": bin_owners,
+            "prefill_bin_id": bin_id,
+        },
+    )
+
+
+@router.get("/bins/ticket/new/hauler", response_class=HTMLResponse)
+def bins_ticket_new_hauler(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "bins_ticket",
+            "farm_name": _farm(db),
+            "page_kind": "hauler",
+            "page_title": "Add trucking company",
+            "page_lede": "Enter the company name. It will appear in the Trucking company dropdown on scale tickets.",
+            "form_action": "/bins/ticket/new/hauler",
+            "error": None,
+            "ticket_haulers": [],
+            "ticket_destinations": [],
+        },
+    )
+
+
+@router.post("/bins/ticket/new/hauler")
+def bins_ticket_new_hauler_save(
+    request: Request,
+    hauler: str = Form(...),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    name = hauler.strip()
+    if not name:
+        return RedirectResponse("/bins/ticket/new/hauler", status_code=303)
+    from app import lookups as lu
+
+    lu.ensure(db, lu.HAULER, name, notes=(notes.strip() or None))
+    # Persist via rate table so trucking page stays consistent
+    existing = db.scalar(select(TruckingRate).where(TruckingRate.hauler == name).limit(1))
+    if not existing:
+        db.add(
+            TruckingRate(
+                destination="—",
+                hauler=name,
+                notes=(notes.strip() or None),
+            )
+        )
+        log_activity(db, user.get("username"), "hauler_add", name)
+    db.commit()
+    return RedirectResponse(f"/bins/ticket/scale?hauler_added={quote(name)}", status_code=303)
+
+
+@router.get("/bins/ticket/new/destination", response_class=HTMLResponse)
+def bins_ticket_new_destination(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "bins_ticket",
+            "farm_name": _farm(db),
+            "page_kind": "destination",
+            "page_title": "Add destination",
+            "page_lede": "Enter the elevator / buyer destination. It will appear in the Destination dropdown on scale tickets.",
+            "form_action": "/bins/ticket/new/destination",
+            "error": None,
+            "ticket_haulers": [],
+            "ticket_destinations": [],
+        },
+    )
+
+
+@router.post("/bins/ticket/new/destination")
+def bins_ticket_new_destination_save(
+    request: Request,
+    destination: str = Form(...),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    name = destination.strip()
+    if not name:
+        return RedirectResponse("/bins/ticket/new/destination", status_code=303)
+    from app import lookups as lu
+
+    lu.ensure(db, lu.DESTINATION, name, notes=(notes.strip() or None))
+    existing = db.scalar(select(TruckingRate).where(TruckingRate.destination == name).limit(1))
+    if not existing:
+        db.add(
+            TruckingRate(
+                destination=name,
+                notes=(notes.strip() or None),
+            )
+        )
+        log_activity(db, user.get("username"), "destination_add", name)
+    db.commit()
+    return RedirectResponse(f"/bins/ticket/scale?destination_added={quote(name)}", status_code=303)
+
+
+@router.get("/bins/ticket/new/freight", response_class=HTMLResponse)
+def bins_ticket_new_freight(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    lookups = _ticket_lookups(db)
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "bins_ticket",
+            "farm_name": _farm(db),
+            "page_kind": "freight",
+            "page_title": "Add freight rate",
+            "page_lede": "Enter $/bu and optional company / destination so rates stay consistent for tickets and reports.",
+            "form_action": "/bins/ticket/new/freight",
+            "error": None,
+            "ticket_haulers": lookups["haulers"],
+            "ticket_destinations": lookups["destinations"],
+        },
+    )
+
+
+@router.post("/bins/ticket/new/freight")
+def bins_ticket_new_freight_save(
+    request: Request,
+    rate_per_bu: str = Form(...),
+    hauler: str = Form(""),
+    hauler_new: str = Form(""),
+    destination: str = Form(""),
+    destination_new: str = Form(""),
+    rate_per_load: str = Form(""),
+    miles: str = Form(""),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    rate = _f(rate_per_bu, None)
+    if rate is None:
+        return RedirectResponse("/bins/ticket/new/freight", status_code=303)
+    from app import lookups as lu
+
+    trucker = _pick_listed_or_new(hauler, hauler_new)
+    dest = _pick_listed_or_new(destination, destination_new) or "—"
+    if trucker:
+        lu.ensure(db, lu.HAULER, trucker)
+    if dest and dest != "—":
+        lu.ensure(db, lu.DESTINATION, dest)
+    lu.ensure_freight(db, rate)
+    db.add(
+        TruckingRate(
+            destination=dest,
+            hauler=trucker,
+            rate_per_bu=rate,
+            rate_per_load=_f(rate_per_load, None) if (rate_per_load or "").strip() else None,
+            miles=_f(miles, None) if (miles or "").strip() else None,
+            notes=(notes.strip() or None),
+        )
+    )
+    log_activity(db, user.get("username"), "freight_rate_add", f"${rate}/bu")
+    db.commit()
+    return RedirectResponse(f"/bins/ticket/scale?freight_added={rate}", status_code=303)
+
+
+@router.post("/bins/share/add")
+def bins_share_add(
+    request: Request,
+    bin_id: int = Form(...),
+    owner_name: str = Form(...),
+    share_pct: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Add a new owner/share on a bin (from scale-ticket Add New page)."""
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bin_row = db.get(GrainBin, bin_id)
+    name = (owner_name or "").strip()
+    if not bin_row or not name:
+        return RedirectResponse("/bins/ticket/new/owner?error=bin", status_code=303)
+
+    pct = _f(share_pct, None) if (share_pct or "").strip() else None
+    existing = db.scalar(
+        select(BinShare).where(BinShare.bin_id == bin_id, BinShare.owner_name == name)
+    )
+    if existing:
+        if pct is not None:
+            existing.share_pct = pct
+        db.commit()
+        return RedirectResponse(
+            f"/bins/ticket/scale?share_added={quote(name)}&bin_id={bin_id}",
+            status_code=303,
+        )
+
+    db.add(
+        BinShare(
+            bin_id=bin_id,
+            owner_name=name,
+            bushels=0.0,
+            share_pct=pct,
+        )
+    )
+    from app import lookups as lu
+
+    lu.ensure(db, lu.GRAIN_OWNER, name)
+    log_activity(db, user.get("username"), "bin_share_add", f"{name} on {bin_row.name}")
+    db.commit()
+    return RedirectResponse(
+        f"/bins/ticket/scale?share_added={quote(name)}&bin_id={bin_id}",
+        status_code=303,
+    )
 
 
 @router.post("/bins/sheet/save")
@@ -759,6 +1792,7 @@ def bins_sheet_save(
     bin_id: list[int] = Form(default=[]),
     name: list[str] = Form(default=[]),
     crop: list[str] = Form(default=[]),
+    with_party_id: list[str] = Form(default=[]),
     capacity_bu: list[str] = Form(default=[]),
     on_hand_bu: list[str] = Form(default=[]),
     notes: list[str] = Form(default=[]),
@@ -778,6 +1812,7 @@ def bins_sheet_save(
     ids = [int(x) for x in as_list(bin_id)]
     names = as_list(name)
     crops = as_list(crop)
+    withs = as_list(with_party_id)
     caps = as_list(capacity_bu)
     ons = as_list(on_hand_bu)
     notes_l = as_list(notes)
@@ -789,8 +1824,10 @@ def bins_sheet_save(
             continue
         new_name = str(names[i] if i < len(names) else bin_row.name).strip() or bin_row.name
         new_crop = str(crops[i] if i < len(crops) else bin_row.crop).strip() or bin_row.crop
-        if new_crop not in ("Corn", "Soybeans"):
-            new_crop = bin_row.crop
+        wid_raw = str(withs[i] if i < len(withs) else (bin_row.with_party_id or "")).strip()
+        new_wid = int(wid_raw) if wid_raw.isdigit() else None
+        if new_wid and not db.get(Party, new_wid):
+            new_wid = None
         cap_raw = str(caps[i] if i < len(caps) else "")
         new_cap = _f(cap_raw, None) if cap_raw.strip() else None
         note_raw = str(notes_l[i] if i < len(notes_l) else (bin_row.notes or "")).strip() or None
@@ -799,32 +1836,33 @@ def bins_sheet_save(
         changed = (
             bin_row.name != new_name
             or bin_row.crop != new_crop
+            or (bin_row.with_party_id or None) != new_wid
             or (bin_row.capacity_bu != new_cap)
             or (bin_row.notes or None) != note_raw
         )
 
         shares = list(db.scalars(select(BinShare).where(BinShare.bin_id == bid)))
-        me = next((s for s in shares if (s.owner_name or "").lower() == "me"), None)
-        if me is None and shares:
-            me = shares[0]
-        old_me = (me.bushels if me else 0) or 0
+        old_total = sum(float(s.bushels or 0) for s in shares)
         if on_raw.strip() != "":
-            amount = _f(on_raw) or 0
-            if abs(float(old_me) - float(amount)) > 1e-9:
+            amount = _f(on_raw)
+            if amount is not None and abs(float(old_total) - float(amount)) > 1e-9:
                 changed = True
-                if me is None:
-                    me = BinShare(bin_id=bid, owner_name="Me", bushels=amount)
-                    db.add(me)
-                else:
-                    me.bushels = amount
 
         if not changed:
             continue
 
         bin_row.name = new_name
         bin_row.crop = new_crop
+        bin_row.with_party_id = new_wid
         bin_row.capacity_bu = new_cap
         bin_row.notes = note_raw
+        if new_wid:
+            db.refresh(bin_row, attribute_names=["with_party"])
+        _ensure_bin_ownership_shares(db, bin_row)
+        if on_raw.strip() != "":
+            amount = _f(on_raw)
+            if amount is not None:
+                _set_bin_total_by_ownership(db, bin_row, amount)
         updated += 1
 
     try:
@@ -840,26 +1878,38 @@ def bins_create(
     request: Request,
     name: str = Form(...),
     crop: str = Form("Corn"),
+    with_party_id: str = Form(""),
     capacity_bu: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = _need(request, "grain")
     if isinstance(user, RedirectResponse):
         return user
+    wid = int(with_party_id) if with_party_id.strip().isdigit() else None
+    if wid and not db.get(Party, wid):
+        wid = None
     bin_row = GrainBin(
         name=name.strip(),
         crop=crop,
+        with_party_id=wid,
         capacity_bu=_f(capacity_bu, None) if capacity_bu.strip() else None,
     )
     db.add(bin_row)
     try:
         db.flush()
-        db.add(BinShare(bin_id=bin_row.id, owner_name="Me", bushels=0))
+        if wid:
+            db.refresh(bin_row, attribute_names=["with_party"])
+        _ensure_bin_ownership_shares(db, bin_row)
+        me = db.scalar(
+            select(BinShare).where(BinShare.bin_id == bin_row.id, BinShare.owner_name == "Me")
+        )
+        if not me:
+            db.add(BinShare(bin_id=bin_row.id, owner_name="Me", bushels=0, share_pct=100.0))
         db.commit()
     except IntegrityError:
         db.rollback()
-        return RedirectResponse("/bins?error=bin_name_taken", status_code=303)
-    return RedirectResponse("/bins", status_code=303)
+        return RedirectResponse("/bins/new?error=bin_name_taken", status_code=303)
+    return RedirectResponse("/bins?saved=bin", status_code=303)
 
 
 @router.post("/bins/move")
@@ -898,6 +1948,14 @@ def bins_move(
     fid = int(field_id) if field_id.isdigit() else None
     cid = int(contract_id) if contract_id.isdigit() else None
     owner = owner_name.strip() or "Me"
+    from app import lookups as lu
+
+    if destination.strip():
+        lu.ensure(db, lu.DESTINATION, destination.strip())
+    if owner:
+        lu.ensure(db, lu.GRAIN_OWNER, owner)
+    if crop:
+        lu.ensure(db, lu.CROP, crop)
     db.add(
         GrainMovement(
             bin_id=bid,
@@ -917,20 +1975,10 @@ def bins_move(
         )
     )
 
-    def adjust(bin_pk: int, owner_nm: str, delta: float):
-        share = db.scalar(
-            select(BinShare).where(BinShare.bin_id == bin_pk, BinShare.owner_name == owner_nm)
-        )
-        if not share:
-            share = BinShare(bin_id=bin_pk, owner_name=owner_nm, bushels=0)
-            db.add(share)
-            db.flush()
-        share.bushels = (share.bushels or 0) + delta
-
     if move_type == "fill" and bid:
-        adjust(bid, owner, bu)
+        _adjust_bin_share(db, bid, owner, bu)
     elif move_type == "delivery" and bid:
-        adjust(bid, owner, -bu)
+        _adjust_bin_share(db, bid, owner, -bu)
         if cid:
             contract = db.get(GrainContract, cid)
             if contract:
@@ -942,11 +1990,346 @@ def bins_move(
             if contract:
                 contract.delivered_bu = (contract.delivered_bu or 0) + bu
     elif move_type == "transfer" and bid and to_bid:
-        adjust(bid, owner, -bu)
-        adjust(to_bid, owner, bu)
+        _adjust_bin_share(db, bid, owner, -bu)
+        _adjust_bin_share(db, to_bid, owner, bu)
     log_activity(db, user.get("username"), f"grain_{move_type}", f"{bu} bu {crop}")
     db.commit()
-    return RedirectResponse("/bins/ticket", status_code=303)
+    return RedirectResponse("/bins/ticket/other?saved=1", status_code=303)
+
+
+def _touch_me_carry_start(
+    share: BinShare,
+    old_bu: float,
+    new_bu: float,
+    when: date | None = None,
+) -> None:
+    """Start Me carry clock when inventory goes empty→nonempty; stop (don't clear $) when empty."""
+    if (share.owner_name or "").strip().lower() != "me":
+        return
+    when = when or date.today()
+    old_v = float(old_bu or 0)
+    new_v = float(new_bu or 0)
+    if old_v <= 0 and new_v > 0:
+        share.carry_start_date = when
+        # New counting period builds on top of whatever was already accrued
+        share.carry_period_base = float(share.carry_accrued or 0)
+    elif new_v <= 0:
+        # Stop the clock — keep carry_accrued for analysis
+        share.carry_start_date = None
+
+
+def _adjust_bin_share(db: Session, bin_pk: int, owner_nm: str, delta: float) -> None:
+    share = db.scalar(
+        select(BinShare).where(BinShare.bin_id == bin_pk, BinShare.owner_name == owner_nm)
+    )
+    if not share:
+        share = BinShare(bin_id=bin_pk, owner_name=owner_nm, bushels=0)
+        db.add(share)
+        db.flush()
+    old = float(share.bushels or 0)
+    new = old + float(delta)
+    share.bushels = new
+    _touch_me_carry_start(share, old, new)
+
+
+def _reverse_grain_movement(
+    db: Session,
+    move: GrainMovement,
+    *,
+    reverse_truck: bool = True,
+) -> None:
+    """Undo inventory / contract effects of a movement before deleting the row."""
+    bu = float(move.net_bu or 0)
+    owner = (move.owner_name or "Me").strip() or "Me"
+    mt = (move.move_type or "").strip().lower()
+    if mt == "fill" and move.bin_id:
+        _adjust_bin_share(db, move.bin_id, owner, -bu)
+    elif mt == "delivery" and move.bin_id:
+        _adjust_bin_share(db, move.bin_id, owner, bu)
+        if move.contract_id and bu:
+            contract = db.get(GrainContract, move.contract_id)
+            if contract:
+                contract.delivered_bu = max(0.0, (contract.delivered_bu or 0) - bu)
+    elif mt == "elevator":
+        if move.contract_id and bu:
+            contract = db.get(GrainContract, move.contract_id)
+            if contract:
+                contract.delivered_bu = max(0.0, (contract.delivered_bu or 0) - bu)
+    elif mt == "transfer" and move.bin_id and move.to_bin_id:
+        _adjust_bin_share(db, move.bin_id, owner, bu)
+        _adjust_bin_share(db, move.to_bin_id, owner, -bu)
+
+    # Best-effort: remove matching truck loads for this ticket (once per void)
+    if reverse_truck and move.ticket_number and move.move_date:
+        loads = list(
+            db.scalars(
+                select(TruckLoad).where(
+                    TruckLoad.ticket_number == move.ticket_number,
+                    TruckLoad.load_date == move.move_date,
+                )
+            )
+        )
+        for load in loads:
+            db.delete(load)
+
+
+@router.post("/bins/moves/{move_id}/delete")
+def bins_move_delete(
+    move_id: int,
+    request: Request,
+    next: str = Form("/bins/ticket/scale"),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    move = db.get(GrainMovement, move_id)
+    dest = (next or "/bins/ticket/scale").strip() or "/bins/ticket/scale"
+    if not dest.startswith("/") or dest.startswith("//"):
+        dest = "/bins/ticket/scale"
+    if not move:
+        return RedirectResponse(dest, status_code=303)
+
+    # Voiding a scale ticket reverses every chunk with the same ticket # + date
+    # (primary + overflow/spot), then deletes those rows.
+    if move.ticket_number and move.move_date:
+        siblings = list(
+            db.scalars(
+                select(GrainMovement).where(
+                    GrainMovement.ticket_number == move.ticket_number,
+                    GrainMovement.move_date == move.move_date,
+                )
+            )
+        )
+    else:
+        siblings = [move]
+
+    label = f"#{move.id} {move.move_type} {move.net_bu} bu {move.crop}"
+    if move.ticket_number:
+        label += f" ticket {move.ticket_number}"
+        if len(siblings) > 1:
+            label += f" ({len(siblings)} chunks)"
+
+    for m in siblings:
+        _reverse_grain_movement(db, m, reverse_truck=False)
+        db.delete(m)
+    if move.ticket_number and move.move_date:
+        for load in list(
+            db.scalars(
+                select(TruckLoad).where(
+                    TruckLoad.ticket_number == move.ticket_number,
+                    TruckLoad.load_date == move.move_date,
+                )
+            )
+        ):
+            db.delete(load)
+
+    log_activity(db, user.get("username"), "grain_move_delete", label)
+    db.commit()
+    sep = "&" if "?" in dest else "?"
+    return RedirectResponse(f"{dest}{sep}deleted=1", status_code=303)
+
+
+@router.post("/bins/{bin_id}/fill")
+def bins_fill(bin_id: int, request: Request, db: Session = Depends(get_db)):
+    """Fill bin to capacity, splitting bushels by ownership % (Me / farmed-with party)."""
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bin_row = db.scalar(
+        select(GrainBin)
+        .where(GrainBin.id == bin_id)
+        .options(joinedload(GrainBin.with_party))
+    )
+    if not bin_row:
+        return RedirectResponse("/bins", status_code=303)
+    cap = float(bin_row.capacity_bu) if bin_row.capacity_bu is not None else None
+    if cap is None or cap <= 0:
+        return redirect_flash(
+            request,
+            "/bins",
+            "Set a capacity on the bin before filling it.",
+            "error",
+        )
+
+    splits = _fill_bin_by_ownership(db, bin_row, cap)
+    split_txt = " · ".join(f"{n} {bu:g}" for n, bu in splits)
+    log_activity(
+        db,
+        user.get("username"),
+        "bin_fill",
+        f"{bin_row.name}: filled to {cap:g} bu ({split_txt})",
+    )
+    db.commit()
+    return redirect_flash(
+        request,
+        "/bins",
+        f"Filled “{bin_row.name}” to {cap:g} bu — {split_txt}. Carry ticker keeps running.",
+    )
+
+
+@router.post("/bins/{bin_id}/set-total")
+def bins_set_total(
+    bin_id: int,
+    request: Request,
+    bushels: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Set bin total on-hand; ownership % splits are calculated from that total."""
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bin_row = db.scalar(
+        select(GrainBin)
+        .where(GrainBin.id == bin_id)
+        .options(joinedload(GrainBin.with_party))
+    )
+    if not bin_row:
+        return RedirectResponse("/bins", status_code=303)
+    if not bushels.strip():
+        return redirect_flash(
+            request, "/bins", "Enter a bin total (bushels) before Set total.", "error"
+        )
+    total = _f(bushels)
+    if total is None or total < 0:
+        return redirect_flash(request, "/bins", "Enter a valid bushel total.", "error")
+
+    splits = _set_bin_total_by_ownership(db, bin_row, total)
+    split_txt = " · ".join(f"{n} {bu:g}" for n, bu in splits)
+    log_activity(
+        db,
+        user.get("username"),
+        "bin_set_total",
+        f"{bin_row.name}: set total {total:g} bu ({split_txt})",
+    )
+    db.commit()
+    return redirect_flash(
+        request,
+        "/bins",
+        f"Set “{bin_row.name}” to {total:g} bu total — {split_txt}. Carry ticker keeps running.",
+    )
+
+
+@router.post("/bins/{bin_id}/add")
+def bins_add(
+    bin_id: int,
+    request: Request,
+    bushels: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Add bushels to the bin total; then re-split by ownership %. Carry keeps running."""
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bin_row = db.scalar(
+        select(GrainBin)
+        .where(GrainBin.id == bin_id)
+        .options(joinedload(GrainBin.with_party))
+    )
+    if not bin_row:
+        return RedirectResponse("/bins", status_code=303)
+    if not bushels.strip():
+        return redirect_flash(
+            request, "/bins", "Enter how many bushels to add before Add to bin.", "error"
+        )
+    add_bu = _f(bushels)
+    if add_bu is None or add_bu == 0:
+        return redirect_flash(request, "/bins", "Enter a non-zero amount to add.", "error")
+
+    new_total, splits = _add_to_bin_by_ownership(db, bin_row, add_bu)
+    split_txt = " · ".join(f"{n} {bu:g}" for n, bu in splits)
+    log_activity(
+        db,
+        user.get("username"),
+        "bin_add",
+        f"{bin_row.name}: added {add_bu:g} → {new_total:g} bu ({split_txt})",
+    )
+    db.commit()
+    return redirect_flash(
+        request,
+        "/bins",
+        f"Added {add_bu:g} bu to “{bin_row.name}” → {new_total:g} total — {split_txt}. "
+        "Carry ticker keeps running.",
+    )
+
+
+@router.post("/bins/{bin_id}/empty")
+def bins_empty(
+    bin_id: int,
+    request: Request,
+    carry_action: str = Form("keep"),
+    db: Session = Depends(get_db),
+):
+    """Zero all on-hand shares. Optionally keep or reset the Me carry ticker."""
+    user = _need(request, "grain")
+    if isinstance(user, RedirectResponse):
+        return user
+    bin_row = db.get(GrainBin, bin_id)
+    if not bin_row:
+        return RedirectResponse("/bins", status_code=303)
+
+    action = (carry_action or "keep").strip().lower()
+    if action not in ("keep", "reset"):
+        action = "keep"
+
+    shares = list(db.scalars(select(BinShare).where(BinShare.bin_id == bin_id)))
+    if not shares:
+        shares = [BinShare(bin_id=bin_id, owner_name="Me", bushels=0)]
+        db.add(shares[0])
+        db.flush()
+
+    before_total = sum(float(s.bushels or 0) for s in shares)
+    me = next((s for s in shares if (s.owner_name or "").lower() == "me"), None)
+
+    # Finalize Me carry up to today before emptying (so "keep" has a current total)
+    if action == "keep" and me is not None and float(me.bushels or 0) > 0:
+        settings = db.scalar(select(AppSettings).limit(1))
+        board = cme_quotes.board_from_settings(settings)
+        me_bu = float(me.bushels or 0)
+        snap = mkt.build_carry_snapshot(
+            settings,
+            board,
+            {bin_row.crop: me_bu},
+            market_fallback={
+                "Corn": settings.corn_price_assumption if settings else None,
+                "Soybeans": settings.soy_price_assumption if settings else None,
+            },
+        )
+        rate = (snap["by_crop"].get(bin_row.crop) or {}).get("rate")
+        start = me.carry_start_date or date.today()
+        days = max(0, (date.today() - start).days) + 1
+        period = mkt.carry_accrued(me_bu, rate, days) or 0.0
+        base = float(me.carry_period_base or 0)
+        me.carry_accrued = round(base + period, 2)
+
+    before_carry = float(me.carry_accrued or 0) if me is not None else 0.0
+
+    for share in shares:
+        old = float(share.bushels or 0)
+        share.bushels = 0.0
+        _touch_me_carry_start(share, old, 0.0)
+        if (share.owner_name or "").lower() == "me":
+            if action == "reset":
+                share.carry_accrued = 0.0
+                share.carry_period_base = 0.0
+                share.carry_start_date = None
+            # keep: leave carry_accrued; clock already stopped
+
+    log_activity(
+        db,
+        user.get("username"),
+        "bin_empty",
+        f"{bin_row.name}: emptied {before_total:g} bu · carry {'reset' if action == 'reset' else f'kept ${before_carry:.2f}'}",
+    )
+    db.commit()
+    if action == "reset":
+        msg = f"Emptied “{bin_row.name}”. Carry ticker reset to $0."
+    else:
+        msg = (
+            f"Emptied “{bin_row.name}”. Carry ticker kept at ${before_carry:,.2f} "
+            "(continues from there the next time you fill)."
+        )
+    return redirect_flash(request, "/bins", msg)
 
 
 @router.post("/bins/{bin_id}/update")
@@ -955,11 +2338,11 @@ def bins_update(
     request: Request,
     name: str = Form(...),
     crop: str = Form("Corn"),
+    with_party_id: str = Form(""),
     capacity_bu: str = Form(""),
-    on_hand_bu: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    """Rename bin, change crop/capacity, and set Me (or primary) on-hand bushels."""
+    """Rename bin, change crop/capacity/with-party. Inventory uses Set total / Add / Fill."""
     user = _need(request, "grain")
     if isinstance(user, RedirectResponse):
         return user
@@ -969,20 +2352,17 @@ def bins_update(
     new_name = name.strip()
     if not new_name:
         return RedirectResponse("/bins?error=bin_name_taken", status_code=303)
+    wid = int(with_party_id) if with_party_id.strip().isdigit() else None
+    if wid and not db.get(Party, wid):
+        wid = None
     bin_row.name = new_name
     bin_row.crop = crop
+    bin_row.with_party_id = wid
     bin_row.capacity_bu = _f(capacity_bu, None) if capacity_bu.strip() else None
-    if on_hand_bu.strip() != "":
-        amount = _f(on_hand_bu) or 0
-        shares = list(db.scalars(select(BinShare).where(BinShare.bin_id == bin_id)))
-        me = next((s for s in shares if (s.owner_name or "").lower() == "me"), None)
-        if me is None and shares:
-            me = shares[0]
-        if me is None:
-            me = BinShare(bin_id=bin_id, owner_name="Me", bushels=amount)
-            db.add(me)
-        else:
-            me.bushels = amount
+    db.flush()
+    if wid:
+        db.refresh(bin_row, attribute_names=["with_party"])
+    _ensure_bin_ownership_shares(db, bin_row)
     try:
         log_activity(db, user.get("username"), "bin_update", new_name)
         db.commit()
@@ -992,12 +2372,129 @@ def bins_update(
     return RedirectResponse("/bins", status_code=303)
 
 
+def _contract_bu_left(contract: GrainContract | None) -> float:
+    if not contract:
+        return 0.0
+    return max(0.0, float(contract.bushels or 0) - float(contract.delivered_bu or 0))
+
+
+def _mark_contract_if_filled(contract: GrainContract) -> None:
+    left = _contract_bu_left(contract)
+    if left <= 0.05 and (contract.status or "").lower() == "open":
+        contract.status = "closed"
+
+
+def _plan_scale_ticket_contracts(
+    db: Session,
+    *,
+    year: CropYear | None,
+    crop: str,
+    amount: float,
+    primary_id: int | None,
+    overflow_mode: str,
+    overflow_contract_id: int | None,
+    spot_futures: float | None,
+    spot_basis: float | None,
+    buyer: str | None,
+    when: date,
+    ticket: str | None,
+) -> list[tuple[int | None, float, str]]:
+    """Split ownership delivery across primary contract, overflow contract, and/or spot.
+
+    Returns [(contract_id|None, bu, kind)] where kind is primary|overflow|spot|open.
+    """
+    remaining = round(max(0.0, float(amount or 0)), 1)
+    if remaining <= 0:
+        return []
+
+    apps: list[tuple[int | None, float, str]] = []
+    mode = (overflow_mode or "none").strip().lower()
+
+    def take_from(contract: GrainContract | None, kind: str) -> None:
+        nonlocal remaining
+        if not contract or remaining <= 0.05:
+            return
+        left = _contract_bu_left(contract)
+        if left <= 0.05:
+            return
+        take = round(min(remaining, left), 1)
+        if take <= 0:
+            return
+        apps.append((contract.id, take, kind))
+        remaining = round(remaining - take, 1)
+
+    if primary_id:
+        take_from(db.get(GrainContract, primary_id), "primary")
+
+    if remaining > 0.05:
+        if mode == "contract" and overflow_contract_id and overflow_contract_id != primary_id:
+            take_from(db.get(GrainContract, overflow_contract_id), "overflow")
+        if remaining > 0.05 and mode == "spot":
+            if year is None:
+                apps.append((None, remaining, "open"))
+                remaining = 0.0
+            else:
+                fut = float(spot_futures) if spot_futures is not None else None
+                bas = float(spot_basis) if spot_basis is not None else 0.0
+                cash = round(fut + bas, 4) if fut is not None else None
+                spot = GrainContract(
+                    crop_year_id=year.id,
+                    crop=crop,
+                    contract_type="cash",
+                    buyer=buyer,
+                    bushels=remaining,
+                    delivered_bu=0.0,
+                    futures_price=fut,
+                    basis=bas if fut is not None else None,
+                    cash_price=cash,
+                    status="open",
+                    notes=(
+                        f"spot from scale ticket{(' ' + ticket) if ticket else ''}"
+                        f" · {when.isoformat()}"
+                    ),
+                )
+                db.add(spot)
+                db.flush()
+                apps.append((spot.id, remaining, "spot"))
+                remaining = 0.0
+        elif remaining > 0.05 and mode == "contract":
+            # Overflow contract missing/full — require spot (or another contract) explicitly
+            raise ValueError("contract_overflow")
+        elif remaining > 0.05 and mode in ("", "none"):
+            if primary_id:
+                # Primary filled (or leftover) with no overflow disposition — never silent open
+                raise ValueError("contract_overflow")
+            apps.append((None, remaining, "open"))
+            remaining = 0.0
+        elif remaining > 0.05:
+            apps.append((None, remaining, "open"))
+            remaining = 0.0
+
+    if not apps and amount > 0:
+        apps.append((primary_id, round(amount, 1), "primary" if primary_id else "open"))
+    return apps
+
+
+def _apply_contract_deliveries(
+    db: Session,
+    apps: list[tuple[int | None, float, str]],
+) -> None:
+    for cid, bu, _kind in apps:
+        if not cid or bu <= 0:
+            continue
+        contract = db.get(GrainContract, cid)
+        if not contract:
+            continue
+        contract.delivered_bu = round(float(contract.delivered_bu or 0) + float(bu), 1)
+        _mark_contract_if_filled(contract)
+
+
 @router.post("/bins/ticket")
 async def bins_ticket(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Scale ticket: pull from one or more bins and/or a field."""
+    """Scale ticket: pull from a bin or field; ownership share sizes contract delivery."""
     user = _need(request, "grain")
     if isinstance(user, RedirectResponse):
         return user
@@ -1008,8 +2505,20 @@ async def bins_ticket(
     moisture = str(form.get("moisture") or "")
     ticket_number = str(form.get("ticket_number") or "")
     destination = str(form.get("destination") or "")
+    destination_new = str(form.get("destination_new") or "")
+    hauler = str(form.get("hauler") or "")
+    hauler_new = str(form.get("hauler_new") or "")
+    freight_per_bu = str(form.get("freight_per_bu") or "")
+    freight_per_bu_new = str(form.get("freight_per_bu_new") or "")
     contract_id = str(form.get("contract_id") or "")
+    overflow_mode = str(form.get("overflow_mode") or "none")
+    overflow_contract_id = str(form.get("overflow_contract_id") or "")
+    spot_futures_raw = str(form.get("spot_futures") or "")
+    spot_basis_raw = str(form.get("spot_basis") or "")
     owner_name = str(form.get("owner_name") or "Me")
+    owner_bu_raw = str(form.get("owner_bu") or "")
+    owner_share_pct_raw = str(form.get("owner_share_pct") or "")
+    source_mode = str(form.get("source_mode") or "bin").strip().lower()
     move_date = str(form.get("move_date") or "")
     notes = str(form.get("notes") or "")
     field_id = str(form.get("field_id") or "")
@@ -1027,15 +2536,35 @@ async def bins_ticket(
     owner = owner_name.strip() or "Me"
     when = _d(move_date) or date.today()
     cid = int(contract_id) if contract_id.isdigit() else None
+    overflow_cid = int(overflow_contract_id) if overflow_contract_id.isdigit() else None
+    spot_futures = _f(spot_futures_raw, None) if spot_futures_raw.strip() else None
+    spot_basis = _f(spot_basis_raw, None) if spot_basis_raw.strip() else None
     fid = int(field_id) if field_id.isdigit() else None
     f_bu = _f(field_bu) or 0
     ticket = ticket_number.strip() or None
-    dest = destination.strip() or None
+    dest = _pick_listed_or_new(destination, destination_new)
+    trucker = _pick_listed_or_new(hauler, hauler_new)
+    freight_raw = _pick_listed_or_new(freight_per_bu, freight_per_bu_new)
+    freight = _f(freight_raw, None) if freight_raw else None
     note = notes.strip() or None
+    share_pct = _f(owner_share_pct_raw, None) if owner_share_pct_raw.strip() else None
+    year = _year(db)
+
+    from app import lookups as lu
+
+    if dest:
+        lu.ensure(db, lu.DESTINATION, dest)
+    if trucker:
+        lu.ensure(db, lu.HAULER, trucker)
+    if freight is not None:
+        lu.ensure_freight(db, freight)
+    if owner:
+        lu.ensure(db, lu.GRAIN_OWNER, owner)
+    if crop:
+        lu.ensure(db, lu.CROP, crop)
 
     bin_ids = [str(v) for v in form.getlist("alloc_bin_id")]
     bu_vals = [str(v) for v in form.getlist("alloc_bu")]
-    # Pad so zip never drops a bin with blank bu
     while len(bu_vals) < len(bin_ids):
         bu_vals.append("")
 
@@ -1048,86 +2577,383 @@ async def bins_ticket(
             allocations.append((int(bid_s), amt))
 
     bare_bins = [int(x) for x in bin_ids if x.strip().isdigit()]
-    if ticket_bu > 0 and not allocations and len(bare_bins) == 1:
-        allocations = [(bare_bins[0], ticket_bu)]
-    if ticket_bu > 0 and fid and f_bu <= 0 and not allocations:
-        f_bu = ticket_bu
 
-    sourced = sum(a[1] for a in allocations) + (f_bu if fid and f_bu > 0 else 0)
+    # Ownership share of the ticket (auto-calc from %). Applied to contracts.
+    owner_bu = _f(owner_bu_raw) or 0
+    if owner_bu <= 0 and ticket_bu > 0:
+        if share_pct is not None and share_pct > 0:
+            owner_bu = round(ticket_bu * (share_pct / 100.0), 1)
+        else:
+            owner_bu = ticket_bu
+
+    shared_bin_splits: list[tuple[int, str, float, bool]] = []
+    # (bin_id, owner_name, amt, applies_to_contract)
+
+    if source_mode == "field":
+        allocations = []
+        if fid and f_bu <= 0:
+            f_bu = owner_bu if owner_bu > 0 else ticket_bu
+        elif fid and owner_bu > 0:
+            f_bu = owner_bu
+    else:
+        fid = None
+        f_bu = 0
+        # Shared bin: full ticket leaves the bin, split across owners by %.
+        # Only the selected owner's portion hits the contract.
+        if ticket_bu > 0 and len(bare_bins) == 1 and not allocations:
+            bid = bare_bins[0]
+            bin_row = db.scalar(
+                select(GrainBin)
+                .where(GrainBin.id == bid)
+                .options(joinedload(GrainBin.with_party))
+            )
+            if bin_row:
+                pcts = _ensure_bin_ownership_shares(db, bin_row)
+                if len(pcts) > 1:
+                    splits = _split_bushels_by_pct(ticket_bu, pcts)
+                    sel_pct = next(
+                        (p for n, p in pcts if n.lower() == owner.lower()),
+                        None,
+                    )
+                    if sel_pct is None and share_pct is not None and share_pct > 0:
+                        sel_pct = share_pct
+                    if sel_pct is None:
+                        sel_pct = 100.0
+                    owner_bu = round(ticket_bu * float(sel_pct) / 100.0, 1)
+                    share_pct = float(sel_pct)
+                    for name, amt in splits:
+                        if amt <= 0:
+                            continue
+                        is_sel = name.lower() == owner.lower()
+                        shared_bin_splits.append((bid, name, amt, is_sel))
+                    allocations = []
+                else:
+                    allocations = [(bid, ticket_bu)]
+                    owner_bu = ticket_bu
+            else:
+                allocations = [(bid, owner_bu if owner_bu > 0 else ticket_bu)]
+        elif owner_bu > 0 and not allocations and len(bare_bins) == 1:
+            allocations = [(bare_bins[0], owner_bu)]
+        elif owner_bu > 0 and len(allocations) == 1:
+            allocations = [(allocations[0][0], owner_bu)]
+        elif ticket_bu > 0 and not allocations and len(bare_bins) == 1:
+            allocations = [(bare_bins[0], owner_bu if owner_bu > 0 else ticket_bu)]
+
+    if ticket_bu > 0 and fid and f_bu <= 0 and not allocations and not shared_bin_splits:
+        f_bu = owner_bu if owner_bu > 0 else ticket_bu
+
+    sourced = (
+        sum(a[1] for a in allocations)
+        + sum(a[2] for a in shared_bin_splits)
+        + (f_bu if fid and f_bu > 0 else 0)
+    )
     if ticket_bu <= 0 and sourced > 0:
         ticket_bu = sourced
     if ticket_bu <= 0 or sourced <= 0:
-        return RedirectResponse("/bins/ticket?error=ticket_source", status_code=303)
-    if abs(sourced - ticket_bu) > 0.51:
-        return RedirectResponse("/bins/ticket?error=ticket_mismatch", status_code=303)
+        return RedirectResponse("/bins/ticket/scale?error=ticket_source", status_code=303)
+    # Shared bin: sourced should equal full ticket; selected owner_bu may be less
+    if shared_bin_splits:
+        if abs(sourced - ticket_bu) > 0.51:
+            return RedirectResponse("/bins/ticket/scale?error=ticket_mismatch", status_code=303)
+    elif source_mode != "field" and abs(sourced - ticket_bu) > 0.51 and (
+        share_pct is None or share_pct >= 99.5
+    ):
+        return RedirectResponse("/bins/ticket/scale?error=ticket_mismatch", status_code=303)
+
+    # If primary contract would overflow, require overflow disposition
+    if cid and owner_bu > 0:
+        primary = db.get(GrainContract, cid)
+        left = _contract_bu_left(primary)
+        if owner_bu > left + 0.05:
+            mode = (overflow_mode or "none").strip().lower()
+            if mode not in ("contract", "spot"):
+                return RedirectResponse("/bins/ticket/scale?error=contract_overflow", status_code=303)
+            if mode == "contract" and not overflow_cid:
+                return RedirectResponse("/bins/ticket/scale?error=contract_overflow", status_code=303)
+            if mode == "spot" and spot_futures is None:
+                return RedirectResponse("/bins/ticket/scale?error=spot_price", status_code=303)
 
     def adjust(bin_pk: int, owner_nm: str, delta: float):
-        share = db.scalar(
-            select(BinShare).where(BinShare.bin_id == bin_pk, BinShare.owner_name == owner_nm)
+        _adjust_bin_share(db, bin_pk, owner_nm, delta)
+
+    try:
+        contract_apps = _plan_scale_ticket_contracts(
+            db,
+            year=year,
+            crop=crop,
+            amount=owner_bu if owner_bu > 0 else 0.0,
+            primary_id=cid,
+            overflow_mode=overflow_mode if cid else "none",
+            overflow_contract_id=overflow_cid,
+            spot_futures=spot_futures,
+            spot_basis=spot_basis if spot_basis is not None else 0.0,
+            buyer=dest,
+            when=when,
+            ticket=ticket,
         )
-        if not share:
-            share = BinShare(bin_id=bin_pk, owner_name=owner_nm, bushels=0)
-            db.add(share)
-            db.flush()
-        share.bushels = (share.bushels or 0) + delta
+    except ValueError as exc:
+        if str(exc) == "contract_overflow":
+            return RedirectResponse("/bins/ticket/scale?error=contract_overflow", status_code=303)
+        if str(exc) == "spot_price":
+            return RedirectResponse("/bins/ticket/scale?error=spot_price", status_code=303)
+        raise
+    # If no contract selected, still one open bucket for movement linking
+    if not contract_apps and owner_bu > 0:
+        contract_apps = [(None, round(owner_bu, 1), "open")]
+
+    share_note = ""
+    if shared_bin_splits:
+        parts = [f"{n} {a:g}" for _, n, a, _ in shared_bin_splits]
+        share_note = f" · ticket {ticket_bu:g} bu split ({' / '.join(parts)}); contract {owner} {owner_bu:g}"
+    elif share_pct is not None and share_pct < 99.5 and ticket_bu > 0:
+        share_note = f" · share {share_pct:g}% of ticket {ticket_bu:g} bu"
+    if contract_apps and len(contract_apps) > 1:
+        bits = []
+        for app_cid, app_bu, kind in contract_apps:
+            if kind == "spot":
+                bits.append(f"spot {app_bu:g}")
+            elif app_cid:
+                bits.append(f"#{app_cid} {app_bu:g}")
+            else:
+                bits.append(f"open {app_bu:g}")
+        share_note += f" · applied {' + '.join(bits)}"
+    if note and share_note:
+        note = f"{note}{share_note}"
+    elif share_note:
+        note = share_note.strip(" ·")
 
     delivered_total = 0.0
-    for bid, amt in allocations:
-        db.add(
-            GrainMovement(
-                bin_id=bid,
-                to_bin_id=None,
-                field_id=None,
-                contract_id=cid,
-                move_date=when,
-                move_type="delivery",
-                crop=crop,
-                owner_name=owner,
-                wet_bu=None,
-                moisture=moist,
-                net_bu=amt,
-                ticket_number=ticket,
-                destination=dest,
-                notes=note,
+    truck_bu = 0.0
+
+    def _emit_owner_moves(
+        *,
+        bin_id: int | None,
+        field_id: int | None,
+        move_type: str,
+        amt: float,
+        wet_val: float | None,
+        apply_contracts: bool,
+    ) -> None:
+        nonlocal delivered_total, truck_bu
+        if amt <= 0:
+            return
+        if apply_contracts and contract_apps:
+            # Scale app chunks to this amt (normally amt == owner_bu)
+            scale = amt / owner_bu if owner_bu > 0 else 1.0
+            chunks = [
+                (app_cid, round(app_bu * scale, 1), kind)
+                for app_cid, app_bu, kind in contract_apps
+            ]
+            # Fix rounding drift on last chunk
+            drift = round(amt - sum(c[1] for c in chunks), 1)
+            if chunks and abs(drift) >= 0.05:
+                last = chunks[-1]
+                chunks[-1] = (last[0], round(last[1] + drift, 1), last[2])
+            for app_cid, app_bu, _kind in chunks:
+                if app_bu <= 0:
+                    continue
+                db.add(
+                    GrainMovement(
+                        bin_id=bin_id,
+                        to_bin_id=None,
+                        field_id=field_id,
+                        contract_id=app_cid,
+                        move_date=when,
+                        move_type=move_type,
+                        crop=crop,
+                        owner_name=owner,
+                        wet_bu=wet_val,
+                        moisture=moist,
+                        net_bu=app_bu,
+                        ticket_number=ticket,
+                        destination=dest,
+                        hauler=trucker,
+                        freight_per_bu=freight,
+                        notes=note,
+                    )
+                )
+                if bin_id:
+                    adjust(bin_id, owner, -app_bu)
+                delivered_total += app_bu
+                truck_bu += app_bu
+        else:
+            db.add(
+                GrainMovement(
+                    bin_id=bin_id,
+                    to_bin_id=None,
+                    field_id=field_id,
+                    contract_id=None,
+                    move_date=when,
+                    move_type=move_type,
+                    crop=crop,
+                    owner_name=owner if apply_contracts else owner,  # overwritten below for partners
+                    wet_bu=wet_val,
+                    moisture=moist,
+                    net_bu=amt,
+                    ticket_number=ticket,
+                    destination=dest,
+                    hauler=trucker,
+                    freight_per_bu=freight,
+                    notes=note,
+                )
             )
+            if bin_id:
+                adjust(bin_id, owner, -amt)
+            truck_bu += amt
+
+    for bid, name, amt, to_contract in shared_bin_splits:
+        if to_contract:
+            # Split selected owner across contract applications
+            if contract_apps:
+                scale = amt / owner_bu if owner_bu > 0 else 1.0
+                chunks = [
+                    (app_cid, round(app_bu * scale, 1), kind)
+                    for app_cid, app_bu, kind in contract_apps
+                ]
+                drift = round(amt - sum(c[1] for c in chunks), 1)
+                if chunks and abs(drift) >= 0.05:
+                    last = chunks[-1]
+                    chunks[-1] = (last[0], round(last[1] + drift, 1), last[2])
+                for app_cid, app_bu, _kind in chunks:
+                    if app_bu <= 0:
+                        continue
+                    db.add(
+                        GrainMovement(
+                            bin_id=bid,
+                            to_bin_id=None,
+                            field_id=None,
+                            contract_id=app_cid,
+                            move_date=when,
+                            move_type="delivery",
+                            crop=crop,
+                            owner_name=name,
+                            wet_bu=None,
+                            moisture=moist,
+                            net_bu=app_bu,
+                            ticket_number=ticket,
+                            destination=dest,
+                            hauler=trucker,
+                            freight_per_bu=freight,
+                            notes=note,
+                        )
+                    )
+                    adjust(bid, name, -app_bu)
+                    truck_bu += app_bu
+                    delivered_total += app_bu
+            else:
+                db.add(
+                    GrainMovement(
+                        bin_id=bid,
+                        to_bin_id=None,
+                        field_id=None,
+                        contract_id=cid,
+                        move_date=when,
+                        move_type="delivery",
+                        crop=crop,
+                        owner_name=name,
+                        wet_bu=None,
+                        moisture=moist,
+                        net_bu=amt,
+                        ticket_number=ticket,
+                        destination=dest,
+                        hauler=trucker,
+                        freight_per_bu=freight,
+                        notes=note,
+                    )
+                )
+                adjust(bid, name, -amt)
+                truck_bu += amt
+                delivered_total += amt
+        else:
+            db.add(
+                GrainMovement(
+                    bin_id=bid,
+                    to_bin_id=None,
+                    field_id=None,
+                    contract_id=None,
+                    move_date=when,
+                    move_type="delivery",
+                    crop=crop,
+                    owner_name=name,
+                    wet_bu=None,
+                    moisture=moist,
+                    net_bu=amt,
+                    ticket_number=ticket,
+                    destination=dest,
+                    hauler=trucker,
+                    freight_per_bu=freight,
+                    notes=note,
+                )
+            )
+            adjust(bid, name, -amt)
+            truck_bu += amt
+
+    for bid, amt in allocations:
+        _emit_owner_moves(
+            bin_id=bid,
+            field_id=None,
+            move_type="delivery",
+            amt=amt,
+            wet_val=None,
+            apply_contracts=True,
         )
-        adjust(bid, owner, -amt)
-        delivered_total += amt
 
     if fid and f_bu > 0:
+        _emit_owner_moves(
+            bin_id=None,
+            field_id=fid,
+            move_type="elevator",
+            amt=f_bu,
+            wet_val=wet,
+            apply_contracts=True,
+        )
+
+    # Apply delivered_bu on each contract (spot contracts start at 0 then get filled)
+    _apply_contract_deliveries(db, contract_apps)
+
+    if dest and (trucker or freight is not None):
+        rate_q = select(TruckingRate).where(TruckingRate.destination == dest)
+        if trucker:
+            rate_q = rate_q.where(TruckingRate.hauler == trucker)
+        else:
+            rate_q = rate_q.where(TruckingRate.hauler.is_(None))
+        existing_rate = db.scalar(rate_q.limit(1))
+        if existing_rate:
+            if freight is not None:
+                existing_rate.rate_per_bu = freight
+            if trucker and not existing_rate.hauler:
+                existing_rate.hauler = trucker
+        else:
+            db.add(
+                TruckingRate(
+                    destination=dest,
+                    hauler=trucker,
+                    rate_per_bu=freight,
+                )
+            )
+
+    if dest and truck_bu > 0 and (trucker or freight is not None):
         db.add(
-            GrainMovement(
-                bin_id=None,
-                to_bin_id=None,
-                field_id=fid,
-                contract_id=cid,
-                move_date=when,
-                move_type="elevator",
+            TruckLoad(
+                load_date=when,
                 crop=crop,
-                owner_name=owner,
-                wet_bu=wet,
-                moisture=moist,
-                net_bu=f_bu,
-                ticket_number=ticket,
                 destination=dest,
+                hauler=trucker,
+                bushels=truck_bu,
+                rate_paid=freight,
+                ticket_number=ticket,
                 notes=note,
             )
         )
-        delivered_total += f_bu
-
-    if cid and delivered_total > 0:
-        contract = db.get(GrainContract, cid)
-        if contract:
-            contract.delivered_bu = (contract.delivered_bu or 0) + delivered_total
 
     log_activity(
         db,
         user.get("username"),
         "grain_ticket",
-        f"{ticket or 'ticket'} {delivered_total} bu {crop}",
+        f"{ticket or 'ticket'} {ticket_bu} bu {crop} ({owner} {owner_bu} bu to contract)",
     )
     db.commit()
-    return RedirectResponse("/bins/ticket", status_code=303)
+    return RedirectResponse("/bins/ticket/scale?saved=1", status_code=303)
 
 
 @router.post("/bins/condition")
@@ -1238,6 +3064,7 @@ def _risk_page_payload(request: Request, db: Session, user):
     year = _year(db)
     settings = db.scalar(select(AppSettings).limit(1))
     contracts = []
+    fields: list = []
     estimates = {"Corn": 0.0, "Soybeans": 0.0}
     missing_yield = []
     prod_rows = []
@@ -1249,8 +3076,14 @@ def _risk_page_payload(request: Request, db: Session, user):
         fields = [
             f
             for f in db.scalars(
-                select(Field).where(Field.crop_year_id == year.id).order_by(Field.name)
-            )
+                select(Field)
+                .where(Field.crop_year_id == year.id)
+                .options(
+                    joinedload(Field.shares).joinedload(FieldShare.party),
+                    joinedload(Field.party),
+                )
+                .order_by(Field.name)
+            ).unique()
             if not is_summary_field_name(f.name)
         ]
         estimates, missing_yield, prod_rows, crop_acres = _production_from_fields(fields)
@@ -1272,9 +3105,11 @@ def _risk_page_payload(request: Request, db: Session, user):
             db.scalars(
                 select(GrainContract)
                 .where(GrainContract.crop_year_id == year.id)
+                .options(joinedload(GrainContract.with_party))
                 .order_by(GrainContract.crop, GrainContract.id)
-            )
+            ).unique()
         )
+        contracts.sort(key=mkt.contract_desk_sort_key)
         insurance = list(db.scalars(select(CropInsurance).where(CropInsurance.crop_year_id == year.id)))
         targets = list(db.scalars(select(MarketingTarget).where(MarketingTarget.crop_year_id == year.id)))
         for ev in db.scalars(
@@ -1402,7 +3237,13 @@ def _risk_page_payload(request: Request, db: Session, user):
         db.commit()
         futures_strip = cme_quotes.strip_from_settings(settings)
 
-    strip_spreads = mkt.strip_spreads_with_carry(futures_strip, settings)
+    # Carry $/bu/mo from Carry cost page assumptions — used under each strip spread
+    carry_for_strip = mkt.build_carry_snapshot(settings, board, bin_bu)
+    strip_rates = {
+        crop: (carry_for_strip.get("by_crop") or {}).get(crop, {}).get("rate")
+        for crop in ("Corn", "Soybeans")
+    }
+    strip_spreads = cme_quotes.strip_spreads_map(futures_strip, rates_by_crop=strip_rates)
 
     corn_basis = (settings.corn_local_basis if settings else None)
     soy_basis = (settings.soy_local_basis if settings else None)
@@ -1417,55 +3258,250 @@ def _risk_page_payload(request: Request, db: Session, user):
         ),
     }
 
+    # Gross income & profit boxes (under futures strip)
+    income_pnl: dict[str, dict] = {}
+    for crop in ("Corn", "Soybeans"):
+        items = by_crop.get(crop, [])
+        expected = float(estimates.get(crop) or 0)
+        acres = float(crop_acres.get(crop) or 0)
+        priced_bu = 0.0
+        priced_dollars = 0.0
+        for c in items:
+            px = mkt.equiv_price(c)
+            bu = float(c.bushels or 0)
+            if px is None or bu <= 0:
+                continue
+            priced_bu += bu
+            priced_dollars += bu * float(px)
+        contract_avg = round(priced_dollars / priced_bu, 4) if priced_bu > 0 else None
+        board_row = board.get(crop) or {}
+        futures_px = board_row.get("price")
+        if futures_px is None and settings:
+            futures_px = (
+                settings.corn_price_assumption if crop == "Corn" else settings.soy_price_assumption
+            )
+        sold_for_blend = min(priced_bu, expected) if expected > 0 else priced_bu
+        unsold = max(0.0, expected - sold_for_blend) if expected > 0 else 0.0
+        blend = None
+        if expected > 0:
+            if contract_avg is not None and futures_px is not None:
+                blend = (sold_for_blend * contract_avg + unsold * float(futures_px)) / expected
+            elif contract_avg is not None:
+                blend = contract_avg
+            elif futures_px is not None:
+                blend = float(futures_px)
+        if blend is not None:
+            blend = round(blend, 4)
+        gross = round(expected * blend, 0) if blend is not None and expected > 0 else None
+        gross_ac = round(gross / acres, 2) if gross is not None and acres > 0 else None
+        cop = float(
+            (settings.corn_cost_per_ac if crop == "Corn" else settings.soy_cost_per_ac)
+            if settings
+            else 0
+        ) or 0.0
+        profit_ac = round(gross_ac - cop, 2) if gross_ac is not None else None
+        income_pnl[crop] = {
+            "expected_bu": expected,
+            "acres": acres,
+            "contract_avg": contract_avg,
+            "futures": float(futures_px) if futures_px is not None else None,
+            "contracted_bu": round(sold_for_blend, 1),
+            "unsold_bu": round(unsold, 1),
+            "blend_price": blend,
+            "gross": gross,
+            "gross_ac": gross_ac,
+            "cop_ac": cop,
+            "profit_ac": profit_ac,
+        }
+
+    corn_p = income_pnl["Corn"].get("profit_ac")
+    soy_p = income_pnl["Soybeans"].get("profit_ac")
+    corn_a = income_pnl["Corn"].get("acres") or 0
+    soy_a = income_pnl["Soybeans"].get("acres") or 0
+    if corn_p is not None and soy_p is not None and (corn_a + soy_a) > 0:
+        farm_profit_ac = round((corn_p * corn_a + soy_p * soy_a) / (corn_a + soy_a), 2)
+    elif corn_p is not None and soy_p is not None:
+        farm_profit_ac = round((corn_p + soy_p) / 2, 2)
+    elif corn_p is not None:
+        farm_profit_ac = corn_p
+    elif soy_p is not None:
+        farm_profit_ac = soy_p
+    else:
+        farm_profit_ac = None
+    income_pnl["farm"] = {"profit_ac": farm_profit_ac, "acres": corn_a + soy_a}
+
     ranks = mkt.rank_contracts(
         contracts,
         breakeven_by_crop=be_by_crop,
         market_by_crop=market_by_crop,
     )
     desk = mkt.desk_rows(contracts, events_by, be_by_crop, market_by_crop)
+    def _futures_px(crop: str) -> float | None:
+        row = board.get(crop) or {}
+        px = row.get("price")
+        if px is not None:
+            return float(px)
+        if not settings:
+            return None
+        if crop == "Corn":
+            return settings.corn_futures if settings.corn_futures is not None else settings.corn_price_assumption
+        return settings.soy_futures if settings.soy_futures is not None else settings.soy_price_assumption
+
+    futures_by_crop = {"Corn": _futures_px("Corn"), "Soybeans": _futures_px("Soybeans")}
+    desk_analysis = mkt.desk_analysis(
+        contracts,
+        expected_by_crop={
+            "Corn": float((estimates or {}).get("Corn") or 0),
+            "Soybeans": float((estimates or {}).get("Soybeans") or 0),
+        },
+        futures_by_crop=futures_by_crop,
+        market_by_crop=market_by_crop,
+        breakeven_by_crop=be_by_crop,
+    )
+    parties = list(db.scalars(select(Party).order_by(Party.name)))
+    preferred = {"partner", "landlord"}
+    preferred_list = [p for p in parties if (p.party_type or "").lower() in preferred]
+    farm_with_parties = preferred_list if preferred_list else list(parties)
+    rank = {"partner": 0, "landlord": 1, "customer": 2, "buyer": 3, "other": 4}
+    farm_with_parties = sorted(
+        farm_with_parties,
+        key=lambda p: (rank.get((p.party_type or "other").lower(), 9), (p.name or "").lower()),
+    )
+    ownership_sold = mkt.ownership_sold_breakdown(fields, contracts, parties=parties)
+    fields_need_partner: list = []
+    # Link share partners onto on-share fields that were never assigned (Simpson → Ed Simpson)
+    if year and fields and parties:
+        healed = mkt.heal_missing_field_share_partners(db, fields, parties)
+        if healed:
+            db.commit()
+            for f in fields:
+                db.expire(f, ["shares", "party"])
+            ownership_sold = mkt.ownership_sold_breakdown(fields, contracts, parties=parties)
+    fields_need_partner = mkt.fields_missing_share_partner(fields)
 
     exposure = {}
     risk_tracker = {
         "by_crop": {},
         "stress_total": 0.0,
+        "futures_stress_total": 0.0,
+        "basis_stress_total": 0.0,
         "money_at_risk_total": 0.0,
         "unsold_total": 0.0,
         "bin_total": 0.0,
         "futures_open_total": 0.0,
+        "basis_open_total": 0.0,
     }
+    risk_calc_steps: list[dict] = []
     for crop in ("Corn", "Soybeans"):
+        crop_contracts = by_crop.get(crop, [])
         exp = mkt.crop_exposure(
-            by_crop.get(crop, []),
+            crop_contracts,
             estimates.get(crop) or 0,
             bin_bu.get(crop) or 0,
         )
-        shock = 0.5 if crop == "Corn" else 1.0
+        fut_shock = 0.5 if crop == "Corn" else 1.0
+        bas_shock = 0.20 if crop == "Corn" else 0.30
         if settings:
-            shock = (
+            fut_shock = (
                 settings.corn_stress_shock if crop == "Corn" else settings.soy_stress_shock
-            ) or shock
+            ) or fut_shock
+            bas_shock = (
+                settings.corn_basis_shock if crop == "Corn" else settings.soy_basis_shock
+            ) or bas_shock
         mark = market_by_crop.get(crop)
         if mark is None and board.get(crop):
             mark = board[crop]["price"]
-        stress = mkt.stress_dollars(exp["futures_open"], shock)
+        fut_stress = mkt.stress_dollars(exp["futures_open"], fut_shock)
+        bas_stress = mkt.stress_dollars(exp["basis_open"], bas_shock)
+        stress = fut_stress + bas_stress
         at_risk_bu = exp["bin_bu"] + exp["unsold"]
         mar = mkt.money_at_risk(at_risk_bu, mark)
         exposure[crop] = exp
         risk_tracker["by_crop"][crop] = {
             **exp,
-            "shock": shock,
+            "futures_shock": fut_shock,
+            "basis_shock": bas_shock,
+            "shock": fut_shock,  # legacy key used by older template bits
+            "futures_stress": fut_stress,
+            "basis_stress": bas_stress,
             "stress": stress,
             "mark": mark,
             "money_at_risk": mar,
             "at_risk_bu": round(at_risk_bu, 1),
         }
         risk_tracker["stress_total"] += stress
+        risk_tracker["futures_stress_total"] += fut_stress
+        risk_tracker["basis_stress_total"] += bas_stress
         risk_tracker["money_at_risk_total"] += mar or 0
         risk_tracker["unsold_total"] += exp["unsold"]
         risk_tracker["bin_total"] += exp["bin_bu"]
         risk_tracker["futures_open_total"] += exp["futures_open"]
+        risk_tracker["basis_open_total"] += exp["basis_open"]
+
+        # Open-contract breakdown for the explain window
+        open_cs = [
+            c
+            for c in crop_contracts
+            if (getattr(c, "status", "open") or "open") == "open"
+        ]
+        type_rows = []
+        for c in open_cs:
+            bu = float(getattr(c, "bushels", 0) or 0)
+            if bu <= 0:
+                continue
+            type_rows.append(
+                {
+                    "id": getattr(c, "id", None),
+                    "buyer": getattr(c, "buyer", None) or "—",
+                    "type": getattr(c, "contract_type", None) or "—",
+                    "bushels": round(bu, 1),
+                    "futures_locked": mkt.futures_locked(c),
+                    "basis_locked": mkt.basis_locked(c),
+                }
+            )
+        risk_calc_steps.append(
+            {
+                "crop": crop,
+                "expected": exp["expected"],
+                "sold": exp["sold"],
+                "unsold": exp["unsold"],
+                "futures_locked": exp["futures_locked"],
+                "basis_locked": exp["basis_locked"],
+                "futures_open": exp["futures_open"],
+                "basis_open": exp["basis_open"],
+                "bin_bu": exp["bin_bu"],
+                "futures_shock": fut_shock,
+                "basis_shock": bas_shock,
+                "futures_stress": fut_stress,
+                "basis_stress": bas_stress,
+                "stress": stress,
+                "mark": mark,
+                "at_risk_bu": round(at_risk_bu, 1),
+                "money_at_risk": mar,
+                "contracts": type_rows,
+            }
+        )
 
     quote_updated = _quote_updated_info(settings)
+
+    with_party_added = request.query_params.get("with_party_added")
+    with_party_preselect = int(with_party_added) if with_party_added and with_party_added.isdigit() else None
+    buyer_added = (request.query_params.get("buyer_added") or "").strip() or None
+    crop_added = (request.query_params.get("crop_added") or "").strip() or None
+    type_added = (request.query_params.get("type_added") or "").strip() or None
+
+    from app import lookups as lu
+
+    buyers = set(lu.names(db, lu.DESTINATION))
+    for c in contracts:
+        if c.buyer and c.buyer.strip():
+            buyers.add(c.buyer.strip())
+    buyer_list = sorted(buyers, key=str.lower)
+
+    futures_months_by_crop = {
+        "Corn": cme_quotes.futures_month_choices("Corn"),
+        "Soybeans": cme_quotes.futures_month_choices("Soybeans"),
+    }
 
     return {
         "request": request,
@@ -1486,16 +3522,30 @@ def _risk_page_payload(request: Request, db: Session, user):
         "prod_rows": prod_rows,
         "marketing_summary": marketing_summary,
         "marketing_bars": marketing_bars,
+        "ownership_sold": ownership_sold,
+        "fields_need_partner": fields_need_partner,
+        "farm_with_parties": farm_with_parties,
         "board": board,
         "futures_strip": futures_strip,
         "strip_spreads": strip_spreads,
         "quote_updated": quote_updated,
         "ranks": ranks,
         "desk": desk,
+        "desk_analysis": desk_analysis,
         "bin_bu": bin_bu,
         "exposure": exposure,
         "risk_tracker": risk_tracker,
+        "risk_calc_steps": risk_calc_steps,
         "market_by_crop": market_by_crop,
+        "parties": parties,
+        "with_party_preselect": with_party_preselect,
+        "buyer_list": buyer_list,
+        "buyer_preselect": buyer_added,
+        "crop_preselect": crop_added,
+        "type_preselect": type_added,
+        "futures_months_by_crop": futures_months_by_crop,
+        "contract_statuses": CONTRACT_STATUSES,
+        "income_pnl": income_pnl,
     }
 
 
@@ -1506,17 +3556,255 @@ def risk_page(request: Request, db: Session = Depends(get_db)):
         return user
     ctx = _risk_page_payload(request, db, user)
     ctx["active"] = "risk"
+    ctx["linked"] = request.query_params.get("linked")
     return templates.TemplateResponse("risk.html", ctx)
 
 
+@router.post("/risk/link-share-partner")
+def risk_link_share_partner(
+    request: Request,
+    field_id: int = Form(...),
+    party_id: int = Form(...),
+    me_share_pct: str = Form("50"),
+    db: Session = Depends(get_db),
+):
+    """Quick-assign who you farm on shares with for a field (from Marketing board)."""
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    field = db.get(Field, field_id)
+    party = db.get(Party, party_id)
+    if not field or not party:
+        return RedirectResponse("/risk#ownership-sold", status_code=303)
+    try:
+        me_pct = float(str(me_share_pct).replace(",", "").strip() or "50")
+    except ValueError:
+        me_pct = 50.0
+    mkt.link_field_to_share_partner(db, field, party, me_pct=me_pct)
+    log_activity(
+        db,
+        user.get("username"),
+        "field_share_link",
+        f"{field.name} ↔ {party.name} (me {me_pct:g}%)",
+    )
+    db.commit()
+    return RedirectResponse("/risk?linked=1#ownership-sold", status_code=303)
+
+
+@router.post("/risk/link-share-partners-bulk")
+def risk_link_share_partners_bulk(
+    request: Request,
+    party_id: int = Form(...),
+    me_share_pct: str = Form("50"),
+    field_id: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    """Link several on-share fields to the same farm partner in one step."""
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    party = db.get(Party, party_id)
+    if not party:
+        return RedirectResponse("/risk#ownership-sold", status_code=303)
+    try:
+        me_pct = float(str(me_share_pct).replace(",", "").strip() or "50")
+    except ValueError:
+        me_pct = 50.0
+    ids = []
+    for raw in field_id if isinstance(field_id, list) else [field_id]:
+        s = str(raw).strip()
+        if s.isdigit():
+            ids.append(int(s))
+    linked = 0
+    names: list[str] = []
+    for fid in ids:
+        field = db.get(Field, fid)
+        if not field:
+            continue
+        mkt.link_field_to_share_partner(db, field, party, me_pct=me_pct)
+        linked += 1
+        names.append(field.name or f"#{fid}")
+    if linked:
+        log_activity(
+            db,
+            user.get("username"),
+            "field_share_link_bulk",
+            f"{linked} fields ↔ {party.name}: {', '.join(names[:8])}",
+        )
+        db.commit()
+        return RedirectResponse(f"/risk?linked={linked}#ownership-sold", status_code=303)
+    return RedirectResponse("/risk#link-partners", status_code=303)
+
+
 @router.get("/risk/contracts", response_class=HTMLResponse)
-def risk_contracts_page(request: Request, db: Session = Depends(get_db)):
+def risk_contracts_page(request: Request, view: str = "", db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    if (view or "").strip().lower() == "sheet":
+        return RedirectResponse("/risk/contracts/sheet", status_code=303)
+    ctx = _risk_page_payload(request, db, user)
+    ctx["active"] = "risk_contracts"
+    ctx["contracts_view"] = "desk"
+    return templates.TemplateResponse("risk_contracts.html", ctx)
+
+
+@router.get("/risk/contracts/add", response_class=HTMLResponse)
+def risk_contracts_add(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    ctx = _risk_page_payload(request, db, user)
+    ctx["active"] = "risk_contracts_add"
+    ctx["add_next"] = "/risk/contracts/add"
+    return templates.TemplateResponse("risk_contract_add.html", ctx)
+
+
+@router.get("/risk/contracts/roll", response_class=HTMLResponse)
+def risk_contracts_roll(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    ctx = _risk_page_payload(request, db, user)
+    ctx["active"] = "risk_contracts_roll"
+    return templates.TemplateResponse("risk_contract_roll.html", ctx)
+
+
+@router.get("/risk/contracts/sheet", response_class=HTMLResponse)
+def risk_contracts_sheet(request: Request, db: Session = Depends(get_db)):
     user = _need(request, "risk")
     if isinstance(user, RedirectResponse):
         return user
     ctx = _risk_page_payload(request, db, user)
     ctx["active"] = "risk_contracts"
-    return templates.TemplateResponse("risk_contracts.html", ctx)
+    ctx["contracts_view"] = "sheet"
+    ctx["saved"] = request.query_params.get("saved")
+    return templates.TemplateResponse("risk_contracts_sheet.html", ctx)
+
+
+@router.post("/risk/contracts/sheet/save")
+def risk_contracts_sheet_save(
+    request: Request,
+    contract_id: list[int] = Form(default=[]),
+    contract_number: list[str] = Form(default=[]),
+    crop_year_id: list[str] = Form(default=[]),
+    crop: list[str] = Form(default=[]),
+    contract_type: list[str] = Form(default=[]),
+    buyer: list[str] = Form(default=[]),
+    with_party_id: list[str] = Form(default=[]),
+    bushels: list[str] = Form(default=[]),
+    cash_price: list[str] = Form(default=[]),
+    futures_price: list[str] = Form(default=[]),
+    basis: list[str] = Form(default=[]),
+    futures_month: list[str] = Form(default=[]),
+    delivery_end: list[str] = Form(default=[]),
+    status: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    year = _year(db)
+    if not year:
+        return RedirectResponse("/risk/contracts/sheet", status_code=303)
+
+    from app import lookups as lu
+
+    ids = [int(x) for x in _as_form_list(contract_id)]
+    nums = _as_form_list(contract_number)
+    years = _as_form_list(crop_year_id)
+    crops = _as_form_list(crop)
+    types = _as_form_list(contract_type)
+    buyers = _as_form_list(buyer)
+    withs = _as_form_list(with_party_id)
+    bus = _as_form_list(bushels)
+    cash = _as_form_list(cash_price)
+    futs = _as_form_list(futures_price)
+    bases = _as_form_list(basis)
+    months = _as_form_list(futures_month)
+    ends = _as_form_list(delivery_end)
+    statuses = _as_form_list(status)
+    allowed_status = set(CONTRACT_STATUSES)
+    valid_year_ids = {y.id for y in db.scalars(select(CropYear)).all()}
+    updated = 0
+
+    for i, cid in enumerate(ids):
+        contract = db.get(GrainContract, cid)
+        if not contract or contract.crop_year_id != year.id:
+            continue
+
+        new_cno = str(nums[i] if i < len(nums) else (contract.contract_number or "")).strip() or None
+        year_raw = str(years[i] if i < len(years) else contract.crop_year_id).strip()
+        new_year_id = int(year_raw) if year_raw.isdigit() else contract.crop_year_id
+        if new_year_id not in valid_year_ids:
+            new_year_id = contract.crop_year_id
+        new_crop = str(crops[i] if i < len(crops) else contract.crop).strip() or contract.crop
+        new_type = str(types[i] if i < len(types) else contract.contract_type).strip() or contract.contract_type
+        new_buyer = str(buyers[i] if i < len(buyers) else (contract.buyer or "")).strip() or None
+        wid_raw = str(withs[i] if i < len(withs) else (contract.with_party_id or "")).strip()
+        new_wid = int(wid_raw) if wid_raw.isdigit() else None
+        if new_wid and not db.get(Party, new_wid):
+            new_wid = None
+        new_bu = _f(str(bus[i] if i < len(bus) else contract.bushels)) or 0
+        cash_raw = str(cash[i] if i < len(cash) else "").strip()
+        new_cash = _f(cash_raw, None) if cash_raw else None
+        fut_raw = str(futs[i] if i < len(futs) else "").strip()
+        new_fut = _f(fut_raw, None) if fut_raw else None
+        bas_raw = str(bases[i] if i < len(bases) else "").strip()
+        new_bas = _f(bas_raw, None) if bas_raw else None
+        new_month = str(months[i] if i < len(months) else (contract.futures_month or "")).strip() or None
+        if i < len(ends):
+            end_raw = str(ends[i]).strip()
+            new_end = _d(end_raw) if end_raw else None
+        else:
+            new_end = contract.delivery_end
+        new_status = str(statuses[i] if i < len(statuses) else contract.status).strip() or "open"
+        if new_status not in allowed_status:
+            new_status = contract.status
+
+        if new_crop:
+            lu.ensure(db, lu.CROP, new_crop)
+        if new_type:
+            lu.ensure(db, lu.CONTRACT_TYPE, new_type)
+        if new_buyer:
+            lu.ensure(db, lu.DESTINATION, new_buyer)
+
+        changed = (
+            (contract.contract_number or None) != new_cno
+            or contract.crop_year_id != new_year_id
+            or contract.crop != new_crop
+            or contract.contract_type != new_type
+            or (contract.buyer or None) != new_buyer
+            or (contract.with_party_id or None) != new_wid
+            or float(contract.bushels or 0) != float(new_bu)
+            or (contract.cash_price != new_cash)
+            or (contract.futures_price != new_fut)
+            or (contract.basis != new_bas)
+            or (contract.futures_month or None) != new_month
+            or (contract.delivery_end != new_end)
+            or contract.status != new_status
+        )
+        if not changed:
+            continue
+
+        contract.contract_number = new_cno
+        contract.crop_year_id = new_year_id
+        contract.crop = new_crop
+        contract.contract_type = new_type
+        contract.buyer = new_buyer
+        contract.with_party_id = new_wid
+        contract.bushels = new_bu
+        contract.cash_price = new_cash
+        contract.futures_price = new_fut
+        contract.basis = new_bas
+        contract.futures_month = new_month
+        contract.delivery_end = new_end
+        contract.status = new_status
+        updated += 1
+
+    log_activity(db, user.get("username"), "contracts_sheet_save", f"{updated} updated")
+    db.commit()
+    return RedirectResponse(f"/risk/contracts/sheet?saved={updated}", status_code=303)
 
 
 @router.get("/risk/settings", response_class=HTMLResponse)
@@ -1618,7 +3906,7 @@ def risk_quotes_refresh(
     settings = db.scalar(select(AppSettings).limit(1))
     quote_status = "fail"
     if settings:
-        fetched = cme_quotes.fetch_nearby_quotes()
+        fetched = cme_quotes.fetch_nearby_quotes(max_seconds=90.0)
         live_ok = cme_quotes.apply_fetch_to_settings(settings, fetched)
         # Live feed often rate-limits; still push calculator/board futures to the
         # latest strip quote we already have so Refresh always updates the inputs.
@@ -1632,6 +3920,10 @@ def risk_quotes_refresh(
                 quote_status = "stored"
             else:
                 quote_status = "fail"
+                err = (fetched.get("error") or "").strip()
+                if err:
+                    # Keep a short hint in settings so the board can show why
+                    settings.quote_source = settings.quote_source or "yahoo_delayed"
         elif live_ok:
             quote_status = "ok"
         else:
@@ -1691,6 +3983,8 @@ def risk_stress(
     request: Request,
     corn_stress_shock: str = Form("0.50"),
     soy_stress_shock: str = Form("1.00"),
+    corn_basis_shock: str = Form("0.20"),
+    soy_basis_shock: str = Form("0.30"),
     db: Session = Depends(get_db),
 ):
     user = _need(request, "risk")
@@ -1700,6 +3994,12 @@ def risk_stress(
     if settings:
         settings.corn_stress_shock = _f(corn_stress_shock) or 0.5
         settings.soy_stress_shock = _f(soy_stress_shock) or 1.0
+        settings.corn_basis_shock = _f(corn_basis_shock) if corn_basis_shock.strip() != "" else 0.20
+        settings.soy_basis_shock = _f(soy_basis_shock) if soy_basis_shock.strip() != "" else 0.30
+        if settings.corn_basis_shock is None:
+            settings.corn_basis_shock = 0.20
+        if settings.soy_basis_shock is None:
+            settings.soy_basis_shock = 0.30
         db.commit()
     return RedirectResponse("/risk#risk-tracker", status_code=303)
 
@@ -1711,6 +4011,7 @@ def risk_cop(
     soy_cost_per_ac: str = Form("0"),
     corn_price_assumption: str = Form(""),
     soy_price_assumption: str = Form(""),
+    next: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = _need(request, "risk")
@@ -1720,24 +4021,384 @@ def risk_cop(
     if settings:
         settings.corn_cost_per_ac = _f(corn_cost_per_ac) or 0
         settings.soy_cost_per_ac = _f(soy_cost_per_ac) or 0
-        settings.corn_price_assumption = _f(corn_price_assumption, None) if corn_price_assumption.strip() else None
-        settings.soy_price_assumption = _f(soy_price_assumption, None) if soy_price_assumption.strip() else None
+        if corn_price_assumption.strip() != "" or soy_price_assumption.strip() != "":
+            settings.corn_price_assumption = (
+                _f(corn_price_assumption, None) if corn_price_assumption.strip() else settings.corn_price_assumption
+            )
+            settings.soy_price_assumption = (
+                _f(soy_price_assumption, None) if soy_price_assumption.strip() else settings.soy_price_assumption
+            )
         db.commit()
+    dest = (next or "").strip()
+    if dest.startswith("/") and not dest.startswith("//"):
+        return RedirectResponse(dest, status_code=303)
     return RedirectResponse("/risk/settings", status_code=303)
 
 
-@router.post("/risk/contract")
-def risk_contract(
+@router.get("/risk/contracts/new/buyer", response_class=HTMLResponse)
+def risk_contract_new_buyer(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(request.query_params.get("next"))
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "risk_contracts",
+            "farm_name": _farm(db),
+            "page_kind": "destination",
+            "page_title": "Add elevator / buyer",
+            "page_lede": "Enter the elevator or grain buyer. It will appear on the contract Buyer list.",
+            "form_action": "/risk/contracts/new/buyer",
+            "error": None,
+            "ticket_haulers": [],
+            "ticket_destinations": [],
+            "back_href": next_url,
+            "next_url": next_url,
+        },
+    )
+
+
+@router.post("/risk/contracts/new/buyer")
+def risk_contract_new_buyer_save(
     request: Request,
+    destination: str = Form(...),
+    notes: str = Form(""),
+    next: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(next or request.query_params.get("next"))
+    name = destination.strip()
+    if not name:
+        return RedirectResponse(
+            _next_with_query("/risk/contracts/new/buyer", next=next_url if next_url != "/risk/contracts" else ""),
+            status_code=303,
+        )
+    from app import lookups as lu
+
+    lu.ensure(db, lu.DESTINATION, name, notes=(notes.strip() or None))
+    existing = db.scalar(select(TruckingRate).where(TruckingRate.destination == name).limit(1))
+    if not existing:
+        db.add(TruckingRate(destination=name, notes=(notes.strip() or None)))
+    log_activity(db, user.get("username"), "buyer_add", name)
+    db.commit()
+    return RedirectResponse(_next_with_query(next_url, buyer_added=name), status_code=303)
+
+
+@router.get("/risk/contracts/new/with-party", response_class=HTMLResponse)
+def risk_contract_new_with_party(request: Request, db: Session = Depends(get_db)):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not (
+        perms.can_access(user.get("role"), "risk")
+        or perms.can_access(user.get("role"), "grain")
+        or perms.can_access(user.get("role"), "fields")
+        or perms.can_access(user.get("role"), "parties")
+    ):
+        return perms.deny()
+    next_url = _safe_next(request.query_params.get("next"))
+    return templates.TemplateResponse(
+        "risk_contract_new_with.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "risk_contracts",
+            "farm_name": _farm(db),
+            "party_types": [
+                {"value": "partner", "label": "Partner"},
+                {"value": "landlord", "label": "Landlord"},
+                {"value": "other", "label": "Other"},
+            ],
+            "next_url": next_url,
+            "back_href": next_url,
+        },
+    )
+
+
+@router.post("/risk/contracts/new/with-party")
+def risk_contract_new_with_party_save(
+    request: Request,
+    name: str = Form(...),
+    party_type: str = Form("partner"),
+    notes: str = Form(""),
+    next: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not (
+        perms.can_access(user.get("role"), "risk")
+        or perms.can_access(user.get("role"), "grain")
+        or perms.can_access(user.get("role"), "fields")
+        or perms.can_access(user.get("role"), "parties")
+    ):
+        return perms.deny()
+    next_url = _safe_next(next or request.query_params.get("next"))
+    raw = (name or "").strip()
+    if not raw:
+        dest = "/risk/contracts/new/with-party"
+        if next_url != "/risk/contracts":
+            dest = _next_with_query(dest, next=next_url)
+        return RedirectResponse(dest, status_code=303)
+    existing = db.scalar(select(Party).where(Party.name == raw).limit(1))
+    if existing:
+        party = existing
+    else:
+        party = Party(
+            name=raw,
+            party_type=(party_type or "partner").strip() or "partner",
+            notes=(notes.strip() or None),
+        )
+        db.add(party)
+        log_activity(db, user.get("username"), "party_add", f"{raw} (contract with)")
+        db.commit()
+        db.refresh(party)
+    return RedirectResponse(_next_with_query(next_url, with_party_added=str(party.id)), status_code=303)
+
+
+@router.get("/risk/contracts/new/crop", response_class=HTMLResponse)
+def risk_contract_new_crop(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(request.query_params.get("next"))
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "risk_contracts",
+            "farm_name": _farm(db),
+            "page_kind": "crop",
+            "page_title": "Add crop",
+            "page_lede": "Enter a crop name. It will appear on the contract Crop list.",
+            "form_action": "/risk/contracts/new/crop",
+            "error": None,
+            "ticket_haulers": [],
+            "ticket_destinations": [],
+            "back_href": next_url,
+            "next_url": next_url,
+        },
+    )
+
+
+@router.post("/risk/contracts/new/crop")
+def risk_contract_new_crop_save(
+    request: Request,
+    crop: str = Form(...),
+    notes: str = Form(""),
+    next: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(next or request.query_params.get("next"))
+    name = (crop or "").strip()
+    if not name:
+        return RedirectResponse("/risk/contracts/new/crop", status_code=303)
+    from app import lookups as lu
+
+    lu.ensure(db, lu.CROP, name, notes=(notes.strip() or None), commit=True)
+    log_activity(db, user.get("username"), "crop_add", name)
+    db.commit()
+    return RedirectResponse(_next_with_query(next_url, crop_added=name), status_code=303)
+
+
+@router.get("/risk/contracts/new/contract-type", response_class=HTMLResponse)
+def risk_contract_new_type(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(request.query_params.get("next"))
+    return templates.TemplateResponse(
+        "bins_ticket_new_lookup.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "risk_contracts",
+            "farm_name": _farm(db),
+            "page_kind": "contract_type",
+            "page_title": "Add contract type",
+            "page_lede": "Enter a contract type (e.g. cash, HTA, basis). It will appear on the Type list.",
+            "form_action": "/risk/contracts/new/contract-type",
+            "error": None,
+            "ticket_haulers": [],
+            "ticket_destinations": [],
+            "back_href": next_url,
+            "next_url": next_url,
+        },
+    )
+
+
+@router.post("/risk/contracts/new/contract-type")
+def risk_contract_new_type_save(
+    request: Request,
+    contract_type: str = Form(...),
+    notes: str = Form(""),
+    next: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(next or request.query_params.get("next"))
+    name = (contract_type or "").strip()
+    if not name:
+        return RedirectResponse("/risk/contracts/new/contract-type", status_code=303)
+    from app import lookups as lu
+
+    lu.ensure(db, lu.CONTRACT_TYPE, name, notes=(notes.strip() or None), commit=True)
+    log_activity(db, user.get("username"), "contract_type_add", name)
+    db.commit()
+    return RedirectResponse(_next_with_query(next_url, type_added=name), status_code=303)
+
+
+@router.get("/risk/contracts/{contract_id}/edit", response_class=HTMLResponse)
+def risk_contract_edit_page(request: Request, contract_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    contract = db.get(GrainContract, contract_id)
+    if not contract:
+        return RedirectResponse("/risk/contracts", status_code=303)
+    ctx = _risk_page_payload(request, db, user)
+    ctx["active"] = "risk_contracts"
+    ctx["contract"] = contract
+    ctx["edit_next"] = f"/risk/contracts/{contract_id}/edit"
+    # Prefer newly added values for preselect on return from Add New
+    type_added = (request.query_params.get("type_added") or "").strip() or None
+    crop_added = (request.query_params.get("crop_added") or "").strip() or None
+    if type_added:
+        ctx["type_preselect"] = type_added
+    if crop_added:
+        ctx["crop_preselect"] = crop_added
+    return templates.TemplateResponse("risk_contract_edit.html", ctx)
+
+
+@router.post("/risk/contracts/{contract_id}/edit")
+def risk_contract_edit_save(
+    request: Request,
+    contract_id: int,
+    contract_number: str = Form(""),
     crop: str = Form("Corn"),
     contract_type: str = Form("cash"),
     buyer: str = Form(""),
+    with_party_id: str = Form(""),
+    crop_year_id: str = Form(""),
     bushels: str = Form("0"),
     cash_price: str = Form(""),
     futures_price: str = Form(""),
     basis: str = Form(""),
     futures_month: str = Form(""),
+    delivery_start: str = Form(""),
     delivery_end: str = Form(""),
+    status: str = Form("open"),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    contract = db.get(GrainContract, contract_id)
+    if not contract:
+        return RedirectResponse("/risk/contracts", status_code=303)
+    wid = int(with_party_id) if with_party_id.isdigit() else None
+    if wid and not db.get(Party, wid):
+        wid = None
+    buyer_name = buyer.strip() or None
+    from app import lookups as lu
+
+    if buyer_name:
+        lu.ensure(db, lu.DESTINATION, buyer_name)
+    crop_name = (crop or "").strip() or contract.crop
+    type_name = (contract_type or "").strip() or contract.contract_type
+    lu.ensure(db, lu.CROP, crop_name)
+    lu.ensure(db, lu.CONTRACT_TYPE, type_name)
+    st = (status or "open").strip() or "open"
+    if st not in CONTRACT_STATUSES:
+        st = contract.status or "open"
+
+    new_year_id = int(crop_year_id) if crop_year_id.isdigit() else contract.crop_year_id
+    if new_year_id and not db.get(CropYear, new_year_id):
+        new_year_id = contract.crop_year_id
+
+    contract.contract_number = contract_number.strip() or None
+    contract.crop = crop_name
+    contract.contract_type = type_name
+    contract.buyer = buyer_name
+    contract.with_party_id = wid
+    contract.crop_year_id = new_year_id
+    contract.bushels = _f(bushels) or 0
+    contract.cash_price = _f(cash_price, None) if cash_price.strip() else None
+    contract.futures_price = _f(futures_price, None) if futures_price.strip() else None
+    contract.basis = _f(basis, None) if basis.strip() else None
+    contract.futures_month = futures_month.strip() or None
+    contract.delivery_start = _d(delivery_start)
+    contract.delivery_end = _d(delivery_end)
+    contract.status = st
+    contract.notes = notes.strip() or None
+    log_activity(
+        db,
+        user.get("username"),
+        "contract_edit",
+        f"#{contract_id} {crop_name} year={new_year_id}",
+    )
+    db.commit()
+    return RedirectResponse("/risk/contracts", status_code=303)
+
+
+@router.post("/risk/contracts/{contract_id}/delete")
+def risk_contract_delete(
+    request: Request,
+    contract_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    contract = db.get(GrainContract, contract_id)
+    if not contract:
+        return RedirectResponse("/risk/contracts", status_code=303)
+    # Keep ticket history; just unlink from this contract
+    for move in list(
+        db.scalars(select(GrainMovement).where(GrainMovement.contract_id == contract_id))
+    ):
+        move.contract_id = None
+    for ev in list(
+        db.scalars(select(ContractEvent).where(ContractEvent.contract_id == contract_id))
+    ):
+        db.delete(ev)
+    label = f"#{contract.id} {contract.crop} {contract.buyer or ''} {contract.bushels} bu"
+    db.delete(contract)
+    log_activity(db, user.get("username"), "contract_delete", label.strip())
+    db.commit()
+    return RedirectResponse("/risk/contracts?deleted=1", status_code=303)
+
+
+@router.post("/risk/contract")
+def risk_contract(
+    request: Request,
+    contract_number: str = Form(""),
+    crop: str = Form("Corn"),
+    contract_type: str = Form("cash"),
+    buyer: str = Form(""),
+    with_party_id: str = Form(""),
+    bushels: str = Form("0"),
+    cash_price: str = Form(""),
+    futures_price: str = Form(""),
+    basis: str = Form(""),
+    futures_month: str = Form(""),
+    delivery_start: str = Form(""),
+    delivery_end: str = Form(""),
+    status: str = Form("open"),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -1747,22 +4408,41 @@ def risk_contract(
     year = _year(db)
     if not year:
         return RedirectResponse("/risk/contracts", status_code=303)
+    wid = int(with_party_id) if with_party_id.isdigit() else None
+    if wid and not db.get(Party, wid):
+        wid = None
+    buyer_name = buyer.strip() or None
+    from app import lookups as lu
+
+    if buyer_name:
+        lu.ensure(db, lu.DESTINATION, buyer_name)
+    crop_name = (crop or "").strip() or "Corn"
+    type_name = (contract_type or "").strip() or "cash"
+    lu.ensure(db, lu.CROP, crop_name)
+    lu.ensure(db, lu.CONTRACT_TYPE, type_name)
+    st = (status or "open").strip() or "open"
+    if st not in CONTRACT_STATUSES:
+        st = "open"
     db.add(
         GrainContract(
             crop_year_id=year.id,
-            crop=crop,
-            contract_type=contract_type,
-            buyer=buyer.strip() or None,
+            contract_number=contract_number.strip() or None,
+            crop=crop_name,
+            contract_type=type_name,
+            buyer=buyer_name,
+            with_party_id=wid,
             bushels=_f(bushels) or 0,
             cash_price=_f(cash_price, None) if cash_price.strip() else None,
             futures_price=_f(futures_price, None) if futures_price.strip() else None,
             basis=_f(basis, None) if basis.strip() else None,
             futures_month=futures_month.strip() or None,
+            delivery_start=_d(delivery_start),
             delivery_end=_d(delivery_end),
+            status=st,
             notes=notes.strip() or None,
         )
     )
-    log_activity(db, user.get("username"), "contract_add", f"{crop} {bushels} bu")
+    log_activity(db, user.get("username"), "contract_add", f"{crop_name} {bushels} bu")
     db.commit()
     return RedirectResponse("/risk/contracts", status_code=303)
 
@@ -1983,10 +4663,32 @@ def _library_payload(request: Request, db: Session, user) -> dict:
     spray_lines: dict[int, list] = {}
     _sync_hybrid_label_spellings(db)
     hybrid_brands, hybrid_traits = _hybrid_brand_trait_vocab(db)
+    from app import lookups as lu
+    from app.budget_detail import seed_fertilizer_catalog
+
+    seed_fertilizer_catalog(db)
+    db.flush()
+
+    hybrid_brands = sorted(
+        {*(lu.names(db, lu.HYBRID_BRAND) or []), *hybrid_brands},
+        key=str.casefold,
+    )
+    hybrid_traits = sorted(
+        {*(lu.names(db, lu.HYBRID_TRAIT) or []), *hybrid_traits},
+        key=str.casefold,
+    )
     hybrid_suggest_json = json.dumps(
         {"brands": hybrid_brands, "traits": hybrid_traits},
         ensure_ascii=False,
     ).replace("</", "<\\/")
+    fert_products = list(
+        db.scalars(
+            select(FertilizerProduct)
+            .options(joinedload(FertilizerProduct.purchases))
+            .order_by(FertilizerProduct.sort_order, FertilizerProduct.name)
+        ).unique()
+    )
+    inventory_n = int(db.scalar(select(func.count()).select_from(InputProduct)) or 0)
     if year:
         hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
         hybrids.sort(
@@ -1995,9 +4697,21 @@ def _library_payload(request: Request, db: Session, user) -> dict:
                 (h.name or "").casefold(),
             )
         )
-        sprays = list(db.scalars(select(SprayMix).where(SprayMix.crop_year_id == year.id).order_by(SprayMix.name)))
-        plans = list(db.scalars(select(FieldPlan).where(FieldPlan.crop_year_id == year.id).order_by(FieldPlan.id.desc())))
-        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id).order_by(Field.name)))
+        sprays = list(
+            db.scalars(
+                select(SprayMix).where(SprayMix.crop_year_id == year.id).order_by(SprayMix.name)
+            )
+        )
+        plans = list(
+            db.scalars(
+                select(FieldPlan)
+                .where(FieldPlan.crop_year_id == year.id)
+                .order_by(FieldPlan.id.desc())
+            )
+        )
+        fields = list(
+            db.scalars(select(Field).where(Field.crop_year_id == year.id).order_by(Field.name))
+        )
         if sprays:
             lines = list(
                 db.scalars(
@@ -2008,6 +4722,13 @@ def _library_payload(request: Request, db: Session, user) -> dict:
             )
             for line in lines:
                 spray_lines.setdefault(line.spray_mix_id, []).append(line)
+
+    focus = (request.query_params.get("focus") or "").strip().lower()
+    if focus not in ("seed", "fert", "spray", "inventory"):
+        focus = ""
+    raw_next = (request.query_params.get("next") or "").strip()
+    next_url = _safe_next(raw_next, default="/inputs") if raw_next else "/inputs"
+
     return {
         "request": request,
         "user": user,
@@ -2019,9 +4740,14 @@ def _library_payload(request: Request, db: Session, user) -> dict:
         "hybrid_suggest_json": hybrid_suggest_json,
         "sprays": sprays,
         "spray_lines": spray_lines,
+        "fert_products": fert_products,
+        "inventory_n": inventory_n,
         "plans": plans,
         "fields": fields,
         "today": date.today().isoformat(),
+        "focus": focus,
+        "next_url": next_url,
+        "from_budget": raw_next.startswith("/budget"),
     }
 
 
@@ -2037,7 +4763,515 @@ def library_page(request: Request, db: Session = Depends(get_db)):
         return user
     ctx = _library_payload(request, db, user)
     ctx["active"] = "library"
+    db.commit()
     return templates.TemplateResponse("library.html", ctx)
+
+
+@router.get("/inputs/hybrids/sheet", response_class=HTMLResponse)
+@router.get("/library/hybrids/sheet", response_class=HTMLResponse)
+def hybrids_sheet(request: Request, crop: Optional[str] = None, db: Session = Depends(get_db)):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import lookups as lu
+
+    year = _year(db)
+    hybrids = []
+    if year:
+        _sync_hybrid_label_spellings(db)
+        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+        hybrids.sort(
+            key=lambda h: (
+                0 if h.crop == "Corn" else 1 if h.crop == "Soybeans" else 2,
+                (h.brand or "").lower(),
+                (h.name or "").lower(),
+            )
+        )
+    filter_crop = (crop or "all").strip()
+    if filter_crop not in ("all", "Corn", "Soybeans"):
+        filter_crop = "all"
+    if filter_crop != "all":
+        hybrids = [h for h in hybrids if h.crop == filter_crop]
+
+    vocab_brands, vocab_traits = _hybrid_brand_trait_vocab(db)
+    brands = sorted(
+        {*(lu.names(db, lu.HYBRID_BRAND) or []), *vocab_brands},
+        key=str.casefold,
+    )
+    traits = sorted(
+        {*(lu.names(db, lu.HYBRID_TRAIT) or []), *vocab_traits},
+        key=str.casefold,
+    )
+    brand_added = (request.query_params.get("brand_added") or "").strip() or None
+    trait_added = (request.query_params.get("trait_added") or "").strip() or None
+    focus_hybrid_id = None
+    raw_focus = (request.query_params.get("hybrid_id") or "").strip()
+    if raw_focus.isdigit():
+        focus_hybrid_id = int(raw_focus)
+
+    return templates.TemplateResponse(
+        "hybrids_sheet.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "library_sheet",
+            "farm_name": _farm(db),
+            "year": year,
+            "hybrids": hybrids,
+            "filter_crop": filter_crop,
+            "saved": request.query_params.get("saved"),
+            "hybrid_brands": brands,
+            "hybrid_traits": traits,
+            "brand_added": brand_added,
+            "trait_added": trait_added,
+            "focus_hybrid_id": focus_hybrid_id,
+        },
+    )
+
+
+@router.post("/inputs/hybrids/sheet/save")
+@router.post("/library/hybrids/sheet/save")
+def hybrids_sheet_save(
+    request: Request,
+    hybrid_id: list[int] = Form(default=[]),
+    name: list[str] = Form(default=[]),
+    crop: list[str] = Form(default=[]),
+    brand: list[str] = Form(default=[]),
+    maturity: list[str] = Form(default=[]),
+    traits: list[str] = Form(default=[]),
+    unit_label: list[str] = Form(default=[]),
+    cost_per_unit: list[str] = Form(default=[]),
+    cost_per_acre: list[str] = Form(default=[]),
+    notes: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+
+    def as_list(vals):
+        if vals is None:
+            return []
+        if isinstance(vals, (str, int, float)):
+            return [vals]
+        return list(vals)
+
+    ids = [int(x) for x in as_list(hybrid_id)]
+    names = as_list(name)
+    crops = as_list(crop)
+    brands = as_list(brand)
+    mats = as_list(maturity)
+    traits_l = as_list(traits)
+    units = as_list(unit_label)
+    cpus = as_list(cost_per_unit)
+    cpas = as_list(cost_per_acre)
+    notes_l = as_list(notes)
+    known_brands, known_traits = _hybrid_brand_trait_vocab(db)
+    updated = 0
+    from app import lookups as lu
+
+    for i, hid in enumerate(ids):
+        row = db.get(Hybrid, hid)
+        if not row:
+            continue
+        new_name = str(names[i] if i < len(names) else row.name).strip() or row.name
+        new_crop = str(crops[i] if i < len(crops) else row.crop).strip() or row.crop
+        brand_raw = str(brands[i] if i < len(brands) else (row.brand or "")).strip()
+        if brand_raw == "__add_new__":
+            brand_raw = (row.brand or "").strip()
+        new_brand = _canonicalize_label(brand_raw, known_brands) if brand_raw else None
+        new_mat = str(mats[i] if i < len(mats) else (row.maturity or "")).strip() or None
+        traits_raw = str(traits_l[i] if i < len(traits_l) else (row.traits or "")).strip()
+        if traits_raw == "__add_new__":
+            traits_raw = (row.traits or "").strip()
+        new_traits = _canonicalize_traits(traits_raw, known_traits) if traits_raw else None
+        new_unit = str(units[i] if i < len(units) else (row.unit_label or "")).strip() or None
+        cpu_raw = str(cpus[i] if i < len(cpus) else "").strip()
+        new_cpu = _money(cpu_raw) if cpu_raw != "" else None
+        if i >= len(cpus):
+            new_cpu = row.cost_per_unit
+        cpa_raw = str(cpas[i] if i < len(cpas) else "").strip()
+        new_cpa = _money(cpa_raw) if cpa_raw != "" else None
+        if i >= len(cpas):
+            new_cpa = row.cost_per_acre
+        note_raw = str(notes_l[i] if i < len(notes_l) else (row.notes or "")).strip() or None
+
+        changed = (
+            row.name != new_name
+            or row.crop != new_crop
+            or (row.brand or None) != new_brand
+            or (row.maturity or None) != new_mat
+            or (row.traits or None) != new_traits
+            or (row.unit_label or None) != new_unit
+            or (row.cost_per_unit != new_cpu)
+            or (row.cost_per_acre != new_cpa)
+            or (row.notes or None) != note_raw
+        )
+        if not changed:
+            continue
+        row.name = new_name
+        row.crop = new_crop
+        row.brand = new_brand
+        row.maturity = new_mat
+        row.traits = new_traits
+        row.unit_label = new_unit
+        row.cost_per_unit = new_cpu
+        row.cost_per_acre = new_cpa
+        row.notes = note_raw
+        if new_brand:
+            lu.ensure(db, lu.HYBRID_BRAND, new_brand, commit=False)
+        if new_traits:
+            lu.ensure(db, lu.HYBRID_TRAIT, new_traits, commit=False)
+            for part in re.split(r"[,;/|]+", new_traits):
+                if part.strip():
+                    lu.ensure(db, lu.HYBRID_TRAIT, part.strip(), commit=False)
+        updated += 1
+
+    db.commit()
+    dest = "/inputs/hybrids/sheet"
+    crop_q = (request.query_params.get("crop") or "").strip()
+    if crop_q:
+        dest = f"{dest}?crop={crop_q}&saved={updated}"
+    else:
+        dest = f"{dest}?saved={updated}"
+    return RedirectResponse(dest, status_code=303)
+
+
+@router.get("/inputs/hybrids/new/brand", response_class=HTMLResponse)
+@router.get("/library/hybrids/new/brand", response_class=HTMLResponse)
+def hybrids_new_brand(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(request.query_params.get("next"), default="/inputs/hybrids/sheet")
+    return templates.TemplateResponse(
+        "hybrid_lookup_new.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "library_sheet",
+            "farm_name": _farm(db),
+            "page_kind": "brand",
+            "page_title": "Add hybrid brand",
+            "page_lede": "Enter a seed brand. It will appear in the Brand list on the hybrid sheet.",
+            "field_name": "brand",
+            "field_label": "Brand",
+            "placeholder": "e.g. Dekalb, Pioneer, Channel",
+            "form_action": "/inputs/hybrids/new/brand",
+            "next_url": next_url,
+            "back_href": next_url,
+            "hybrid_id": (request.query_params.get("hybrid_id") or "").strip(),
+            "error": None,
+        },
+    )
+
+
+@router.post("/inputs/hybrids/new/brand")
+@router.post("/library/hybrids/new/brand")
+def hybrids_new_brand_save(
+    request: Request,
+    brand: str = Form(...),
+    notes: str = Form(""),
+    next: str = Form(""),
+    hybrid_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import lookups as lu
+
+    next_url = _safe_next(next or request.query_params.get("next"), default="/inputs/hybrids/sheet")
+    raw = (brand or "").strip()
+    if not raw:
+        dest = "/inputs/hybrids/new/brand"
+        if next_url != "/inputs/hybrids/sheet":
+            dest = _next_with_query(dest, next=next_url)
+        return RedirectResponse(dest, status_code=303)
+    known_brands, _ = _hybrid_brand_trait_vocab(db)
+    name = _canonicalize_label(raw, known_brands) or raw
+    lu.ensure(db, lu.HYBRID_BRAND, name, notes=(notes.strip() or None), commit=True)
+    log_activity(db, user.get("username"), "hybrid_brand_add", name)
+    params = {"brand_added": name}
+    if (hybrid_id or "").strip().isdigit():
+        params["hybrid_id"] = hybrid_id.strip()
+    return RedirectResponse(_next_with_query(next_url, **params), status_code=303)
+
+
+@router.get("/inputs/hybrids/new/trait", response_class=HTMLResponse)
+@router.get("/library/hybrids/new/trait", response_class=HTMLResponse)
+def hybrids_new_trait(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    next_url = _safe_next(request.query_params.get("next"), default="/inputs/hybrids/sheet")
+    return templates.TemplateResponse(
+        "hybrid_lookup_new.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "library_sheet",
+            "farm_name": _farm(db),
+            "page_kind": "trait",
+            "page_title": "Add hybrid trait",
+            "page_lede": "Enter a trait or trait package. It will appear in the Trait list on the hybrid sheet.",
+            "field_name": "trait",
+            "field_label": "Trait",
+            "placeholder": "e.g. VT2PRIB, Enlist E3, XtendFlex",
+            "form_action": "/inputs/hybrids/new/trait",
+            "next_url": next_url,
+            "back_href": next_url,
+            "hybrid_id": (request.query_params.get("hybrid_id") or "").strip(),
+            "error": None,
+        },
+    )
+
+
+@router.post("/inputs/hybrids/new/trait")
+@router.post("/library/hybrids/new/trait")
+def hybrids_new_trait_save(
+    request: Request,
+    trait: str = Form(...),
+    notes: str = Form(""),
+    next: str = Form(""),
+    hybrid_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import lookups as lu
+
+    next_url = _safe_next(next or request.query_params.get("next"), default="/inputs/hybrids/sheet")
+    raw = (trait or "").strip()
+    if not raw:
+        dest = "/inputs/hybrids/new/trait"
+        if next_url != "/inputs/hybrids/sheet":
+            dest = _next_with_query(dest, next=next_url)
+        return RedirectResponse(dest, status_code=303)
+    _, known_traits = _hybrid_brand_trait_vocab(db)
+    name = _canonicalize_label(raw, known_traits) or raw
+    lu.ensure(db, lu.HYBRID_TRAIT, name, notes=(notes.strip() or None), commit=True)
+    log_activity(db, user.get("username"), "hybrid_trait_add", name)
+    params = {"trait_added": name}
+    if (hybrid_id or "").strip().isdigit():
+        params["hybrid_id"] = hybrid_id.strip()
+    return RedirectResponse(_next_with_query(next_url, **params), status_code=303)
+
+
+def _hybrid_norm_key(name: str | None, crop: str | None) -> tuple[str, str]:
+    n = re.sub(r"\s+", " ", (name or "").strip().lower())
+    # ignore common separators that create false uniques: 2111aa vs 2111 AA
+    n = n.replace("-", "").replace("_", "").replace(" ", "")
+    c = (crop or "Corn").strip() or "Corn"
+    return (c, n)
+
+
+def _hybrid_usage(db: Session, hybrid_ids: list[int]) -> dict[int, dict[str, int]]:
+    out = {hid: {"fields": 0, "plantings": 0} for hid in hybrid_ids}
+    if not hybrid_ids:
+        return out
+    for hid, cnt in db.execute(
+        select(FieldHybrid.hybrid_id, func.count())
+        .where(FieldHybrid.hybrid_id.in_(hybrid_ids))
+        .group_by(FieldHybrid.hybrid_id)
+    ):
+        out[int(hid)]["fields"] = int(cnt or 0)
+    for hid, cnt in db.execute(
+        select(PlantingRecord.hybrid_id, func.count())
+        .where(PlantingRecord.hybrid_id.in_(hybrid_ids))
+        .group_by(PlantingRecord.hybrid_id)
+    ):
+        if hid is not None:
+            out[int(hid)]["plantings"] = int(cnt or 0)
+    return out
+
+
+def merge_hybrids_into(db: Session, keep_id: int, merge_ids: list[int]) -> dict[str, int]:
+    """Reassign FieldHybrid + PlantingRecord to keep_id, fill blank catalog fields, delete merges."""
+    keep = db.get(Hybrid, keep_id)
+    if not keep:
+        raise ValueError("Keep hybrid not found")
+    merge_ids = [int(x) for x in merge_ids if int(x) != keep_id]
+    if not merge_ids:
+        return {"merged": 0, "fields": 0, "plantings": 0}
+
+    merged_rows = [db.get(Hybrid, mid) for mid in merge_ids]
+    merged_rows = [h for h in merged_rows if h is not None]
+    if not merged_rows:
+        return {"merged": 0, "fields": 0, "plantings": 0}
+
+    # Fill blank keep fields from first donor that has a value
+    def fill(attr: str) -> None:
+        if getattr(keep, attr, None) not in (None, ""):
+            return
+        for h in merged_rows:
+            val = getattr(h, attr, None)
+            if val not in (None, ""):
+                setattr(keep, attr, val)
+                return
+
+    for attr in ("brand", "maturity", "traits", "notes", "unit_label", "cost_per_unit", "cost_per_acre"):
+        fill(attr)
+
+    # Re-point planting records
+    plant_moved = 0
+    for pr in db.scalars(select(PlantingRecord).where(PlantingRecord.hybrid_id.in_(merge_ids))):
+        pr.hybrid_id = keep_id
+        if not (pr.hybrid_name or "").strip():
+            pr.hybrid_name = keep.name
+        plant_moved += 1
+
+    # Merge field links: same field → combine into keep link
+    field_moved = 0
+    keep_links = {
+        link.field_id: link
+        for link in db.scalars(select(FieldHybrid).where(FieldHybrid.hybrid_id == keep_id))
+    }
+    for link in list(db.scalars(select(FieldHybrid).where(FieldHybrid.hybrid_id.in_(merge_ids)))):
+        existing = keep_links.get(link.field_id)
+        if existing is None:
+            link.hybrid_id = keep_id
+            keep_links[link.field_id] = link
+            field_moved += 1
+            continue
+        # Combine numeric as-planted values
+        for attr in ("acres", "units", "population"):
+            a = getattr(existing, attr, None)
+            b = getattr(link, attr, None)
+            if a is None and b is not None:
+                setattr(existing, attr, b)
+            elif a is not None and b is not None:
+                setattr(existing, attr, float(a) + float(b))
+        if not existing.rate and link.rate:
+            existing.rate = link.rate
+        if not existing.client_name and link.client_name:
+            existing.client_name = link.client_name
+        if not existing.applied_date and link.applied_date:
+            existing.applied_date = link.applied_date
+        if link.notes:
+            existing.notes = ((existing.notes or "") + " · " + link.notes).strip(" ·")
+        db.delete(link)
+        field_moved += 1
+
+    for h in merged_rows:
+        db.delete(h)
+
+    return {"merged": len(merged_rows), "fields": field_moved, "plantings": plant_moved}
+
+
+@router.get("/inputs/hybrids/merge", response_class=HTMLResponse)
+@router.get("/library/hybrids/merge", response_class=HTMLResponse)
+def hybrids_merge_page(request: Request, crop: Optional[str] = None, db: Session = Depends(get_db)):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    year = _year(db)
+    groups: list[dict] = []
+    singles: list[Hybrid] = []
+    if year:
+        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
+        usage = _hybrid_usage(db, [h.id for h in hybrids])
+        buckets: dict[tuple[str, str], list[Hybrid]] = {}
+        for h in hybrids:
+            buckets.setdefault(_hybrid_norm_key(h.name, h.crop), []).append(h)
+        filter_crop = (crop or "all").strip()
+        if filter_crop not in ("all", "Corn", "Soybeans"):
+            filter_crop = "all"
+        for (crop_key, _norm), rows in sorted(buckets.items(), key=lambda x: (x[0][0], x[0][1])):
+            if filter_crop != "all" and crop_key != filter_crop:
+                continue
+            rows = sorted(rows, key=lambda h: (h.id,))
+            if len(rows) < 2:
+                continue
+            groups.append(
+                {
+                    "key": f"{crop_key}:{_norm}",
+                    "crop": crop_key,
+                    "label": rows[0].name,
+                    "rows": [
+                        {
+                            "hybrid": h,
+                            "fields": usage.get(h.id, {}).get("fields", 0),
+                            "plantings": usage.get(h.id, {}).get("plantings", 0),
+                        }
+                        for h in rows
+                    ],
+                }
+            )
+        # Also offer all hybrids for custom merge
+        singles = sorted(
+            hybrids if filter_crop == "all" else [h for h in hybrids if h.crop == filter_crop],
+            key=lambda h: ((h.crop or ""), (h.name or "").lower(), h.id),
+        )
+    else:
+        filter_crop = "all"
+
+    return templates.TemplateResponse(
+        "hybrids_merge.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "library_merge",
+            "farm_name": _farm(db),
+            "year": year,
+            "groups": groups,
+            "singles": singles,
+            "filter_crop": filter_crop,
+            "message": request.query_params.get("msg"),
+            "error": request.query_params.get("err"),
+        },
+    )
+
+
+@router.post("/inputs/hybrids/merge")
+@router.post("/library/hybrids/merge")
+def hybrids_merge_save(
+    request: Request,
+    keep_id: int = Form(...),
+    merge_ids: list[int] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    ids = [int(x) for x in (merge_ids or []) if str(x).isdigit()]
+    if keep_id not in ids:
+        ids.append(keep_id)
+    # Only merge selected (keep + others checked). Form posts keep_id separately and
+    # merge_ids as the duplicates to absorb — include keep is fine.
+    others = [i for i in ids if i != keep_id]
+    if not others:
+        return RedirectResponse("/inputs/hybrids/merge?err=Select+at+least+one+duplicate+to+merge", status_code=303)
+    keep = db.get(Hybrid, keep_id)
+    if not keep:
+        return RedirectResponse("/inputs/hybrids/merge?err=Keep+hybrid+not+found", status_code=303)
+    # Safety: only same crop year
+    bad = []
+    for mid in others:
+        row = db.get(Hybrid, mid)
+        if not row or row.crop_year_id != keep.crop_year_id:
+            bad.append(mid)
+    if bad:
+        return RedirectResponse("/inputs/hybrids/merge?err=All+hybrids+must+be+in+the+same+crop+year", status_code=303)
+    try:
+        result = merge_hybrids_into(db, keep_id, others)
+        log_activity(
+            db,
+            user.get("username"),
+            "hybrid_merge",
+            f"Kept #{keep_id} {keep.name}; merged {result['merged']} "
+            f"({result['fields']} field links, {result['plantings']} plantings)",
+        )
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return RedirectResponse(f"/inputs/hybrids/merge?err={quote(str(exc)[:120])}", status_code=303)
+    msg = quote(
+        f"Merged {result['merged']} into “{keep.name}” "
+        f"({result['fields']} field links, {result['plantings']} plantings)"
+    )
+    return RedirectResponse(f"/inputs/hybrids/merge?msg={msg}", status_code=303)
 
 
 @router.get("/inputs/assign", response_class=HTMLResponse)
@@ -2051,6 +5285,7 @@ def inputs_assign_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/library/hybrid")
+@router.post("/inputs/hybrid")
 def library_hybrid(
     request: Request,
     name: str = Form(...),
@@ -2061,17 +5296,29 @@ def library_hybrid(
     unit_label: str = Form(""),
     cost_per_unit: str = Form(""),
     cost_per_acre: str = Form(""),
+    next: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = _need(request, "library")
     if isinstance(user, RedirectResponse):
         return user
     year = _year(db)
+    dest = _safe_next(next, default="/inputs") if (next or "").strip() else "/inputs"
     if not year:
-        return RedirectResponse("/library", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     known_brands, known_traits = _hybrid_brand_trait_vocab(db)
     brand_s = _canonicalize_label(brand, known_brands) or None
+    if brand and brand.strip() == "__add_new__":
+        brand_s = None
     traits_s = _canonicalize_traits(traits, known_traits)
+    if traits and traits.strip() == "__add_new__":
+        traits_s = None
+    from app import lookups as lu
+
+    if brand_s:
+        lu.ensure(db, lu.HYBRID_BRAND, brand_s, commit=False)
+    if traits_s:
+        lu.ensure(db, lu.HYBRID_TRAIT, traits_s, commit=False)
     db.add(
         Hybrid(
             crop_year_id=year.id,
@@ -2086,7 +5333,7 @@ def library_hybrid(
         )
     )
     db.commit()
-    return redirect_flash(request, "/library", f"Added hybrid “{name.strip()}”.")
+    return redirect_flash(request, dest, f"Added hybrid “{name.strip()}”.")
 
 
 @router.post("/library/assign-hybrid")
@@ -2116,16 +5363,6 @@ def library_assign_hybrid(
     hybrid = db.get(Hybrid, hybrid_id)
     if not hybrid:
         return redirect_flash(request, "/library", "Hybrid not found — nothing assigned.", "error")
-    # Gate: if hybrid has $/unit cost but no cost_per_acre fallback, units are needed for costing
-    if hybrid.cost_per_unit and not hybrid.cost_per_acre:
-        return redirect_flash(
-            request,
-            "/library",
-            f'Hybrid "{hybrid.name}" has $/unit cost but no $/ac fallback. '
-            "Enter units applied via the field wizard (Add operation \u2192 Planting) so seed cost is captured, "
-            "or set a $/ac on the hybrid in the library.",
-            "warn",
-        )
     when = _d(applied_date)
     pairs = [("hybrid_id", str(hybrid_id)), ("rate", rate), ("applied_date", applied_date)]
     pairs += [("field_ids", str(fid)) for fid in ids]
@@ -2167,6 +5404,7 @@ def library_assign_hybrid(
 
 
 @router.post("/library/spray")
+@router.post("/inputs/spray")
 def library_spray(
     request: Request,
     name: str = Form(...),
@@ -2179,14 +5417,16 @@ def library_spray(
     line_unit: list[str] = Form(default=[]),
     line_cost_unit: list[str] = Form(default=[]),
     line_cost_acre: list[str] = Form(default=[]),
+    next: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = _need(request, "library")
     if isinstance(user, RedirectResponse):
         return user
     year = _year(db)
+    dest = _safe_next(next, default="/inputs") if (next or "").strip() else "/inputs"
     if not year:
-        return RedirectResponse("/library", status_code=303)
+        return RedirectResponse(dest, status_code=303)
 
     # Normalize single-value form posts to lists
     def as_list(vals: list[str] | str) -> list[str]:
@@ -2250,7 +5490,127 @@ def library_spray(
     mix.products_json = "; ".join(summaries) if summaries else None
     mix.cost_per_acre = round(total_cpa, 4) if has_cpa else None
     db.commit()
-    return redirect_flash(request, "/library", f"Added spray mix “{mix.name}”.")
+    return redirect_flash(request, dest, f"Added spray mix “{mix.name}”.")
+
+
+@router.post("/inputs/fertilizer/save")
+@router.post("/library/fertilizer/save")
+async def inputs_fertilizer_save(request: Request, db: Session = Depends(get_db)):
+    """Edit / add fertilizer products used by field budgets."""
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    form = await request.form()
+    raw_next = str(form.get("next") or "").strip()
+    dest = _safe_next(raw_next, default="/inputs?focus=fert") if raw_next else "/inputs?focus=fert"
+    if dest == "/inputs":
+        dest = "/inputs?focus=fert"
+
+    ids = _as_form_list(form.getlist("product_id"))
+    names = _as_form_list(form.getlist("name"))
+    forms = _as_form_list(form.getlist("form"))
+    units = _as_form_list(form.getlist("apply_unit"))
+    prices = _as_form_list(form.getlist("price_per_ton"))
+    dens = _as_form_list(form.getlist("density_lb_per_gal"))
+    for i, pid_raw in enumerate(ids):
+        try:
+            pid = int(pid_raw)
+        except (TypeError, ValueError):
+            continue
+        p = db.get(FertilizerProduct, pid)
+        if not p:
+            continue
+        name = str(names[i] if i < len(names) else p.name).strip()
+        if name:
+            p.name = name
+        form_v = str(forms[i] if i < len(forms) else p.form).strip().lower()
+        p.form = form_v if form_v in ("liquid", "dry") else p.form
+        unit_v = str(units[i] if i < len(units) else p.apply_unit).strip().lower()
+        p.apply_unit = unit_v if unit_v in ("gal", "lb") else p.apply_unit
+        p.price_per_ton = parse_float(str(prices[i] if i < len(prices) else "0")) or 0.0
+        d_raw = str(dens[i] if i < len(dens) else "").strip()
+        p.density_lb_per_gal = parse_float(d_raw, default=None) if d_raw else None
+
+    new_name = str(form.get("new_name") or "").strip()
+    if new_name:
+        form_v = str(form.get("new_form") or "dry").strip().lower()
+        unit_v = str(form.get("new_apply_unit") or "lb").strip().lower()
+        db.add(
+            FertilizerProduct(
+                name=new_name,
+                form=form_v if form_v in ("liquid", "dry") else "dry",
+                apply_unit=unit_v if unit_v in ("gal", "lb") else "lb",
+                price_per_ton=parse_float(str(form.get("new_price_per_ton") or "0")) or 0.0,
+                density_lb_per_gal=parse_float(str(form.get("new_density") or ""), default=None),
+                is_active=1,
+                sort_order=900,
+            )
+        )
+    db.commit()
+    return redirect_flash(request, dest, "Fertilizer products saved.", "ok")
+
+
+@router.post("/inputs/fertilizer/buy")
+@router.post("/library/fertilizer/buy")
+def inputs_fertilizer_buy(
+    request: Request,
+    product_id: int = Form(...),
+    purchase_date: str = Form(""),
+    vendor: str = Form(""),
+    tons: str = Form("0"),
+    total_cost: str = Form(""),
+    price_per_ton: str = Form(""),
+    notes: str = Form(""),
+    next: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Log a fertilizer purchase lot and roll into weighted avg $/ton."""
+    user = _need(request, "library")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app.budget_detail import apply_fertilizer_purchase
+
+    dest = _safe_next(next, default="/inputs?focus=fert") if (next or "").strip() else "/inputs?focus=fert"
+    product = db.get(FertilizerProduct, product_id)
+    if not product:
+        return redirect_flash(request, dest, "Fertilizer product not found.", "error")
+
+    t = parse_float(tons) or 0.0
+    if t <= 0:
+        return redirect_flash(request, dest, "Enter tons purchased (> 0).", "error")
+
+    total = parse_float(total_cost, default=None)
+    ppt = parse_float(price_per_ton, default=None)
+    if total is None and ppt is not None:
+        total = round(t * float(ppt), 2)
+    if total is None or total < 0:
+        return redirect_flash(
+            request,
+            dest,
+            "Enter total $ or $/ton for this purchase.",
+            "error",
+        )
+
+    year = _year(db)
+    when = parse_date(purchase_date) or date.today()
+    apply_fertilizer_purchase(
+        db,
+        product,
+        tons=t,
+        total_cost=float(total),
+        purchase_date=when,
+        vendor=vendor.strip() or None,
+        notes=notes.strip() or None,
+        crop_year_id=year.id if year else None,
+    )
+    db.commit()
+    avg = float(product.price_per_ton or 0)
+    return redirect_flash(
+        request,
+        dest,
+        f"Logged {t:g} ton of {product.name} · new avg ${avg:,.2f}/ton.",
+        "ok",
+    )
 
 
 @router.post("/library/assign-spray")
@@ -2858,7 +6218,13 @@ def purchases_product(
     user = _need(request, "purchases")
     if isinstance(user, RedirectResponse):
         return user
-    db.add(InputProduct(name=name.strip(), category=category, unit=unit))
+    from app import lookups as lu
+
+    cat = category.strip() or "other"
+    unt = unit.strip() or "gal"
+    lu.ensure(db, lu.PRODUCT_CATEGORY, cat)
+    lu.ensure(db, lu.PRODUCT_UNIT, unt)
+    db.add(InputProduct(name=name.strip(), category=cat, unit=unt))
     try:
         db.commit()
     except IntegrityError:
@@ -2886,6 +6252,10 @@ def purchases_buy(
     if not product:
         return RedirectResponse("/purchases", status_code=303)
     year = _year(db)
+    from app import lookups as lu
+
+    if vendor.strip():
+        lu.ensure(db, lu.VENDOR, vendor.strip())
     # weighted average
     old_qty = product.on_hand or 0
     old_cost = (product.avg_unit_cost or 0) * old_qty
@@ -2983,49 +6353,16 @@ def purchases_return(
     if not product or qty <= 0:
         return RedirectResponse("/purchases", status_code=303)
     product.on_hand = (product.on_hand or 0) + qty
-    fid = int(field_id) if field_id.isdigit() else None
-    ret_date = _d(return_date) or date.today()
-    unit_cost = product.avg_unit_cost or 0
-
-    # Find most recent non-voided assignment for this product+field to link
-    assignment_id: Optional[int] = None
-    if fid:
-        last_assign = db.scalar(
-            select(FieldAssignment)
-            .where(
-                FieldAssignment.product_id == product.id,
-                FieldAssignment.field_id == fid,
-                FieldAssignment.voided == 0,
-                FieldAssignment.quantity > 0,
-            )
-            .order_by(FieldAssignment.id.desc())
-            .limit(1)
+    db.add(
+        ProductReturn(
+            product_id=product.id,
+            field_id=int(field_id) if field_id.isdigit() else None,
+            return_date=_d(return_date) or date.today(),
+            quantity=qty,
+            unit_cost=product.avg_unit_cost or 0,
+            notes=notes.strip() or None,
         )
-        if last_assign:
-            assignment_id = last_assign.id
-            unit_cost = last_assign.unit_cost or unit_cost
-        # Create a negative FieldAssignment to credit the field ledger
-        db.add(
-            FieldAssignment(
-                product_id=product.id,
-                field_id=fid,
-                assign_date=ret_date,
-                quantity=-qty,
-                unit_cost=unit_cost,
-                notes=f"Return credit: {notes.strip()}" if notes.strip() else "Return credit",
-            )
-        )
-
-    pr = ProductReturn(
-        product_id=product.id,
-        field_id=fid,
-        assignment_id=assignment_id,
-        return_date=ret_date,
-        quantity=qty,
-        unit_cost=unit_cost,
-        notes=notes.strip() or None,
     )
-    db.add(pr)
     log_activity(db, user.get("username"), "product_return", f"{product.name} +{qty}")
     db.commit()
     return RedirectResponse("/purchases", status_code=303)
@@ -3039,6 +6376,7 @@ def invoices_page(request: Request, db: Session = Depends(get_db)):
         return user
     invoices = list(db.scalars(select(Invoice).order_by(Invoice.id.desc())))
     parties = list(db.scalars(select(Party).order_by(Party.name)))
+    party_name = {p.id: p.name for p in parties}
     return templates.TemplateResponse(
         "invoices.html",
         {
@@ -3048,8 +6386,107 @@ def invoices_page(request: Request, db: Session = Depends(get_db)):
             "farm_name": _farm(db),
             "invoices": invoices,
             "parties": parties,
+            "party_name": party_name,
             "today": date.today().isoformat(),
         },
+    )
+
+
+@router.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+def invoice_detail(request: Request, invoice_id: int, db: Session = Depends(get_db)):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not (
+        perms.can_access(user.get("role"), "invoices")
+        or perms.can_access(user.get("role"), "fields")
+        or perms.can_access(user.get("role"), "money")
+    ):
+        return perms.deny()
+    inv = db.get(Invoice, invoice_id)
+    if not inv:
+        return RedirectResponse("/invoices", status_code=303)
+    lines = list(
+        db.scalars(select(InvoiceLine).where(InvoiceLine.invoice_id == invoice_id).order_by(InvoiceLine.id))
+    )
+    party = db.get(Party, inv.party_id) if inv.party_id else None
+    field = db.get(Field, inv.field_id) if getattr(inv, "field_id", None) else None
+    invoiced_ops = [
+        f"{op.op_date} {op.op_type}"
+        for op in db.scalars(
+            select(FieldOperation).where(FieldOperation.invoice_id == invoice_id)
+        )
+    ]
+    return templates.TemplateResponse(
+        "invoice_detail.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "invoices",
+            "farm_name": _farm(db),
+            "invoice": inv,
+            "lines": lines,
+            "party": party,
+            "field": field,
+            "invoiced_ops": invoiced_ops,
+        },
+    )
+
+
+@router.get("/invoices/{invoice_id}/export.xlsx")
+def invoice_export_xlsx(request: Request, invoice_id: int, db: Session = Depends(get_db)):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not (
+        perms.can_access(user.get("role"), "invoices")
+        or perms.can_access(user.get("role"), "fields")
+    ):
+        return perms.deny()
+    inv = db.get(Invoice, invoice_id)
+    if not inv:
+        return RedirectResponse("/invoices", status_code=303)
+    lines = list(
+        db.scalars(select(InvoiceLine).where(InvoiceLine.invoice_id == invoice_id).order_by(InvoiceLine.id))
+    )
+    party = db.get(Party, inv.party_id) if inv.party_id else None
+    field = db.get(Field, inv.field_id) if getattr(inv, "field_id", None) else None
+
+    from openpyxl import Workbook
+    from fastapi.responses import StreamingResponse
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Invoice"
+    ws.append([_farm(db)])
+    ws.append([f"Invoice #{inv.id}"])
+    ws.append(["Bill to", party.name if party else ""])
+    if field:
+        ws.append(["Field", field.name])
+    ws.append(["Date", str(inv.invoice_date)])
+    ws.append(["Status", inv.status])
+    ws.append([])
+    ws.append(["Description", "Qty", "Rate", "Amount"])
+    for line in lines:
+        ws.append(
+            [
+                line.description,
+                line.quantity,
+                line.rate,
+                round(float(line.quantity or 0) * float(line.rate or 0), 2),
+            ]
+        )
+    ws.append([])
+    ws.append(["Total", "", "", inv.total])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"invoice-{inv.id}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -3085,7 +6522,7 @@ def invoices_create(
         )
     )
     db.commit()
-    return RedirectResponse("/invoices", status_code=303)
+    return RedirectResponse(f"/invoices/{inv.id}", status_code=303)
 
 
 @router.post("/invoices/{invoice_id}/paid")
@@ -3097,7 +6534,7 @@ def invoices_paid(request: Request, invoice_id: int, db: Session = Depends(get_d
     if inv:
         inv.status = "paid"
         db.commit()
-    return RedirectResponse("/invoices", status_code=303)
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
 
 
 # ---------- Master Upload ----------
@@ -3149,14 +6586,24 @@ async def upload_file(
         )
         return RedirectResponse(f"/inputs/upload/{batch.id}", status_code=303)
 
-    if import_type == "planting_csv":
+    if import_type in ("cargill_contracts", "cgb_contracts"):
+        batch = _start_contract_import(
+            db,
+            user=user,
+            filename=file.filename or "contracts.csv",
+            content=content,
+            import_type=import_type,
+        )
+        return RedirectResponse(f"/upload/contracts/{batch.id}", status_code=303)
+
+    if import_type in ("panorama_planting", "planting_csv", "seasonal_inputs"):
         batch = _start_planting_import(
             db,
             user=user,
             filename=file.filename or "planting.csv",
             content=content,
         )
-        return RedirectResponse(f"/upload/planting/{batch.id}", status_code=303)
+        return RedirectResponse(f"/panorama/planting/{batch.id}", status_code=303)
 
     upload_root = Path(__file__).resolve().parent.parent / "data" / "uploads"
     upload_root.mkdir(parents=True, exist_ok=True)
@@ -3173,6 +6620,19 @@ async def upload_file(
         panorama_api.save_uploaded_file(file.filename or safe, content)
         notes = "Copied to panorama upload folder."
         status = "stored"
+        # Auto-open planting wizard when the file is a Seasonal Inputs CSV
+        if safe.lower().endswith((".csv", ".txt")):
+            from app import planting_import as pimp
+
+            try:
+                first = next(csv.reader(io.StringIO(content.decode("utf-8-sig", errors="replace"))), [])
+            except Exception:  # noqa: BLE001
+                first = []
+            if pimp.is_seasonal_inputs_headers([str(h) for h in first]):
+                batch = _start_planting_import(
+                    db, user=user, filename=file.filename or safe, content=content
+                )
+                return RedirectResponse(f"/panorama/planting/{batch.id}", status_code=303)
     elif import_type == "fields_excel" and year and safe.lower().endswith((".xlsx", ".xlsm", ".xls")):
         created, updated, notes = import_fields_excel(db, path, year)
         rows = created + updated
@@ -3203,78 +6663,111 @@ async def upload_file(
     return RedirectResponse(f"/upload?msg={notes[:120]}", status_code=303)
 
 
-# ---------- Guided planting / season-report CSV ----------
-def _guess_crop_from_filename(name: str) -> str:
-    n = (name or "").lower()
-    if "soy" in n or "bean" in n:
-        return "Soybeans"
-    return "Corn"
+def _start_contract_import(
+    db: Session,
+    *,
+    user: dict,
+    filename: str,
+    content: bytes,
+    import_type: str = "cargill_contracts",
+) -> ImportBatch:
+    from app import cargill_contract_import as cci
+
+    safe = _safe_filename(filename)
+    path = _upload_root() / f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{safe}"
+    path.write_bytes(content)
+    extract = cci.read_tabular(path, content)
+    source = "cgb" if import_type == "cgb_contracts" else "cargill"
+    # Auto-detect when user picks Cargill but drops a CG&B Schedules file (or vice versa)
+    headers = []
+    if extract.get("sheets"):
+        headers = list((extract["sheets"][0] or {}).get("headers") or [])
+    detected = cci.detect_source_kind(headers)
+    if detected in ("cgb", "cargill"):
+        source = detected
+        import_type = "cgb_contracts" if source == "cgb" else "cargill_contracts"
+    payload = cci.build_payload(
+        filename or safe,
+        str(path),
+        extract,
+        import_source=source,
+    )
+    year = _year(db)
+    if year:
+        cci.mark_db_duplicates(db, year, payload["proposals"])
+    label = "CG&B Schedules" if source == "cgb" else "Cargill contracts"
+    batch = ImportBatch(
+        filename=path.name,
+        import_type=import_type,
+        status="pending_review",
+        row_count=len(payload.get("proposals") or []),
+        notes=f"{label} · map columns then import",
+        payload_json=cci.dump_payload(payload),
+    )
+    db.add(batch)
+    log_activity(db, user.get("username"), "upload", f"{import_type}: {safe}")
+    db.commit()
+    db.refresh(batch)
+    return batch
 
 
-def _start_planting_import(
+def _contract_import_batch(db: Session, batch_id: int) -> ImportBatch | None:
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.import_type not in ("cargill_contracts", "cgb_contracts"):
+        return None
+    return batch
+
+
+# Back-compat aliases
+def _start_cargill_contract_import(
     db: Session,
     *,
     user: dict,
     filename: str,
     content: bytes,
 ) -> ImportBatch:
-    from app import planting_import as pimp
-    from app.activity import log_activity
-
-    safe = _safe_filename(filename)
-    path = _upload_root() / f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{safe}"
-    path.write_bytes(content)
-    crop_guess = _guess_crop_from_filename(filename or safe)
-    payload = pimp.build_payload(filename or safe, str(path), content, crop_guess=crop_guess)
-    batch = ImportBatch(
-        filename=path.name,
-        import_type="planting_csv",
-        status="pending_review",
-        row_count=len(payload.get("rows") or []),
-        notes="Guided planting import · map columns",
-        payload_json=pimp.dump_payload(payload),
+    return _start_contract_import(
+        db,
+        user=user,
+        filename=filename,
+        content=content,
+        import_type="cargill_contracts",
     )
-    db.add(batch)
-    log_activity(db, user.get("username"), "planting_upload", f"{safe} → review")
-    db.commit()
-    db.refresh(batch)
-    return batch
 
 
-def _planting_batch(db: Session, batch_id: int) -> ImportBatch | None:
-    batch = db.get(ImportBatch, batch_id)
-    if not batch or batch.import_type != "planting_csv":
-        return None
-    return batch
+def _cargill_batch(db: Session, batch_id: int) -> ImportBatch | None:
+    return _contract_import_batch(db, batch_id)
 
 
-def _save_planting_payload(db: Session, batch: ImportBatch, payload: dict) -> None:
-    from app import planting_import as pimp
-
-    batch.payload_json = pimp.dump_payload(payload)
-    batch.row_count = len(payload.get("proposals") or payload.get("rows") or [])
-    db.commit()
-
-
-@router.get("/upload/planting/{batch_id}", response_class=HTMLResponse)
-def planting_upload_review(request: Request, batch_id: int, db: Session = Depends(get_db)):
+@router.get("/upload/contracts/{batch_id}", response_class=HTMLResponse)
+def cargill_contracts_review(request: Request, batch_id: int, db: Session = Depends(get_db)):
     user = _need(request, "upload")
     if isinstance(user, RedirectResponse):
         return user
-    from app import planting_import as pimp
+    from app import cargill_contract_import as cci
 
-    batch = _planting_batch(db, batch_id)
+    batch = _cargill_batch(db, batch_id)
     if not batch:
-        return RedirectResponse("/upload?msg=Planting import not found", status_code=303)
-    payload = pimp.load_payload(batch.payload_json)
-    year = _year(db)
-    hybrids = []
-    if year:
-        hybrids = list(
-            db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id).order_by(Hybrid.name))
-        )
+        return RedirectResponse("/upload", status_code=303)
+    payload = cci.load_payload(batch.payload_json)
+
+    # Returning from Add New — apply party to that row
+    added = request.query_params.get("with_party_added")
+    row_raw = request.query_params.get("row")
+    if added and added.isdigit() and row_raw is not None and str(row_raw).isdigit():
+        party = db.get(Party, int(added))
+        row_i = int(row_raw)
+        proposals = list(payload.get("proposals") or [])
+        if party and 0 <= row_i < len(proposals):
+            proposals[row_i]["with_party_id"] = party.id
+            payload["proposals"] = proposals
+            payload["step"] = "rows"
+            batch.payload_json = cci.dump_payload(payload)
+            db.commit()
+
+    parties = list(db.scalars(select(Party).order_by(Party.name)))
     return templates.TemplateResponse(
-        "planting_upload_review.html",
+        "cargill_contract_upload.html",
         {
             "request": request,
             "user": user,
@@ -3282,202 +6775,317 @@ def planting_upload_review(request: Request, batch_id: int, db: Session = Depend
             "farm_name": _farm(db),
             "batch": batch,
             "payload": payload,
-            "proposals": payload.get("proposals") or [],
-            "hybrid_catalog": pimp.hybrid_catalog(hybrids),
-            "field_keys": pimp.FIELD_KEYS,
-            "field_labels": pimp.FIELD_LABELS,
+            "field_defs": cci.CONTRACT_FIELDS,
+            "parties": parties,
             "message": request.query_params.get("msg"),
-            "error": request.query_params.get("err"),
         },
     )
 
 
-@router.post("/upload/planting/{batch_id}/map")
-async def planting_upload_map(request: Request, batch_id: int, db: Session = Depends(get_db)):
+@router.post("/upload/contracts/{batch_id}/map")
+async def cargill_contracts_map(
+    request: Request,
+    batch_id: int,
+    db: Session = Depends(get_db),
+):
     user = _need(request, "upload")
     if isinstance(user, RedirectResponse):
         return user
-    from app import planting_import as pimp
+    from app import cargill_contract_import as cci
 
-    batch = _planting_batch(db, batch_id)
+    batch = _cargill_batch(db, batch_id)
     if not batch:
         return RedirectResponse("/upload", status_code=303)
-    payload = pimp.load_payload(batch.payload_json)
+    payload = cci.load_payload(batch.payload_json)
     form = await request.form()
-    cmap: dict[str, int | None] = {}
-    for key in pimp.FIELD_KEYS:
-        raw = str(form.get(f"map_{key}") or "-1")
+
+    if str(form.get("sheet_only") or "") == "1":
         try:
-            idx = int(raw)
+            sheet_index = int(form.get("sheet_index") or 0)
         except ValueError:
-            idx = -1
-        cmap[key] = None if idx < 0 else idx
+            sheet_index = 0
+        stored = Path(payload.get("stored_path") or "")
+        if stored.exists():
+            extract = cci.read_tabular(stored)
+            sheets = extract.get("sheets") or []
+            if 0 <= sheet_index < len(sheets):
+                sheet = sheets[sheet_index]
+                payload["sheet_index"] = sheet_index
+                payload["sheets"] = [
+                    {
+                        "name": s.get("name"),
+                        "headers": s.get("headers") or [],
+                        "row_count": len(s.get("rows") or []),
+                    }
+                    for s in sheets
+                ]
+                payload["active_sheet"] = {
+                    "name": sheet.get("name"),
+                    "headers": list(sheet.get("headers") or []),
+                    "rows": list(sheet.get("rows") or [])[:800],
+                }
+                payload["column_map"] = cci.guess_column_map(
+                    payload["active_sheet"]["headers"],
+                    payload.get("import_source"),
+                )
+                payload["proposals"] = cci.build_proposals(payload)
+                year = _year(db)
+                if year:
+                    cci.mark_db_duplicates(db, year, payload["proposals"])
+                payload["step"] = "map"
+                batch.payload_json = cci.dump_payload(payload)
+                batch.row_count = len(payload["proposals"])
+                db.commit()
+        return RedirectResponse(f"/upload/contracts/{batch_id}", status_code=303)
+
+    cmap: dict[str, int | None] = {}
+    for key in cci.FIELD_KEYS:
+        raw = form.get(f"map_{key}")
+        if raw in (None, ""):
+            cmap[key] = None
+        else:
+            try:
+                cmap[key] = int(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                cmap[key] = None
     payload["column_map"] = cmap
-    payload["crop_default"] = str(form.get("crop_default") or payload.get("crop_default") or "Corn")
+    payload["include_only_contract_rows"] = form.get("include_only_contract_rows") == "1"
+    old_proposals = list(payload.get("proposals") or [])
+    payload["proposals"] = cci.merge_proposal_choices(
+        cci.build_proposals(payload),
+        old_proposals,
+    )
     year = _year(db)
-    fields = []
-    hybrids = []
     if year:
-        fields = list(db.scalars(select(Field).where(Field.crop_year_id == year.id)))
-        hybrids = list(db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year.id)))
-    payload["proposals"] = pimp.build_proposals(payload, fields, hybrids)
+        cci.mark_db_duplicates(db, year, payload["proposals"])
     payload["step"] = "rows"
-    batch.notes = f"Mapped columns · {len(payload['proposals'])} planting rows"
-    _save_planting_payload(db, batch, payload)
-    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+    batch.payload_json = cci.dump_payload(payload)
+    batch.row_count = len(payload["proposals"])
+    db.commit()
+    return RedirectResponse(f"/upload/contracts/{batch_id}", status_code=303)
 
 
-@router.post("/upload/planting/{batch_id}/back")
-def planting_upload_back(request: Request, batch_id: int, db: Session = Depends(get_db)):
+@router.post("/upload/contracts/{batch_id}/back")
+def cargill_contracts_back(request: Request, batch_id: int, db: Session = Depends(get_db)):
     user = _need(request, "upload")
     if isinstance(user, RedirectResponse):
         return user
-    from app import planting_import as pimp
+    from app import cargill_contract_import as cci
 
-    batch = _planting_batch(db, batch_id)
+    batch = _cargill_batch(db, batch_id)
     if not batch:
         return RedirectResponse("/upload", status_code=303)
-    payload = pimp.load_payload(batch.payload_json)
+    payload = cci.load_payload(batch.payload_json)
     payload["step"] = "map"
-    _save_planting_payload(db, batch, payload)
-    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+    batch.payload_json = cci.dump_payload(payload)
+    db.commit()
+    return RedirectResponse(f"/upload/contracts/{batch_id}", status_code=303)
 
 
-@router.post("/upload/planting/{batch_id}/discard")
-def planting_upload_discard(request: Request, batch_id: int, db: Session = Depends(get_db)):
+@router.post("/upload/contracts/{batch_id}/commit")
+async def cargill_contracts_commit(
+    request: Request,
+    batch_id: int,
+    db: Session = Depends(get_db),
+):
     user = _need(request, "upload")
     if isinstance(user, RedirectResponse):
         return user
-    batch = _planting_batch(db, batch_id)
-    if batch:
-        batch.status = "discarded"
-        batch.notes = "Discarded by user"
-        db.commit()
-    return RedirectResponse("/upload?msg=Planting import discarded", status_code=303)
+    from app import cargill_contract_import as cci
 
-
-@router.post("/upload/planting/{batch_id}/commit")
-async def planting_upload_commit(request: Request, batch_id: int, db: Session = Depends(get_db)):
-    user = _need(request, "upload")
-    if isinstance(user, RedirectResponse):
-        return user
-    from app import planting_import as pimp
-    from app.activity import log_activity
-
-    batch = _planting_batch(db, batch_id)
+    batch = _cargill_batch(db, batch_id)
     if not batch:
         return RedirectResponse("/upload", status_code=303)
     year = _year(db)
     if not year:
         return RedirectResponse(
-            f"/upload/planting/{batch_id}?err=No active crop year",
+            f"/upload/contracts/{batch_id}?msg=Set+an+active+crop+year+first",
             status_code=303,
         )
-    payload = pimp.load_payload(batch.payload_json)
+    payload = cci.load_payload(batch.payload_json)
+    proposals = list(payload.get("proposals") or [])
     form = await request.form()
-    proposals = payload.get("proposals") or []
-    updated: list[dict] = []
-    for row in proposals:
-        rid = row.get("id")
-        if rid is None:
+    for i, p in enumerate(proposals):
+        if p.get("dup_in_db") or p.get("dup_in_file"):
+            p["include"] = False
             continue
-        include = str(form.get(f"include_{rid}") or "") in ("1", "on", "true", "yes")
-        create_field = str(form.get(f"create_{rid}") or "") in ("1", "on", "true", "yes")
-        update_field_crop = str(form.get(f"update_field_crop_{rid}") or "") in ("1", "on", "true", "yes")
-        crop = str(form.get(f"crop_{rid}") or row.get("crop") or "Corn").strip() or "Corn"
-        matched_raw = str(form.get(f"matched_{rid}") or row.get("matched_field_id") or "").strip()
-        matched_id = None
-        if matched_raw:
-            try:
-                matched_id = int(matched_raw)
-            except ValueError:
-                matched_id = None
-        op_date = str(form.get(f"date_{rid}") or "").strip() or None
-        try:
-            hcount = int(str(form.get(f"hybrid_count_{rid}") or "0"))
-        except ValueError:
-            hcount = 0
-        hybrids = []
-        for i in range(hcount):
-            name = str(form.get(f"hybrid_{rid}_{i}") or "").strip()
-            if not name:
-                continue
-            rate = str(form.get(f"rate_{rid}_{i}") or "").strip()
-            units_raw = str(form.get(f"units_{rid}_{i}") or "").strip()
-            units = None
-            if units_raw:
-                try:
-                    units = float(units_raw.replace(",", ""))
-                except ValueError:
-                    units = None
-            sel = str(form.get(f"hybrid_sel_{rid}_{i}") or "").strip()
-            # sel: "new" | hybrid id
-            if sel == "new" or sel == "":
-                resolve = "new"
-                selected_hybrid_id = None
-            else:
-                resolve = "pick"
-                try:
-                    selected_hybrid_id = int(sel)
-                except ValueError:
-                    resolve = "new"
-                    selected_hybrid_id = None
-            detail_mode = str(form.get(f"hybrid_detail_mode_{rid}_{i}") or "later").strip()
-            detail_now = detail_mode == "now"
-            name_edit = str(form.get(f"hybrid_name_edit_{rid}_{i}") or name).strip() or name
-            details = {
-                "detail_now": detail_now,
-                "name": name_edit if detail_now else name,
-                "brand": str(form.get(f"hybrid_brand_{rid}_{i}") or "").strip() if detail_now else "",
-                "maturity": str(form.get(f"hybrid_maturity_{rid}_{i}") or "").strip() if detail_now else "",
-                "traits": str(form.get(f"hybrid_traits_{rid}_{i}") or "").strip() if detail_now else "",
-                "unit_label": str(form.get(f"hybrid_unit_{rid}_{i}") or "unit").strip() or "unit",
-                "cost_per_unit": str(form.get(f"hybrid_cpu_{rid}_{i}") or "").strip() if detail_now else "",
-                "cost_per_acre": str(form.get(f"hybrid_cpa_{rid}_{i}") or "").strip() if detail_now else "",
-                "notes": str(form.get(f"hybrid_notes_{rid}_{i}") or "").strip() if detail_now else "",
-            }
-            hybrids.append(
-                {
-                    "name": name,
-                    "rate": rate or None,
-                    "units": units,
-                    "resolve": resolve,
-                    "selected_hybrid_id": selected_hybrid_id,
-                    "details": details,
-                }
-            )
-        updated.append(
-            {
-                **row,
-                "include": include,
-                "create_field": create_field if matched_id is None else False,
-                "update_field_crop": update_field_crop,
-                "matched_field_id": matched_id,
-                "op_date": op_date,
-                "crop": crop,
-                "hybrids": hybrids,
-            }
-        )
-
-    result = pimp.commit_proposals(db, crop_year_id=year.id, proposals=updated)
-    payload["proposals"] = updated
-    payload["result"] = result
+        p["include"] = form.get(f"include_{i}") == "1"
+        raw_with = str(form.get(f"with_party_{i}") or "").strip()
+        if raw_with.isdigit():
+            wid = int(raw_with)
+            p["with_party_id"] = wid if db.get(Party, wid) else None
+        else:
+            p["with_party_id"] = None
+    summary = cci.commit_proposals(db, year, proposals)
+    payload["proposals"] = proposals
+    payload["commit_summary"] = summary
     payload["step"] = "done"
+    batch.payload_json = cci.dump_payload(payload)
     batch.status = "imported"
+    batch.row_count = summary.get("created", 0)
     batch.notes = (
-        f"Planting import: {result['operations']} ops, "
-        f"{result['hybrid_links']} hybrid links, "
-        f"{result.get('hybrids_created', 0)} hybrids created, "
-        f"{result['fields_created']} fields created"
+        f"Created {summary.get('created', 0)}; "
+        f"skipped dups {summary.get('skipped_duplicates', 0)}; "
+        f"unchecked {summary.get('skipped_unchecked', 0)}"
     )
-    batch.row_count = result["operations"]
-    _save_planting_payload(db, batch, payload)
     log_activity(
         db,
         user.get("username"),
-        "planting_import",
+        "cargill_contracts_import",
         batch.notes,
     )
     db.commit()
-    return RedirectResponse(f"/upload/planting/{batch_id}", status_code=303)
+    return RedirectResponse(f"/upload/contracts/{batch_id}", status_code=303)
 
+
+def _apply_review_form_to_proposals(
+    db: Session,
+    proposals: list,
+    form,
+) -> None:
+    for i, p in enumerate(proposals):
+        if p.get("dup_in_db") or p.get("dup_in_file"):
+            p["include"] = False
+            continue
+        # When checkbox is present it's included; disabled dups use hidden 0
+        p["include"] = form.get(f"include_{i}") == "1"
+        raw_with = str(form.get(f"with_party_{i}") or "").strip()
+        if raw_with.isdigit():
+            wid = int(raw_with)
+            p["with_party_id"] = wid if db.get(Party, wid) else None
+        elif raw_with == "__add_new__":
+            pass  # keep previous
+        else:
+            p["with_party_id"] = None
+
+
+@router.post("/upload/contracts/{batch_id}/save-and-add-party")
+async def cargill_contracts_save_and_add_party(
+    request: Request,
+    batch_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    from app import cargill_contract_import as cci
+
+    batch = _cargill_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    payload = cci.load_payload(batch.payload_json)
+    proposals = list(payload.get("proposals") or [])
+    form = await request.form()
+    _apply_review_form_to_proposals(db, proposals, form)
+    payload["proposals"] = proposals
+    payload["step"] = "rows"
+    batch.payload_json = cci.dump_payload(payload)
+    db.commit()
+    row = str(form.get("add_party_row") or "0")
+    if not row.isdigit():
+        row = "0"
+    return RedirectResponse(
+        f"/upload/contracts/{batch_id}/new-with-party?row={row}",
+        status_code=303,
+    )
+
+
+@router.get("/upload/contracts/{batch_id}/new-with-party", response_class=HTMLResponse)
+def cargill_contracts_new_with_party(
+    request: Request,
+    batch_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = _cargill_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    row = request.query_params.get("row") or "0"
+    if not str(row).isdigit():
+        row = "0"
+    return templates.TemplateResponse(
+        "cargill_contract_new_with.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "upload",
+            "farm_name": _farm(db),
+            "batch": batch,
+            "row": row,
+            "party_types": [
+                {"value": "partner", "label": "Partner"},
+                {"value": "landlord", "label": "Landlord"},
+                {"value": "other", "label": "Other"},
+            ],
+        },
+    )
+
+
+@router.post("/upload/contracts/{batch_id}/new-with-party")
+def cargill_contracts_new_with_party_save(
+    request: Request,
+    batch_id: int,
+    name: str = Form(...),
+    party_type: str = Form("partner"),
+    notes: str = Form(""),
+    row: str = Form("0"),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = _cargill_batch(db, batch_id)
+    if not batch:
+        return RedirectResponse("/upload", status_code=303)
+    raw = (name or "").strip()
+    if not raw:
+        return RedirectResponse(
+            f"/upload/contracts/{batch_id}/new-with-party?row={row}",
+            status_code=303,
+        )
+    existing = db.scalar(select(Party).where(Party.name == raw).limit(1))
+    if existing:
+        party = existing
+    else:
+        party = Party(
+            name=raw,
+            party_type=(party_type or "partner").strip() or "partner",
+            notes=(notes.strip() or None),
+        )
+        db.add(party)
+        log_activity(db, user.get("username"), "party_add", f"{raw} (contract with)")
+        db.commit()
+        db.refresh(party)
+    row_q = row if str(row).isdigit() else "0"
+    return RedirectResponse(
+        f"/upload/contracts/{batch_id}?with_party_added={party.id}&row={row_q}",
+        status_code=303,
+    )
+
+
+@router.post("/upload/contracts/{batch_id}/discard")
+def cargill_contracts_discard(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = _cargill_batch(db, batch_id)
+    if batch:
+        batch.status = "discarded"
+        db.commit()
+    return RedirectResponse("/upload?msg=Import+discarded", status_code=303)
+
+
+@router.post("/upload/batches/{batch_id}/discard")
+def upload_batch_discard(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    """Discard any master-upload import batch (with confirm on the form)."""
+    user = _need(request, "upload")
+    if isinstance(user, RedirectResponse):
+        return user
+    batch = db.get(ImportBatch, batch_id)
+    if batch and (batch.status or "") not in ("discarded",):
+        batch.status = "discarded"
+        log_activity(db, user.get("username"), "import_discard", f"#{batch_id} {batch.filename}")
+        db.commit()
+    return RedirectResponse("/upload?msg=Import+discarded", status_code=303)

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if field %}Edit{% else %}New{% endif %} field — {{ farm_name }}{% endblock %}
 {% block content %}
+{% set edit_next = ('/fields/' ~ field.id ~ '/edit') if field else '/fields/new' %}
 <section class="page-head">
   <div>
     <p class="eyebrow">{{ year.year if year else "" }}</p>
@@ -16,8 +17,14 @@
 {% if request.query_params.get('msg') == 'totals_not_a_field' %}
 <p class="banner-warn">“Totals” is a spreadsheet summary — pick a real field name.</p>
 {% endif %}
+{% if request.query_params.get('msg') == 'share_partner_required' %}
+<p class="banner-warn">On shares needs a partner. Add who you farm with under “Who you farm this field with” (Me + partner = 100%).</p>
+{% endif %}
+{% if party_added %}
+<p class="banner-ok">Added “{{ party_added.name }}” to who you farm with — selected on a new partner row.</p>
+{% endif %}
 
-<form method="post" action="/fields/save" class="form-grid" id="field-form">
+<form method="post" action="/fields/save" class="form-grid" id="field-form" data-autosave>
   {% if field %}<input type="hidden" name="field_id" value="{{ field.id }}">{% endif %}
 
   <label class="full">Field name
@@ -33,7 +40,7 @@
 
   <label>Crop
     <select name="crop">
-      {% for c in ['Corn', 'Soybeans', 'None'] %}
+      {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans', 'None']) %}
       <option value="{{ c }}" {% if field and field.crop == c %}selected{% elif not field and c == 'None' %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
     </select>
@@ -41,18 +48,25 @@
 
   <label>Ownership
     <select name="ownership_mode" id="ownership_mode">
+      {% if lookup_lists.get('ownership_mode') %}
+      {% for opt in lookup_lists.ownership_mode %}
+      <option value="{{ opt.value }}" {% if field and field.ownership_mode == opt.value %}selected{% elif not field and opt.value == 'operated_by_me' %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
       {% for key, label in ownership_labels.items() %}
       <option value="{{ key }}" {% if field and field.ownership_mode == key %}selected{% elif not field and key == 'operated_by_me' %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
+      {% endif %}
     </select>
   </label>
 
   <label>Primary landlord / customer (optional)
-    <select name="party_id">
+    <select name="party_id" data-add-new="/risk/contracts/new/with-party?next={{ edit_next|urlencode }}">
       <option value="">—</option>
-      {% for p in parties %}
-      <option value="{{ p.id }}" {% if field and field.party_id == p.id %}selected{% endif %}>{{ p.name }} ({{ p.party_type }})</option>
+      {% for p in farm_with_parties %}
+      <option value="{{ p.id }}" {% if field and field.party_id == p.id %}selected{% endif %}>{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
       {% endfor %}
+      <option value="__add_new__">Add New…</option>
     </select>
   </label>
 
@@ -62,9 +76,15 @@
 
   <label>Lease type
     <select name="lease_type">
-      {% for key, label in [('cash_rent','Cash Rent/Property Taxes'),('flex_rent','Flex rent'),('crop_share','Crop share'),('none','None')] %}
+      {% if lookup_lists.get('lease_type') %}
+      {% for opt in lookup_lists.lease_type %}
+      <option value="{{ opt.value }}" {% if field and field.lease_type == opt.value %}selected{% elif not field and opt.value == 'cash_rent' %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
+      {% for key, label in [('cash_rent','Cash rent'),('flex_rent','Flex rent'),('crop_share','Crop share'),('none','None')] %}
       <option value="{{ key }}" {% if field and field.lease_type == key %}selected{% elif not field and key == 'cash_rent' %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
+      {% endif %}
     </select>
   </label>
 
@@ -77,23 +97,34 @@
   </label>
 
   <div class="full panel share-panel" id="share-panel">
-    <h2 style="margin:0 0 0.35rem;font-family:var(--display)">Share partners</h2>
-    <p class="muted" style="margin:0 0 0.75rem">Add every partner and their % (example: Me 50 · Mike Palmer 16 · Mike Hurt 34). Total should be 100%.</p>
+    <h2 style="margin:0 0 0.35rem;font-family:var(--display)">Who you farm this field with</h2>
+    <p class="muted" style="margin:0 0 0.5rem">
+      Required for <strong>On shares</strong>. Add <strong>Me</strong> plus each share partner and set percents to 100%.
+      Marketing sold % uses this to know whose farms each contract belongs with.
+    </p>
+    <p class="mkt-share-warn" id="share-partner-warn" hidden>
+      On shares needs at least one partner (not just Me). Pick Kenneth Beam, Ed Simpson, etc. from the list.
+    </p>
     <div class="share-rows" id="share-rows">
       {% for s in shares %}
       <div class="share-row">
-        <input type="hidden" name="share_is_me" value="{{ 1 if s.is_me else 0 }}">
+        <input type="hidden" name="share_is_me" value="{{ 1 if s.is_me else 0 }}" class="share-is-me">
+        <input type="hidden" name="share_name" value="{{ s.display_name }}" class="share-name">
         <label>Partner
-          <input name="share_name" value="{{ s.display_name if s.is_me else (s.partner_name or (s.party.name if s.party else '')) }}" placeholder="Me / Mike Palmer" {% if s.is_me %}data-me="1"{% endif %}>
-        </label>
-        <label>Party (optional)
-          <select name="share_party_id" {% if s.is_me %}disabled{% endif %}>
-            <option value="">—</option>
-            {% for p in parties %}
-            <option value="{{ p.id }}" {% if s.party_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+          <select name="share_party_id" class="share-party-select"
+                  data-add-new="/risk/contracts/new/with-party?next={{ edit_next|urlencode }}">
+            <option value="__me__" {% if s.is_me %}selected{% endif %}>Me</option>
+            {% for p in farm_with_parties %}
+            <option value="{{ p.id }}" {% if not s.is_me and s.party_id == p.id %}selected{% endif %}>{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
             {% endfor %}
+            {% set share_party_ids = farm_with_ids if farm_with_ids is defined else [] %}
+            {% if not s.is_me and s.party_id and s.party and (s.party_id not in share_party_ids) %}
+            <option value="{{ s.party_id }}" selected>{{ s.party.name }}{% if s.party.party_type %} ({{ s.party.party_type }}){% endif %}</option>
+            {% elif not s.is_me and not s.party_id and s.partner_name and s.partner_name|lower != 'me' %}
+            <option value="" selected>{{ s.partner_name }} (not in list)</option>
+            {% endif %}
+            <option value="__add_new__">Add New…</option>
           </select>
-          {% if s.is_me %}<input type="hidden" name="share_party_id" value="">{% endif %}
         </label>
         <label>Share %
           <input name="share_pct" type="number" step="0.01" min="0" max="100" value="{{ s.share_pct }}" class="share-pct-input">
@@ -126,16 +157,16 @@
 
 <template id="share-row-template">
   <div class="share-row">
-    <input type="hidden" name="share_is_me" value="0">
+    <input type="hidden" name="share_is_me" value="0" class="share-is-me">
+    <input type="hidden" name="share_name" value="" class="share-name">
     <label>Partner
-      <input name="share_name" placeholder="Partner name">
-    </label>
-    <label>Party (optional)
-      <select name="share_party_id">
-        <option value="">—</option>
-        {% for p in parties %}
-        <option value="{{ p.id }}">{{ p.name }}</option>
+      <select name="share_party_id" class="share-party-select"
+              data-add-new="/risk/contracts/new/with-party?next={{ edit_next|urlencode }}">
+        <option value="__me__">Me</option>
+        {% for p in farm_with_parties %}
+        <option value="{{ p.id }}">{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
         {% endfor %}
+        <option value="__add_new__">Add New…</option>
       </select>
     </label>
     <label>Share %
@@ -154,19 +185,81 @@
   var acresTotal = document.getElementById("acres_total");
   var acresMine = document.getElementById("acres_mine");
   var myShare = document.getElementById("my_share_pct");
+  var partyAdded = {{ (party_added.id if party_added else none)|tojson }};
+  var ownershipMode = document.getElementById("ownership_mode");
+  var sharePanel = document.getElementById("share-panel");
+  var shareWarn = document.getElementById("share-partner-warn");
+  var fieldForm = document.getElementById("field-form") || document.querySelector('form[action="/fields/save"]');
+
+  function hasPartnerRow() {
+    if (!rows) return false;
+    var found = false;
+    rows.querySelectorAll(".share-row").forEach(function (row) {
+      var isMe = row.querySelector(".share-is-me");
+      var sel = row.querySelector(".share-party-select");
+      if (isMe && isMe.value === "1") return;
+      if (sel && sel.value && sel.value !== "__me__" && sel.value !== "__add_new__") found = true;
+    });
+    return found;
+  }
+
+  function syncSharePanel() {
+    var onShares = ownershipMode && ownershipMode.value === "on_shares";
+    if (sharePanel) {
+      sharePanel.classList.toggle("is-required", !!onShares);
+      sharePanel.style.outline = onShares ? "2px solid #c79100" : "";
+      sharePanel.style.background = onShares ? "linear-gradient(180deg,#fff8e1,#fff)" : "";
+    }
+    if (shareWarn) {
+      var show = onShares && !hasPartnerRow();
+      shareWarn.hidden = !show;
+    }
+    // Ensure at least Me + empty partner row when switching to on shares
+    if (onShares && rows && tpl && rows.querySelectorAll(".share-row").length < 2) {
+      var node = tpl.content.cloneNode(true);
+      rows.appendChild(node);
+      var sel = rows.lastElementChild && rows.lastElementChild.querySelector(".share-party-select");
+      if (sel) wireSelect(sel);
+      // Default Me to 50 if blank
+      rows.querySelectorAll(".share-row").forEach(function (row) {
+        var isMe = row.querySelector(".share-is-me");
+        var pctInput = row.querySelector(".share-pct-input");
+        if (isMe && isMe.value === "1" && pctInput && !pctInput.value) pctInput.value = "50";
+        if (isMe && isMe.value !== "1" && pctInput && !pctInput.value) pctInput.value = "50";
+      });
+      recalc();
+    }
+  }
+
+  function syncRow(row) {
+    var sel = row.querySelector(".share-party-select");
+    var isMe = row.querySelector(".share-is-me");
+    var nameHidden = row.querySelector(".share-name");
+    if (!sel || !isMe || !nameHidden) return;
+    var val = sel.value;
+    if (val === "__me__") {
+      isMe.value = "1";
+      nameHidden.value = "Me";
+    } else if (val && val !== "__add_new__") {
+      isMe.value = "0";
+      var opt = sel.options[sel.selectedIndex];
+      var label = opt ? String(opt.textContent || "").replace(/\s*\([^)]*\)\s*$/, "").trim() : "";
+      nameHidden.value = label || "Partner";
+    } else {
+      isMe.value = "0";
+    }
+  }
 
   function recalc() {
     var sum = 0;
     var mePct = null;
     rows.querySelectorAll(".share-row").forEach(function (row) {
+      syncRow(row);
       var pctInput = row.querySelector(".share-pct-input");
-      var isMe = row.querySelector('input[name="share_is_me"]');
-      var nameInput = row.querySelector('input[name="share_name"]');
+      var isMe = row.querySelector(".share-is-me");
       var pct = parseFloat((pctInput && pctInput.value) || "");
       if (isFinite(pct)) sum += pct;
-      var me = isMe && isMe.value === "1";
-      if (!me && nameInput && String(nameInput.value || "").trim().toLowerCase() === "me") me = true;
-      if (me && isFinite(pct)) mePct = pct;
+      if (isMe && isMe.value === "1" && isFinite(pct)) mePct = pct;
     });
     if (totalEl) {
       var ok = Math.abs(sum - 100) < 0.05;
@@ -180,15 +273,35 @@
         acresMine.value = (tot * mePct / 100).toFixed(2).replace(/\.00$/, "");
       }
     }
+    if (typeof syncSharePanel === "function") syncSharePanel();
+  }
+
+  function wireSelect(sel) {
+    if (!sel || sel._wired) return;
+    sel._wired = true;
+    sel.addEventListener("change", function () {
+      if (sel.value === "__add_new__") {
+        var base = sel.getAttribute("data-add-new");
+        if (base) window.location.href = base;
+        else sel.value = "";
+        return;
+      }
+      syncRow(sel.closest(".share-row"));
+      recalc();
+    });
   }
 
   if (addBtn && tpl && rows) {
     addBtn.addEventListener("click", function () {
-      rows.appendChild(tpl.content.cloneNode(true));
+      var node = tpl.content.cloneNode(true);
+      rows.appendChild(node);
+      var sel = rows.lastElementChild && rows.lastElementChild.querySelector(".share-party-select");
+      if (sel) wireSelect(sel);
       recalc();
     });
   }
   if (rows) {
+    rows.querySelectorAll(".share-party-select").forEach(wireSelect);
     rows.addEventListener("click", function (e) {
       var btn = e.target.closest(".share-remove");
       if (!btn) return;
@@ -200,7 +313,56 @@
     rows.addEventListener("change", recalc);
   }
   if (acresTotal) acresTotal.addEventListener("input", recalc);
+
+  document.querySelectorAll('select[data-add-new]').forEach(function (sel) {
+    if (sel.classList.contains("share-party-select")) return;
+    sel.addEventListener("change", function () {
+      if (sel.value === "__add_new__") {
+        var base = sel.getAttribute("data-add-new");
+        if (base) window.location.href = base;
+        else sel.value = "";
+      }
+    });
+  });
+
+  if (ownershipMode) {
+    ownershipMode.addEventListener("change", syncSharePanel);
+  }
+  if (fieldForm) {
+    fieldForm.addEventListener("submit", function (e) {
+      if (ownershipMode && ownershipMode.value === "on_shares" && !hasPartnerRow()) {
+        e.preventDefault();
+        syncSharePanel();
+        if (sharePanel) sharePanel.scrollIntoView({ behavior: "smooth", block: "center" });
+        alert("On shares fields need a share partner.\n\nAdd who you farm with (e.g. Kenneth Beam) and set Me + partner % to 100%.");
+      }
+    });
+  }
+
+  // Returning from Add New — add a share row and select that partner
+  if (partyAdded && rows && tpl) {
+    var node = tpl.content.cloneNode(true);
+    rows.appendChild(node);
+    var row = rows.lastElementChild;
+    var sel = row && row.querySelector(".share-party-select");
+    if (sel) {
+      var has = false;
+      Array.from(sel.options).forEach(function (opt) {
+        if (String(opt.value) === String(partyAdded)) has = true;
+      });
+      if (!has) {
+        var opt = document.createElement("option");
+        opt.value = String(partyAdded);
+        opt.textContent = {{ (party_added.name if party_added else "New partner")|tojson }};
+        sel.insertBefore(opt, sel.querySelector('option[value="__add_new__"]'));
+      }
+      sel.value = String(partyAdded);
+      wireSelect(sel);
+    }
+  }
+
   recalc();
+  syncSharePanel();
 })();
 </script>
 {% endblock %}

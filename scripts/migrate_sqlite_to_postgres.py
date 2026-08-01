@@ -86,9 +86,27 @@ def main() -> int:
                 print(f"REFUSED: target already has {n} fields. Pass --force only if you mean to add duplicates.")
                 return 3
 
-    # FK-safe order from SQLAlchemy (parents before children), then any leftover tables
-    sorted_model = [t.name for t in Base.metadata.sorted_tables if t.name in src_tables]
-    ordered = sorted_model + [t for t in sorted(src_tables) if t not in sorted_model]
+    # Parent-ish tables first, then the rest (FK-friendly order)
+    preferred = [
+        "users",
+        "crop_years",
+        "app_settings",
+        "parties",
+        "fields",
+        "field_shares",
+        "hybrids",
+        "spray_mixes",
+        "spray_mix_lines",
+        "input_products",
+        "grain_bins",
+        "bin_shares",
+        "grain_contracts",
+        "equipment",
+        "crop_trials",
+        "trial_treatments",
+    ]
+    ordered = [t for t in preferred if t in src_tables]
+    ordered += [t for t in sorted(src_tables) if t not in ordered]
 
     SrcSession = sessionmaker(bind=src)
     DstSession = sessionmaker(bind=dst)

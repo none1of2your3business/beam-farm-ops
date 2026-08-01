@@ -16,11 +16,17 @@
   </label>
   <label>Type
     <select name="party_type">
+      {% if lookup_lists.get('party_type') %}
+      {% for opt in lookup_lists.party_type %}
+      <option value="{{ opt.value }}">{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
       <option value="landlord">Landlord</option>
       <option value="partner">Partner</option>
       <option value="customer">Customer (custom work)</option>
       <option value="buyer">Grain buyer</option>
       <option value="other">Other</option>
+      {% endif %}
     </select>
   </label>
   <label>Phone

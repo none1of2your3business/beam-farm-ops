@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Invoice #{{ invoice.id }} — {{ farm_name }}{% endblock %}
+{% block content %}
+{% if request.query_params.get('created') %}
+<p class="banner-ok">
+  Invoice created.
+  {% if invoiced_ops %}
+  Marked as invoiced:
+  {{ invoiced_ops|join(', ') }}.
+  {% endif %}
+</p>
+{% endif %}
+
+<section class="page-head no-print">
+  <div>
+    <p class="eyebrow">Money · Invoice</p>
+    <h1>Invoice #{{ invoice.id }}</h1>
+    <p class="lede">{{ party.name if party else 'Customer' }} · {{ invoice.invoice_date }} · {{ invoice.status }}</p>
+  </div>
+  <div class="form-actions">
+    <button class="btn primary" type="button" onclick="window.print()">Print</button>
+    <a class="btn" href="/invoices/{{ invoice.id }}/export.xlsx">Excel export</a>
+    <a class="btn ghost" href="/invoices">All invoices</a>
+    {% if field %}<a class="btn ghost" href="/fields/{{ field.id }}/operations">Field ledger</a>{% endif %}
+  </div>
+</section>
+
+<article class="panel invoice-sheet" id="invoice-print">
+  <header class="invoice-sheet-head">
+    <div>
+      <p class="eyebrow">{{ farm_name }}</p>
+      <h1>Invoice #{{ invoice.id }}</h1>
+    </div>
+    <div class="invoice-sheet-meta">
+      <p><strong>Date</strong> {{ invoice.invoice_date }}</p>
+      {% if invoice.due_date %}<p><strong>Due</strong> {{ invoice.due_date }}</p>{% endif %}
+      <p><strong>Status</strong> {{ invoice.status }}</p>
+    </div>
+  </header>
+  <p><strong>Bill to:</strong> {{ party.name if party else '—' }}{% if party and party.party_type %} ({{ party.party_type }}){% endif %}</p>
+  {% if field %}<p><strong>Field:</strong> {{ field.name }} · {{ field.crop }}</p>{% endif %}
+  {% if invoice.notes %}<p class="muted">{{ invoice.notes }}</p>{% endif %}
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
+      </thead>
+      <tbody>
+        {% for line in lines %}
+        <tr>
+          <td>{{ line.description }}</td>
+          <td>{{ line.quantity }}</td>
+          <td>${{ '%.2f'|format(line.rate) }}</td>
+          <td>${{ '%.2f'|format(line.quantity * line.rate) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3"><strong>Total</strong></td>
+          <td><strong>${{ '%.2f'|format(invoice.total) }}</strong></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</article>
+
+{% if invoice.status != 'paid' %}
+<form method="post" action="/invoices/{{ invoice.id }}/paid" class="form-actions no-print" style="margin-top:1rem">
+  <button class="btn" type="submit">Mark paid</button>
+</form>
+{% endif %}
+
+<style>
+@media print {
+  .no-print, .hub-nav, .hub-tabs, .hub-ops, .page-banner, nav { display: none !important; }
+  .invoice-sheet { border: none; box-shadow: none; }
+}
+.invoice-sheet-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.invoice-sheet-meta p { margin: 0.15rem 0; }
+.is-invoiced { opacity: 0.65; }
+.inv-custom-lines { display: grid; gap: 0.55rem; margin-bottom: 0.55rem; }
+</style>
+{% endblock %}

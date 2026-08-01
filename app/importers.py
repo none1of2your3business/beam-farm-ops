@@ -199,6 +199,7 @@ def import_cargill_csv(db: Session, content: bytes, year: CropYear) -> tuple[int
                 bushels=bu,
                 delivered_bu=bu,
                 cash_price=price,
+                contract_number=contract_no or None,
                 notes=f"import:{contract_no}" if contract_no else "cargill_import",
                 status="open",
             )

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
-{% block title %}Marketing and Storage — {{ farm_name }}{% endblock %}
+{% block title %}Marketing board — {{ farm_name }}{% endblock %}
 {% block content %}
 <section class="mkt-hero reveal">
   <div class="mkt-hero-media">
@@ -8,11 +8,20 @@
     <img src="/static/img/farm-elevator.jpg" alt="Elevator" class="mkt-hero-float" data-speed="-0.08">
   </div>
   <div class="mkt-hero-copy">
-    <p class="eyebrow">{{ year.year if year else "" }} · Marketing and Storage</p>
+    <p class="eyebrow">{{ year.year if year else "" }} · marketing</p>
     <h1>Marketing board</h1>
     <p class="lede">Quotes · position · money at risk.</p>
   </div>
 </section>
+
+{% set qstatus = request.query_params.get('quotes') %}
+{% if qstatus == 'ok' %}
+<p class="banner-ok">Delayed futures quotes updated.</p>
+{% elif qstatus == 'stored' %}
+<p class="banner-ok">Used last saved strip prices (live Yahoo feed was busy). Try Refresh again in a minute for a fresh pull.</p>
+{% elif qstatus == 'fail' %}
+<p class="flash error">Could not reach delayed Yahoo quotes right now. Wait about a minute and hit Refresh again, or enter board prices manually below.</p>
+{% endif %}
 
 {# —— CME board + risk snapshot (first viewport) —— #}
 <section class="mkt-top reveal" id="board">
@@ -21,6 +30,7 @@
       <div>
         <p class="eyebrow">CME nearby</p>
         <h2>Futures board</h2>
+      <p class="muted" style="margin:0.15rem 0 0;font-size:0.88rem">Current front-month contract (rolls after last trading day).</p>
       </div>
       <div class="mkt-board-head-meta">
         <p class="mkt-delayed">Delayed · not for trading</p>
@@ -76,7 +86,8 @@
       ({{ quote_updated.source_label }}). Auto-refresh about every 30 minutes while you use this page; or hit Refresh.
       {% else %}
       No board price yet — refresh delayed quotes or enter manually.
-      {% endif %}
+    {% endif %}
+    <p class="muted" style="margin:0.35rem 0 0;font-size:0.82rem">Board = front month. Strip below = that month through the same month next year.</p>
     </p>
     <div class="mkt-board-actions">
       <form method="post" action="/risk/quotes/refresh"><button class="btn primary" type="submit">Refresh delayed quotes</button></form>
@@ -96,12 +107,14 @@
         <p class="eyebrow">Risk tracker</p>
         <h2>Money &amp; stress</h2>
       </div>
+      <button type="button" class="btn ghost" id="risk-calc-open">How risk is calculated</button>
     </div>
     <div class="mkt-risk-heroes">
       <div class="mkt-risk-hero stress">
-        <span>Stress dollars</span>
+        <span>Total stress $</span>
         <strong>${{ "{:,.0f}".format(risk_tracker.stress_total) }}</strong>
-        <em>Hit if futures-open grain drops by your shock</em>
+        <em>Futures risk ${{ "{:,.0f}".format(risk_tracker.futures_stress_total or 0) }}
+          + basis risk ${{ "{:,.0f}".format(risk_tracker.basis_stress_total or 0) }}</em>
       </div>
       <div class="mkt-risk-hero at-risk">
         <span>Money at risk</span>
@@ -119,19 +132,175 @@
           <li><span>Futures open</span><strong>{{ "{:,.0f}".format(r.futures_open or 0) }} bu</strong></li>
           <li><span>Basis open</span><strong>{{ "{:,.0f}".format(r.basis_open or 0) }} bu</strong></li>
           <li><span>In bins</span><strong>{{ "{:,.0f}".format(r.bin_bu or 0) }} bu</strong></li>
-          <li><span>Stress (−${{ "%.2f"|format(r.shock or 0) }})</span><strong>${{ "{:,.0f}".format(r.stress or 0) }}</strong></li>
+          <li><span>Futures risk (−${{ "%.2f"|format(r.futures_shock or r.shock or 0) }})</span><strong>${{ "{:,.0f}".format(r.futures_stress or 0) }}</strong></li>
+          <li><span>Basis risk (−${{ "%.2f"|format(r.basis_shock or 0) }})</span><strong>${{ "{:,.0f}".format(r.basis_stress or 0) }}</strong></li>
           <li><span>At risk $</span><strong>{% if r.money_at_risk is not none %}${{ "{:,.0f}".format(r.money_at_risk) }}{% else %}—{% endif %}</strong></li>
         </ul>
       </div>
       {% endfor %}
     </div>
     <form method="post" action="/risk/stress" class="form-grid mkt-stress-form">
-      <label>Corn stress $/bu<input name="corn_stress_shock" value="{{ settings.corn_stress_shock if settings else 0.5 }}"></label>
-      <label>Soy stress $/bu<input name="soy_stress_shock" value="{{ settings.soy_stress_shock if settings else 1.0 }}"></label>
-      <div class="form-actions"><button class="btn" type="submit">Update stress</button></div>
+      <label>Corn futures risk $/bu
+        <input name="corn_stress_shock" inputmode="decimal"
+               value="{{ settings.corn_stress_shock if settings and settings.corn_stress_shock is not none else 0.5 }}">
+      </label>
+      <label>Corn basis risk $/bu
+        <input name="corn_basis_shock" inputmode="decimal"
+               value="{{ settings.corn_basis_shock if settings and settings.corn_basis_shock is not none else 0.20 }}">
+      </label>
+      <label>Soy futures risk $/bu
+        <input name="soy_stress_shock" inputmode="decimal"
+               value="{{ settings.soy_stress_shock if settings and settings.soy_stress_shock is not none else 1.0 }}">
+      </label>
+      <label>Soy basis risk $/bu
+        <input name="soy_basis_shock" inputmode="decimal"
+               value="{{ settings.soy_basis_shock if settings and settings.soy_basis_shock is not none else 0.30 }}">
+      </label>
+      <div class="form-actions mkt-stress-actions">
+        <button class="btn primary" type="submit">Save risk shocks</button>
+      </div>
     </form>
   </div>
 </section>
+
+{# Risk calculation explain modal #}
+<dialog class="risk-calc-dialog" id="risk-calc-dialog">
+  <div class="risk-calc-panel">
+    <header class="risk-calc-head">
+      <div>
+        <p class="eyebrow">Risk tracker</p>
+        <h2>How risk is calculated</h2>
+      </div>
+      <button type="button" class="btn ghost" id="risk-calc-close">Close</button>
+    </header>
+
+    <section class="risk-calc-rules">
+      <h3>Contract lock rules</h3>
+      <ul>
+        <li><strong>Cash</strong> — locks futures <em>and</em> basis</li>
+        <li><strong>Basis</strong> — locks basis only (futures still open)</li>
+        <li><strong>DP</strong> — locks neither</li>
+        <li><strong>Everything else</strong> (forward, HTA, min price, …) — locks futures only</li>
+      </ul>
+      <p class="muted">Per crop:</p>
+      <ul class="risk-calc-formulas">
+        <li><code>Futures open</code> = expected bu − futures-locked bu</li>
+        <li><code>Basis open</code> = expected bu − basis-locked bu</li>
+        <li><code>Futures risk $</code> = futures open × futures risk $/bu</li>
+        <li><code>Basis risk $</code> = basis open × basis risk $/bu</li>
+        <li><code>Money at risk</code> = (bin bu + unsold) × local cash mark</li>
+      </ul>
+    </section>
+
+    {% for step in risk_calc_steps or [] %}
+    <section class="risk-calc-crop {{ crop_tone(step.crop) }}">
+      <h3>{{ crop_badge(step.crop, short=true) }} {{ step.crop }}</h3>
+      <ol class="risk-calc-steps">
+        <li>
+          <span>Expected production</span>
+          <strong>{{ "{:,.0f}".format(step.expected) }} bu</strong>
+          <em>from field acres × expected yield</em>
+        </li>
+        <li>
+          <span>Futures locked</span>
+          <strong>{{ "{:,.0f}".format(step.futures_locked) }} bu</strong>
+          <em>open contracts that lock futures</em>
+        </li>
+        <li>
+          <span>Futures open</span>
+          <strong>{{ "{:,.0f}".format(step.futures_open) }} bu</strong>
+          <em>{{ "{:,.0f}".format(step.expected) }} − {{ "{:,.0f}".format(step.futures_locked) }}</em>
+        </li>
+        <li>
+          <span>Futures risk $</span>
+          <strong>${{ "{:,.0f}".format(step.futures_stress) }}</strong>
+          <em>{{ "{:,.0f}".format(step.futures_open) }} bu × ${{ "%.2f"|format(step.futures_shock) }}/bu</em>
+        </li>
+        <li>
+          <span>Basis locked</span>
+          <strong>{{ "{:,.0f}".format(step.basis_locked) }} bu</strong>
+          <em>open contracts that lock basis</em>
+        </li>
+        <li>
+          <span>Basis open</span>
+          <strong>{{ "{:,.0f}".format(step.basis_open) }} bu</strong>
+          <em>{{ "{:,.0f}".format(step.expected) }} − {{ "{:,.0f}".format(step.basis_locked) }}</em>
+        </li>
+        <li>
+          <span>Basis risk $</span>
+          <strong>${{ "{:,.0f}".format(step.basis_stress) }}</strong>
+          <em>{{ "{:,.0f}".format(step.basis_open) }} bu × ${{ "%.2f"|format(step.basis_shock) }}/bu</em>
+        </li>
+        <li>
+          <span>Crop stress total</span>
+          <strong>${{ "{:,.0f}".format(step.stress) }}</strong>
+          <em>futures risk + basis risk</em>
+        </li>
+        <li>
+          <span>Money at risk</span>
+          <strong>{% if step.money_at_risk is not none %}${{ "{:,.0f}".format(step.money_at_risk) }}{% else %}—{% endif %}</strong>
+          <em>{{ "{:,.0f}".format(step.at_risk_bu) }} bu ({{ "{:,.0f}".format(step.bin_bu) }} bin + {{ "{:,.0f}".format(step.unsold) }} unsold)
+            {% if step.mark is not none %} × ${{ "%.2f"|format(step.mark) }}{% endif %}</em>
+        </li>
+      </ol>
+      {% if step.contracts %}
+      <details class="risk-calc-contracts">
+        <summary>Open contracts counted ({{ step.contracts|length }})</summary>
+        <div class="table-wrap">
+          <table class="simple-table">
+            <thead>
+              <tr><th>#</th><th>Buyer</th><th>Type</th><th>Bu</th><th>Futures</th><th>Basis</th></tr>
+            </thead>
+            <tbody>
+              {% for c in step.contracts %}
+              <tr>
+                <td>{{ c.id }}</td>
+                <td>{{ c.buyer }}</td>
+                <td>{{ c.type }}</td>
+                <td>{{ "{:,.0f}".format(c.bushels) }}</td>
+                <td>{% if c.futures_locked %}locked{% else %}open{% endif %}</td>
+                <td>{% if c.basis_locked %}locked{% else %}open{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+    </section>
+    {% endfor %}
+
+    <p class="risk-calc-farm-total">
+      Farm stress total =
+      <strong>${{ "{:,.0f}".format(risk_tracker.stress_total) }}</strong>
+      (futures ${{ "{:,.0f}".format(risk_tracker.futures_stress_total or 0) }}
+      + basis ${{ "{:,.0f}".format(risk_tracker.basis_stress_total or 0) }})
+    </p>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  var dlg = document.getElementById("risk-calc-dialog");
+  var openBtn = document.getElementById("risk-calc-open");
+  var closeBtn = document.getElementById("risk-calc-close");
+  if (!dlg || !openBtn) return;
+  openBtn.addEventListener("click", function () {
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+  if (closeBtn) closeBtn.addEventListener("click", function () {
+    if (typeof dlg.close === "function") dlg.close();
+    else dlg.removeAttribute("open");
+  });
+  dlg.addEventListener("click", function (e) {
+    if (e.target === dlg) {
+      if (typeof dlg.close === "function") dlg.close();
+      else dlg.removeAttribute("open");
+    }
+  });
+})();
+</script>
 
 {# —— Position bars (right under board + money/stress) —— #}
 <section class="mkt-chart-panel reveal" id="mkt-chart">
@@ -174,6 +343,139 @@
 </div>
 {% endfor %}</section>
 
+{# —— Sold % by ownership / share partner —— #}
+<section class="mkt-ownership-panel reveal" id="ownership-sold">
+  <div class="mkt-board-head">
+    <div>
+      <p class="eyebrow">By ownership</p>
+      <h2>Sold % by who you farm with</h2>
+      <p class="muted" style="margin:0.15rem 0 0;font-size:0.88rem">
+        Expected = your share of production on those farms. Sold = contracts tagged to that
+        <em>share partner</em> (person you farm with). If % is over 100, more grain is sold than
+        expected on linked fields — assign the missing share fields below.
+      </p>
+    </div>
+  </div>
+
+  {% if linked %}
+  <p class="banner-ok">Share partner linked on {{ linked }} field{% if linked != '1' %}s{% endif %}. Sold % recalculated.</p>
+  {% endif %}
+
+  {% if fields_need_partner %}
+  <div class="mkt-share-fix" id="link-partners">
+    <div class="mkt-share-fix-head">
+      <h3>Fields missing a share partner</h3>
+      <p class="muted">
+        These are marked on shares but have no partner assigned. Check the fields you farm with
+        someone, pick that partner once, and link them together — that puts expected bushels in
+        the right sold-% bubble.
+      </p>
+    </div>
+    <form method="post" action="/risk/link-share-partners-bulk" id="bulk-link-partners">
+      <div class="mkt-share-fix-toolbar">
+        <label>Partner
+          <select name="party_id" required>
+            <option value="">— who you farm with —</option>
+            {% for p in farm_with_parties or parties %}
+            <option value="{{ p.id }}">{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>My %
+          <input name="me_share_pct" type="number" min="0" max="100" step="0.1" value="50">
+        </label>
+        <button class="btn primary" type="submit">Link checked fields</button>
+        <button class="btn ghost" type="button" id="check-all-need-partner">Check all</button>
+      </div>
+      <div class="mkt-share-fix-list mkt-share-fix-checks">
+        {% for f in fields_need_partner %}
+        <label class="mkt-share-fix-check" data-crop="{{ f.crop }}">
+          <input type="checkbox" name="field_id" value="{{ f.id }}">
+          <span>
+            <strong>{{ f.name }}</strong>
+            <span class="muted">{{ f.crop }} · my {{ "%.0f"|format(f.my_share_pct) }}%
+              {% if f.expected_bu is not none %}· ~{{ "{:,.0f}".format(f.expected_bu) }} bu{% endif %}
+            </span>
+          </span>
+          <a class="btn ghost" href="/fields/{{ f.id }}/edit" onclick="event.stopPropagation()">Edit</a>
+        </label>
+        {% endfor %}
+      </div>
+    </form>
+  </div>
+  <script>
+  (function () {
+    var btn = document.getElementById("check-all-need-partner");
+    var form = document.getElementById("bulk-link-partners");
+    if (btn && form) {
+      btn.addEventListener("click", function () {
+        form.querySelectorAll('input[name="field_id"]').forEach(function (cb) { cb.checked = true; });
+      });
+    }
+  })();
+  </script>
+  {% endif %}
+
+  {% for own in ownership_sold or [] %}
+  <article class="mkt-ownership-card {% if own.is_me %}is-me{% endif %}" id="own-{{ own.party_id or 'me' }}">
+    <header class="mkt-ownership-head">
+      <div>
+        <p class="eyebrow">{% if own.is_me %}My farms{% else %}Share partner{% endif %}</p>
+        <h3>{{ own.label }}</h3>
+        <p class="muted">{{ own.subtitle }}</p>
+      </div>
+    </header>
+    <div class="stat-grid mkt-ownership-grid">
+      {% for c in own.crops %}
+      <div class="stat mkt-stat {{ crop_tone(c.crop) }} {% if c.oversold %}is-oversold{% endif %}">
+        <span class="stat-label">{{ crop_chip(c.crop) }} sold</span>
+        <span class="stat-value">{% if c.pct is not none %}{{ c.pct }}%{% else %}—{% endif %}</span>
+        <div class="muted">
+          {{ "{:,.0f}".format(c.sold) }} / {{ "{:,.0f}".format(c.expected) }} bu
+          · F {{ c.futures_pct if c.futures_pct is not none else '—' }}%
+          · B {{ c.basis_pct if c.basis_pct is not none else '—' }}%
+        </div>
+        {% if c.oversold %}
+        <p class="mkt-oversold-note">
+          Sold {{ "{:,.0f}".format(c.sold - c.expected) }} bu more than expected on linked fields.
+          {% if fields_need_partner %}
+          Below: check the {{ c.crop|lower }} fields that belong with {{ own.label|replace('With ', '') }}, then Link.
+          {% else %}
+          Check contract share-partner tags, or add expected yield on those fields.
+          {% endif %}
+        </p>
+        {% if fields_need_partner and own.party_id %}
+        <form method="post" action="/risk/link-share-partners-bulk" class="mkt-oversold-assign">
+          <input type="hidden" name="party_id" value="{{ own.party_id }}">
+          <input type="hidden" name="me_share_pct" value="50">
+          <p class="mkt-oversold-assign-label">Link {{ c.crop|lower }} fields → {{ own.label|replace('With ', '') }}</p>
+          {% set ns = namespace(any=false) %}
+          {% for f in fields_need_partner if f.crop == c.crop %}
+          {% set ns.any = true %}
+          <label class="mkt-share-fix-check compact">
+            <input type="checkbox" name="field_id" value="{{ f.id }}">
+            <span>{{ f.name }}{% if f.expected_bu is not none %} · ~{{ "{:,.0f}".format(f.expected_bu) }} bu{% endif %}</span>
+          </label>
+          {% endfor %}
+          {% if ns.any %}
+          <button class="btn primary" type="submit">Link to {{ own.label|replace('With ', '') }}</button>
+          {% else %}
+          <p class="muted" style="margin:0;font-size:0.8rem">No unlinked {{ c.crop|lower }} share fields left — check contract tags.</p>
+          {% endif %}
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="empty">No expected production or contracts for this ownership yet.</p>
+      {% endfor %}
+    </div>
+  </article>
+  {% else %}
+  <p class="empty">Add fields (and share partners) to see ownership sold %.</p>
+  {% endfor %}
+</section>
+
 <section class="mkt-strip-panel reveal" id="futures-strip">
   <div class="mkt-strip-head">
     <div>
@@ -183,7 +485,7 @@
       <p class="mkt-updated mkt-updated-inline">{{ quote_updated.label }} — {{ quote_updated.source_label }}</p>
       {% endif %}
     </div>
-    <p class="muted">From the current unexpired contract through the same month next year. Between months: <strong>market carry</strong> (next − this), then <strong>cost of carry</strong> (interest + storage + shrink × months), then <strong>net carry</strong> (market − cost). <strong class="spread-pos">Green = carry / net carry</strong>, <strong class="spread-neg">red = inverse / net inverse</strong>. Rates from <a href="/risk/carry">Carry</a>.</p>
+    <p class="muted">Current front month through the same month next year — rolls automatically when the front expires. Between months: calendar spread (next − this). <strong class="spread-pos">Green = carry</strong>, <strong class="spread-neg">red = inverse</strong>. Under each spread: your farm <em>hold cost</em> to the next month and <em>net</em> after that cost (from <a href="/risk/carry">Carry cost</a> assumptions).</p>
   </div>
   {% for crop in ["Corn", "Soybeans"] %}
   {% set months = (futures_strip or {}).get(crop, []) %}
@@ -196,9 +498,9 @@
         <div class="mkt-strip-month {% if row.is_front %}is-front{% endif %}" role="listitem">
           <span class="mkt-strip-month-label">{{ row.label }}{% if row.is_front %} <span class="mkt-front-tag">front</span>{% endif %}</span>
           {% if row.get('price') is not none %}
-          <strong class="mkt-strip-price">${{ "%.2f"|format(row.get('price')) }}</strong>
+          <strong class="mkt-strip-price">${{ "%.2f"|format(row.price) }}</strong>
           {% if row.get('change') is not none %}
-          <span class="mkt-quote-chg {% if row.get('change') < 0 %}down{% elif row.get('change') > 0 %}up{% endif %}">{{ "%+.2f"|format(row.get('change')) }}</span>
+          <span class="mkt-quote-chg {% if row.change < 0 %}down{% elif row.change > 0 %}up{% endif %}">{{ "%+.2f"|format(row.change) }}</span>
           {% endif %}
           {% else %}
           <strong class="mkt-strip-price muted">—</strong>
@@ -209,27 +511,20 @@
         {% set sp = spreads[loop.index0] if loop.index0 < spreads|length else none %}
         <div class="mkt-strip-spread {% if sp and sp.is_carry %}is-carry{% elif sp and sp.is_inverse %}is-inverse{% elif sp and sp.is_flat %}is-flat{% endif %}"
              role="listitem"
-             title="{% if sp %}{{ sp.from_label }} → {{ sp.to_label }}{% if sp.months %} · {{ sp.months }} mo{% endif %}: market carry − cost of carry = net{% endif %}">
+             title="{% if sp %}{{ sp.from_label }} → {{ sp.to_label }}: market spread {{ '%+.1f'|format(sp.cents) if sp.cents is not none else '—' }}¢{% if sp.months %} · {{ sp.months }} mo hold{% endif %}{% if sp.carry_cost_cents is not none %} · cost {{ '%.1f'|format(sp.carry_cost_cents) }}¢{% endif %}{% if sp.net_cents is not none %} · net {{ '%+.1f'|format(sp.net_cents) }}¢{% endif %}{% endif %}">
           <span class="mkt-spread-arrow" aria-hidden="true">→</span>
           {% if sp and sp.cents is not none %}
           <strong class="mkt-spread-val">{{ "%+.1f"|format(sp.cents) }}¢</strong>
           <em>{% if sp.is_carry %}carry{% elif sp.is_inverse %}inverse{% else %}flat{% endif %}</em>
+          {% if sp.carry_cost_cents is not none %}
+          <span class="mkt-spread-cost">cost {{ "%.1f"|format(sp.carry_cost_cents) }}¢</span>
+          {% if sp.months %}<span class="mkt-spread-months">{{ sp.months }} mo</span>{% endif %}
+          {% if sp.net_cents is not none %}
+          <strong class="mkt-spread-net {% if sp.net_cents > 0 %}is-pos{% elif sp.net_cents < 0 %}is-neg{% endif %}">net {{ "%+.1f"|format(sp.net_cents) }}¢</strong>
+          {% endif %}
+          {% endif %}
           {% else %}
           <strong class="mkt-spread-val muted">—</strong>
-          {% endif %}
-          {% set cost_c = sp.get('cost_cents') if sp else none %}
-          {% set net_c = sp.get('net_cents') if sp else none %}
-          {% if cost_c is not none %}
-          <span class="mkt-spread-line mkt-spread-cost">
-            <strong>{{ "%.1f"|format(cost_c) }}¢</strong>
-            <em>cost{% if sp.get('months') %} · {{ sp.months }}mo{% endif %}</em>
-          </span>
-          {% endif %}
-          {% if net_c is not none %}
-          <span class="mkt-spread-line mkt-spread-net {% if sp.get('is_net_carry') %}is-net-pos{% elif sp.get('is_net_inverse') %}is-net-neg{% endif %}">
-            <strong>{{ "%+.1f"|format(net_c) }}¢</strong>
-            <em>{% if sp.get('is_net_carry') %}net carry{% elif sp.get('is_net_inverse') %}net inverse{% else %}net flat{% endif %}</em>
-          </span>
           {% endif %}
         </div>
         {% endif %}
@@ -242,10 +537,114 @@
   {% endfor %}
 </section>
 
+{% set ic = income_pnl.get('Corn', {}) if income_pnl else {} %}
+{% set isoy = income_pnl.get('Soybeans', {}) if income_pnl else {} %}
+{% set ifarm = income_pnl.get('farm', {}) if income_pnl else {} %}
+<section class="mkt-income-panel reveal" id="income-pnl">
+  <div class="mkt-strip-head">
+    <div>
+      <p class="eyebrow">Income · P&amp;L sketch</p>
+      <h2>Gross sales &amp; profit per acre</h2>
+      <p class="muted" style="margin:0.35rem 0 0">
+        Price = contract average on sold bushels, current futures on the rest of expected production.
+        Expected bu from field yields × my acres.
+      </p>
+    </div>
+  </div>
+
+  <div class="mkt-income-grid">
+    <article class="mkt-income-card crop-corn">
+      <p class="eyebrow">1 · Corn</p>
+      <h3>Gross income</h3>
+      {% if ic.gross is not none %}
+      <p class="mkt-income-big">${{ "{:,.0f}".format(ic.gross) }}</p>
+      <p class="mkt-income-sub">${{ "%.2f"|format(ic.gross_ac) }}/ac · {{ "{:,.0f}".format(ic.expected_bu) }} bu · {{ "{:,.0f}".format(ic.acres) }} ac</p>
+      {% else %}
+      <p class="mkt-income-big muted">—</p>
+      <p class="muted">Need expected bu and a price (contracts and/or futures).</p>
+      {% endif %}
+      <dl class="mkt-income-meta">
+        <div><dt>Contract avg</dt><dd>{% if ic.contract_avg is not none %}${{ "%.2f"|format(ic.contract_avg) }}{% else %}—{% endif %}</dd></div>
+        <div><dt>Futures</dt><dd>{% if ic.futures is not none %}${{ "%.2f"|format(ic.futures) }}{% else %}—{% endif %}</dd></div>
+        <div><dt>Blend $/bu</dt><dd>{% if ic.blend_price is not none %}${{ "%.2f"|format(ic.blend_price) }}{% else %}—{% endif %}</dd></div>
+      </dl>
+    </article>
+
+    <article class="mkt-income-card crop-soy">
+      <p class="eyebrow">2 · Soybeans</p>
+      <h3>Gross income</h3>
+      {% if isoy.gross is not none %}
+      <p class="mkt-income-big">${{ "{:,.0f}".format(isoy.gross) }}</p>
+      <p class="mkt-income-sub">${{ "%.2f"|format(isoy.gross_ac) }}/ac · {{ "{:,.0f}".format(isoy.expected_bu) }} bu · {{ "{:,.0f}".format(isoy.acres) }} ac</p>
+      {% else %}
+      <p class="mkt-income-big muted">—</p>
+      <p class="muted">Need expected bu and a price (contracts and/or futures).</p>
+      {% endif %}
+      <dl class="mkt-income-meta">
+        <div><dt>Contract avg</dt><dd>{% if isoy.contract_avg is not none %}${{ "%.2f"|format(isoy.contract_avg) }}{% else %}—{% endif %}</dd></div>
+        <div><dt>Futures</dt><dd>{% if isoy.futures is not none %}${{ "%.2f"|format(isoy.futures) }}{% else %}—{% endif %}</dd></div>
+        <div><dt>Blend $/bu</dt><dd>{% if isoy.blend_price is not none %}${{ "%.2f"|format(isoy.blend_price) }}{% else %}—{% endif %}</dd></div>
+      </dl>
+    </article>
+
+    <article class="mkt-income-card crop-corn">
+      <p class="eyebrow">3 · Corn profit</p>
+      <h3>After COP</h3>
+      <form method="post" action="/risk/cop" class="mkt-cop-form">
+        <input type="hidden" name="next" value="/risk#income-pnl">
+        <input type="hidden" name="soy_cost_per_ac" value="{{ isoy.cop_ac or 0 }}">
+        <label>Guessed COP $/ac
+          <input name="corn_cost_per_ac" type="number" step="1" min="0" value="{{ ic.cop_ac or 0 }}">
+        </label>
+        <button class="btn" type="submit">Update</button>
+      </form>
+      {% if ic.profit_ac is not none %}
+      <p class="mkt-income-big {% if ic.profit_ac >= 0 %}is-pos{% else %}is-neg{% endif %}">${{ "{:,.2f}".format(ic.profit_ac) }}<span class="mkt-per">/ac</span></p>
+      <p class="muted">{{ "%.2f"|format(ic.gross_ac) }} gross − {{ "%.0f"|format(ic.cop_ac) }} COP</p>
+      {% else %}
+      <p class="mkt-income-big muted">—</p>
+      <p class="muted">Enter COP after gross income is available.</p>
+      {% endif %}
+    </article>
+
+    <article class="mkt-income-card crop-soy">
+      <p class="eyebrow">4 · Soy profit</p>
+      <h3>After COP</h3>
+      <form method="post" action="/risk/cop" class="mkt-cop-form">
+        <input type="hidden" name="next" value="/risk#income-pnl">
+        <input type="hidden" name="corn_cost_per_ac" value="{{ ic.cop_ac or 0 }}">
+        <label>Guessed COP $/ac
+          <input name="soy_cost_per_ac" type="number" step="1" min="0" value="{{ isoy.cop_ac or 0 }}">
+        </label>
+        <button class="btn" type="submit">Update</button>
+      </form>
+      {% if isoy.profit_ac is not none %}
+      <p class="mkt-income-big {% if isoy.profit_ac >= 0 %}is-pos{% else %}is-neg{% endif %}">${{ "{:,.2f}".format(isoy.profit_ac) }}<span class="mkt-per">/ac</span></p>
+      <p class="muted">{{ "%.2f"|format(isoy.gross_ac) }} gross − {{ "%.0f"|format(isoy.cop_ac) }} COP</p>
+      {% else %}
+      <p class="mkt-income-big muted">—</p>
+      <p class="muted">Enter COP after gross income is available.</p>
+      {% endif %}
+    </article>
+
+    <article class="mkt-income-card mkt-income-farm">
+      <p class="eyebrow">5 · Whole farm</p>
+      <h3>Expected profit / acre</h3>
+      {% if ifarm.profit_ac is not none %}
+      <p class="mkt-income-big {% if ifarm.profit_ac >= 0 %}is-pos{% else %}is-neg{% endif %}">${{ "{:,.2f}".format(ifarm.profit_ac) }}<span class="mkt-per">/ac</span></p>
+      <p class="muted">Acre-weighted average of corn &amp; soy profit · {{ "{:,.0f}".format(ifarm.acres) }} my acres</p>
+      {% else %}
+      <p class="mkt-income-big muted">—</p>
+      <p class="muted">Need profit on at least one crop.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+
 <section class="panel reveal" id="carry-link">
   <p class="eyebrow">Storage</p>
   <h2 style="margin:0.2rem 0 0.4rem">Cost of carry</h2>
-  <p class="muted" style="margin:0 0 0.75rem">Interest, storage, and shrink on grain still in the bin — full calculator with mark mode and research defaults.</p>
+  <p class="muted" style="margin:0 0 0.75rem">Interest, storage, and shrink on grain still in the bin. Bin icons use these rates — open the calculator to change assumptions.</p>
   <a class="btn primary" href="/risk/carry">Full carry calculator →</a>
 </section>
 
@@ -352,6 +751,25 @@
       });
     });
   });
+
+  // Quiet auto-refresh of delayed quotes ~every 30 minutes while this tab is open
+  const REFRESH_MS = 30 * 60 * 1000;
+  setTimeout(function tick() {
+    if (document.hidden) {
+      setTimeout(tick, REFRESH_MS);
+      return;
+    }
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/risk/quotes/refresh';
+    const next = document.createElement('input');
+    next.type = 'hidden';
+    next.name = 'next';
+    next.value = '/risk';
+    form.appendChild(next);
+    document.body.appendChild(form);
+    form.submit();
+  }, REFRESH_MS);
 
 })();
 </script>

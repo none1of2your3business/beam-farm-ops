@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Lists &amp; settings</p>
+    <h1>{{ page_title }}</h1>
+    <p class="lede">{{ page_lede }}</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="{{ back_href }}">Back to main ops</a>
+  </div>
+</section>
+
+{% if saved %}
+<p class="banner-ok">List updated.</p>
+{% endif %}
+{% if error == 'empty' %}
+<p class="banner-warn">Enter a name.</p>
+{% elif error == 'freight' %}
+<p class="banner-warn">Freight rate must be a number ($/bu).</p>
+{% elif error == 'rename' %}
+<p class="banner-warn">Could not rename — that name may already exist.</p>
+{% endif %}
+
+{% if related_links %}
+<section class="lists-related panel">
+  <h2>Related records</h2>
+  <p class="muted">Full records (bins, parties, products) are managed on their own pages.</p>
+  <div class="hub-ops-actions">
+    {% for link in related_links %}
+    <a class="hub-ops-btn" href="{{ link.href }}">{{ link.label }}</a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% for sec in sections %}
+<section class="lists-section panel" id="{{ sec.category }}">
+  <h2>{{ sec.title }}</h2>
+  <form method="post" action="/lists/{{ hub }}/add" class="form-grid lists-add">
+    <input type="hidden" name="category" value="{{ sec.category }}">
+    {% if sec.is_freight %}
+    <label>$/bu
+      <input name="name" type="text" inputmode="decimal" placeholder="0.12" required>
+    </label>
+    {% else %}
+    <label>{% if sec.has_label %}Value / code{% else %}Name{% endif %}
+      <input name="name" required>
+    </label>
+    {% if sec.has_label %}
+    <label>Display label
+      <input name="label" placeholder="optional">
+    </label>
+    {% endif %}
+    {% endif %}
+    <label>Notes
+      <input name="notes" placeholder="optional">
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Add</button>
+    </div>
+  </form>
+
+  {% if sec.rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          {% if sec.has_label or sec.is_freight %}<th>Label</th>{% endif %}
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in sec.rows %}
+        <tr{% if not item.is_active %} class="is-inactive"{% endif %}>
+          <td>
+            <form method="post" action="/lists/{{ hub }}/{{ item.id }}/rename" class="lists-inline-form">
+              <input name="name" value="{{ item.name }}" required>
+              {% if sec.has_label or sec.is_freight %}
+              <input name="label" value="{{ item.label or '' }}" placeholder="label">
+              {% else %}
+              <input type="hidden" name="label" value="">
+              {% endif %}
+              <button type="submit" class="linkish">Save</button>
+            </form>
+          </td>
+          {% if sec.has_label or sec.is_freight %}
+          <td class="muted">{{ item.display }}</td>
+          {% endif %}
+          <td>{% if item.is_active %}Active{% else %}Hidden{% endif %}</td>
+          <td class="actions">
+            <form method="post" action="/lists/{{ hub }}/{{ item.id }}/toggle">
+              <button type="submit" class="linkish">{% if item.is_active %}Hide{% else %}Show{% endif %}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No values yet — add one above.</p>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

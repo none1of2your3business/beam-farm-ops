@@ -2,13 +2,142 @@
 {% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
 {% block title %}Contracts — {{ farm_name }}{% endblock %}
 {% block content %}
+{% if request.query_params.get('deleted') %}
+<p class="banner-ok">Contract deleted.</p>
+{% endif %}
 <section class="page-banner">
   <div class="page-banner-copy">
-    <p class="eyebrow">Marketing and Storage · contracts</p>
-    <h1>Contract desk</h1>
-    <p class="lede">Add contracts, log pricing events, and compare vs COP and the board.</p>
+    <p class="eyebrow">Grain · contracts</p>
+    <div class="page-banner-title-row">
+      <h1>Contract desk</h1>
+      <a class="btn primary" href="/risk/contracts/add">Add contract</a>
+    </div>
+    <p class="lede">Review open contracts, compare vs COP and the board, and edit from the desk.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <div class="view-switch" role="tablist" aria-label="Contracts view">
+      <a class="view-switch-btn active" href="/risk/contracts">Desk</a>
+      <a class="view-switch-btn" href="/risk/contracts/sheet">Sheet</a>
+    </div>
   </div>
 </section>
+{# —— Marketing analysis (same language as Futures board / Money & stress) —— #}
+<section class="mkt-analysis reveal" id="analysis">
+  <div class="mkt-board-head">
+    <div>
+      <p class="eyebrow">Marketing</p>
+      <h2>Contract analysis</h2>
+      <p class="muted" style="margin:0.15rem 0 0;font-size:0.88rem">Open contracts · bushel-weighted averages vs the board.</p>
+    </div>
+  </div>
+
+  <div class="mkt-risk-heroes">
+    {% for a in desk_analysis or [] %}
+    <div class="mkt-risk-hero mkt-analysis-hero-{{ crop_tone(a.crop) }}">
+      <span>{{ a.crop }} avg contract</span>
+      <strong>{% if a.avg_price is not none %}${{ "%.2f"|format(a.avg_price) }}{% else %}—{% endif %}</strong>
+      <em>
+        {% if a.vs_futures is not none %}
+          {{ "%+.2f"|format(a.vs_futures) }}/bu vs futures
+          {% if a.futures is not none %}(${{ "%.2f"|format(a.futures) }}){% endif %}
+        {% else %}
+          Need board price to compare
+        {% endif %}
+      </em>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="mkt-board-quotes mkt-analysis-quotes">
+    {% for a in desk_analysis or [] %}
+    <div class="mkt-quote-card {{ crop_tone(a.crop) }}">
+      <span class="mkt-quote-crop">{{ crop_badge(a.crop, short=true) }} {{ a.crop }} · {{ a.open_count }} open</span>
+      {% if a.avg_price is not none %}
+      <strong class="mkt-quote-price">${{ "%.2f"|format(a.avg_price) }}</strong>
+      <span class="mkt-quote-chg {% if a.vs_futures is not none and a.vs_futures < 0 %}down{% elif a.vs_futures is not none and a.vs_futures > 0 %}up{% endif %}">
+        {% if a.vs_futures is not none %}{{ "%+.2f"|format(a.vs_futures) }} vs futures{% else %}vs futures —{% endif %}
+      </span>
+      {% else %}
+      <strong class="mkt-quote-price muted">—</strong>
+      <span class="mkt-quote-chg">no priced contracts</span>
+      {% endif %}
+      <div class="mkt-quote-stats">
+        <div class="mkt-quote-stat">
+          <span>vs Cash</span>
+          <strong class="{% if a.vs_market is not none and a.vs_market < 0 %}mkt-quote-chg down{% elif a.vs_market is not none and a.vs_market > 0 %}mkt-quote-chg up{% endif %}">
+            {% if a.vs_market is not none %}{{ "%+.2f"|format(a.vs_market) }}{% else %}—{% endif %}
+          </strong>
+        </div>
+        <div class="mkt-quote-stat">
+          <span>vs COP</span>
+          <strong class="{% if a.vs_cop is not none and a.vs_cop < 0 %}mkt-quote-chg down{% elif a.vs_cop is not none and a.vs_cop > 0 %}mkt-quote-chg up{% endif %}">
+            {% if a.vs_cop is not none %}{{ "%+.2f"|format(a.vs_cop) }}{% else %}—{% endif %}
+          </strong>
+        </div>
+        <div class="mkt-quote-stat">
+          <span>Board</span>
+          <strong>{% if a.futures is not none %}${{ "%.2f"|format(a.futures) }}{% else %}—{% endif %}</strong>
+        </div>
+        <div class="mkt-quote-stat">
+          <span>Local cash</span>
+          <strong>{% if a.market is not none %}${{ "%.2f"|format(a.market) }}{% else %}—{% endif %}</strong>
+        </div>
+        <div class="mkt-quote-stat">
+          <span>Break-even</span>
+          <strong>{% if a.breakeven is not none %}${{ "%.2f"|format(a.breakeven) }}{% else %}—{% endif %}</strong>
+        </div>
+        <div class="mkt-quote-stat">
+          <span>Best − worst</span>
+          <strong>{% if a.spread is not none %}${{ "%.2f"|format(a.spread) }}{% else %}—{% endif %}</strong>
+        </div>
+      </div>
+      <span class="mkt-quote-meta">{{ "{:,.0f}".format(a.sold_bu) }} bu priced · {{ "{:,.0f}".format(a.unsold_bu) }} still open</span>
+    </div>
+    {% else %}
+    <p class="empty">No crop analysis yet.</p>
+    {% endfor %}
+  </div>
+
+  <div class="mkt-risk-grid mkt-analysis-detail">
+    {% for a in desk_analysis or [] %}
+    <div class="mkt-risk-crop {{ crop_tone(a.crop) }}">
+      <h3>{{ crop_badge(a.crop, short=true) }} {{ a.crop }}</h3>
+      <ul>
+        <li>
+          <span>Best sale</span>
+          <strong class="mkt-quote-chg up">{% if a.best %}${{ "%.2f"|format(a.best.price) }}{% else %}—{% endif %}</strong>
+        </li>
+        {% if a.best %}
+        <li class="mkt-analysis-sub"><span></span><strong class="muted">{{ a.best.label }}</strong></li>
+        {% endif %}
+        <li>
+          <span>Worst sale</span>
+          <strong class="mkt-quote-chg down">{% if a.worst %}${{ "%.2f"|format(a.worst.price) }}{% else %}—{% endif %}</strong>
+        </li>
+        {% if a.worst %}
+        <li class="mkt-analysis-sub"><span></span><strong class="muted">{{ a.worst.label }}</strong></li>
+        {% endif %}
+        <li><span>Sold / expected</span><strong>{% if a.sold_pct is not none %}{{ a.sold_pct }}%{% else %}—{% endif %} <em class="muted">({{ "{:,.0f}".format(a.sold_bu) }} / {{ "{:,.0f}".format(a.expected_bu) }})</em></strong></li>
+        <li><span>Futures locked</span><strong>{% if a.futures_pct is not none %}{{ a.futures_pct }}%{% else %}—{% endif %}</strong></li>
+        <li><span>Basis locked</span><strong>{% if a.basis_pct is not none %}{{ a.basis_pct }}%{% else %}—{% endif %}</strong></li>
+        <li><span>Still open</span><strong>{{ "{:,.0f}".format(a.unsold_bu) }} bu</strong></li>
+        <li><span>Avg basis</span><strong>{% if a.avg_basis is not none %}{{ "%+.2f"|format(a.avg_basis) }}{% else %}—{% endif %}</strong></li>
+      </ul>
+      {% if a.tip %}
+      <p class="mkt-analysis-tip-inline">{{ a.tip }}</p>
+      {% endif %}
+      {% if a.missing_futures_month or a.unpriced_count %}
+      <p class="mkt-analysis-flags-inline muted">
+        {% if a.unpriced_count %}{{ a.unpriced_count }} need a price{% endif %}
+        {% if a.unpriced_count and a.missing_futures_month %} · {% endif %}
+        {% if a.missing_futures_month %}{{ a.missing_futures_month }} missing futures month{% endif %}
+      </p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
 {# —— Contract action desk —— #}
 <section class="mkt-desk reveal" id="desk">
   <div class="mkt-desk-head">
@@ -16,50 +145,48 @@
       <p class="eyebrow">Action</p>
       <h2>Contract desk</h2>
     </div>
-    <div class="mkt-desk-filters" role="tablist">
-      <button type="button" class="mkt-filter is-on" data-filter="all">All</button>
-      <button type="button" class="mkt-filter crop-corn" data-filter="Corn">Corn</button>
-      <button type="button" class="mkt-filter crop-soy" data-filter="Soybeans">Soy</button>
-      <button type="button" class="mkt-filter" data-filter="open">Open</button>
+    <div class="mkt-desk-tools">
+      <label class="mkt-contract-search">
+        <span class="sr-only">Search contracts</span>
+        <input type="search" id="contract-search" placeholder="Search contract #, buyer, type…" autocomplete="off">
+      </label>
+      <div class="mkt-desk-filters" role="tablist">
+        <button type="button" class="mkt-filter is-on" data-filter="all">All</button>
+        <button type="button" class="mkt-filter crop-corn" data-filter="Corn">Corn</button>
+        <button type="button" class="mkt-filter crop-soy" data-filter="Soybeans">Soy</button>
+        <button type="button" class="mkt-filter" data-filter="open">Open</button>
+      </div>
     </div>
   </div>
 
-  <form method="post" action="/risk/contract" class="form-grid panel mkt-contract-form mkt-desk-add">
-    <h3 class="full" style="margin:0;font-family:var(--display)">Add contract</h3>
-    <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
-    <label>Type<select name="contract_type">{% for t in contract_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></label>
-    <label>Buyer<input name="buyer" placeholder="Cargill..."></label>
-    <label>Bushels<input name="bushels" required></label>
-    <label>Cash price<input name="cash_price"></label>
-    <label>Futures<input name="futures_price"></label>
-    <label>Basis<input name="basis"></label>
-    <label>Futures month<input name="futures_month"></label>
-    <label>Delivery end<input type="date" name="delivery_end"></label>
-    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
-    <div class="form-actions full"><button class="btn primary" type="submit">Save contract</button></div>
-  </form>
-
   {% if desk %}
   <div class="table-wrap mkt-desk-table">
-    <table>
+    <table data-desk-sortable>
       <thead>
         <tr>
-          <th></th><th>ID</th><th>Crop</th><th>Type</th><th>Buyer</th><th>Bu</th><th>Left</th>
-          <th>Fut</th><th>Bas</th><th>Cash</th><th>Equiv</th><th>vs COP</th><th>vs Mkt</th><th>Due</th><th>Status</th>
+          <th data-no-sort></th><th>ID</th><th>Contract #</th><th>Crop</th><th>Type</th><th>Buyer</th><th>Farms with</th><th>Bu</th><th>Left</th>
+          <th>Fut</th><th data-default-sort="asc">Fut month</th><th>Bas</th><th>Cash</th><th>Equiv</th><th>vs COP</th><th>vs Mkt</th><th>Due</th><th>Status</th><th data-no-sort></th>
         </tr>
       </thead>
       <tbody>
       {% for row in desk %}
       {% set c = row.c %}
-      <tr class="mkt-desk-row crop-row {{ crop_tone(c.crop) }}" data-crop="{{ c.crop }}" data-status="{{ c.status }}">
+      <tr class="mkt-desk-row crop-row {{ crop_tone(c.crop) }}"
+          data-crop="{{ c.crop }}"
+          data-status="{{ c.status }}"
+          data-id="{{ c.id }}"
+          data-search="{{ (c.id|string ~ ' ' ~ (c.number_label or '') ~ ' ' ~ (c.contract_number or '') ~ ' ' ~ (c.crop or '') ~ ' ' ~ (c.contract_type or '') ~ ' ' ~ (c.buyer or '') ~ ' ' ~ (c.with_label or '') ~ ' ' ~ (c.status or '') ~ ' ' ~ (c.futures_month or '') ~ ' ' ~ (c.notes or ''))|lower|e }}">
         <td><button type="button" class="mkt-expand" aria-expanded="false" data-target="ev-{{ c.id }}">+</button></td>
-        <td>{{ c.id }}</td>
+        <td class="muted">{{ c.id }}</td>
+        <td><strong>{{ c.number_label }}</strong></td>
         <td>{{ crop_badge(c.crop, short=true) }}</td>
         <td>{{ c.contract_type }}</td>
         <td>{{ c.buyer or "—" }}</td>
+        <td>{{ c.with_label }}</td>
         <td>{{ "{:,.0f}".format(c.bushels) }}</td>
         <td>{{ "{:,.0f}".format(row.left) }}</td>
         <td>{% if c.futures_price is not none %}{{ "%.2f"|format(c.futures_price) }}{% else %}—{% endif %}</td>
+        <td data-sort-value="{% if row.futures_expiry %}{{ row.futures_expiry.toordinal() }}{% endif %}">{% if c.futures_month %}{{ c.futures_month }}{% else %}—{% endif %}</td>
         <td>{% if c.basis is not none %}{{ "%.2f"|format(c.basis) }}{% else %}—{% endif %}</td>
         <td>{% if c.cash_price is not none %}{{ "%.2f"|format(c.cash_price) }}{% else %}—{% endif %}</td>
         <td>{% if row.equiv is not none %}<strong>${{ "%.2f"|format(row.equiv) }}</strong>{% else %}—{% endif %}</td>
@@ -67,9 +194,16 @@
         <td class="{% if row.vs_mkt is not none and row.vs_mkt >= 0 %}pos{% elif row.vs_mkt is not none %}neg{% endif %}">{% if row.vs_mkt is not none %}{{ "%+.2f"|format(row.vs_mkt) }}{% else %}—{% endif %}</td>
         <td>{{ c.delivery_end or "—" }}</td>
         <td>{{ c.status }}</td>
+        <td class="mkt-desk-row-actions">
+          <a class="btn ghost" href="/risk/contracts/{{ c.id }}/edit">Edit</a>
+          <form method="post" action="/risk/contracts/{{ c.id }}/delete" style="display:inline"
+                onsubmit="return confirm('Delete contract {{ c.number_label }}?\n\nLinked scale tickets stay but are unlinked.');">
+            <button type="submit" class="btn ghost danger">Delete</button>
+          </form>
+        </td>
       </tr>
       <tr class="mkt-desk-events" id="ev-{{ c.id }}" hidden>
-        <td colspan="15">
+        <td colspan="19">
           <div class="mkt-events-inner">
             <strong>Recent events</strong>
             {% if row.events %}
@@ -85,61 +219,11 @@
       </tbody>
     </table>
   </div>
+  <p class="empty" id="contract-search-empty" hidden>No contracts match that search.</p>
   {% else %}
-  <p class="empty">No contracts yet — add one above.</p>
+  <p class="empty">No contracts yet — use <a href="/risk/contracts/add">Add contract</a> in the Marketing tabs.</p>
   {% endif %}
-
-  <form method="post" action="/risk/event" class="form-grid panel">
-    <h3 class="full" style="margin:0;font-family:var(--display)">Partial pricing / HTA roll / basis</h3>
-    <label>Contract<select name="contract_id">{% for c in contracts %}<option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}</option>{% endfor %}</select></label>
-    <label>Event<select name="event_type"><option value="partial_price">Partial price</option><option value="hta_roll">HTA roll</option><option value="basis_set">Set basis</option><option value="note">Note</option></select></label>
-    <label>Date<input type="date" name="event_date" value="{{ today }}"></label>
-    <label>Bushels<input name="bushels"></label>
-    <label>Price / basis<input name="price"></label>
-    <label>Futures month<input name="futures_month"></label>
-    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
-    <div class="form-actions full"><button class="btn primary" type="submit">Save event</button></div>
-  </form>
 </section>
-
-{# —— Best / worst —— #}
-<section class="mkt-ranks reveal" id="ranks">
-  <div class="mkt-rank-col">
-    <h2>Best / worst vs cost of production</h2>
-    <div class="mkt-rank-pair">
-      <div class="mkt-rank-list best">
-        <h3>Best</h3>
-        {% if ranks.cop_best %}
-        <ol>{% for r in ranks.cop_best %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
-        {% else %}<p class="muted">Need contract prices + COP breakeven.</p>{% endif %}
-      </div>
-      <div class="mkt-rank-list worst">
-        <h3>Worst</h3>
-        {% if ranks.cop_worst %}
-        <ol>{% for r in ranks.cop_worst %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
-        {% else %}<p class="muted">—</p>{% endif %}
-      </div>
-    </div>
-  </div>
-  <div class="mkt-rank-col">
-    <h2>Best / worst vs today’s market</h2>
-    <div class="mkt-rank-pair">
-      <div class="mkt-rank-list best">
-        <h3>Best</h3>
-        {% if ranks.market_best %}
-        <ol>{% for r in ranks.market_best %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
-        {% else %}<p class="muted">Need board (or price assumption) + contract prices.</p>{% endif %}
-      </div>
-      <div class="mkt-rank-list worst">
-        <h3>Worst</h3>
-        {% if ranks.market_worst %}
-        <ol>{% for r in ranks.market_worst %}<li><strong>{{ r.label }}</strong><span>{{ r.reason }}</span></li>{% endfor %}</ol>
-        {% else %}<p class="muted">—</p>{% endif %}
-      </div>
-    </div>
-  </div>
-</section>
-
 
 <script>
 (function () {
@@ -153,25 +237,54 @@
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   });
+
   const filters = document.querySelectorAll('.mkt-filter');
   const rows = document.querySelectorAll('.mkt-desk-row');
+  const searchInput = document.getElementById('contract-search');
+  const emptyHint = document.getElementById('contract-search-empty');
+  let activeFilter = 'all';
+
+  function applyDeskFilters() {
+    const q = (searchInput && searchInput.value || '').trim().toLowerCase();
+    let visible = 0;
+    rows.forEach((tr) => {
+      const crop = tr.dataset.crop;
+      const status = tr.dataset.status;
+      let show = true;
+      if (activeFilter === 'Corn' || activeFilter === 'Soybeans') show = crop === activeFilter;
+      if (activeFilter === 'open') show = status === 'open';
+      if (show && q) {
+        const hay = tr.dataset.search || '';
+        show = hay.includes(q);
+      }
+      tr.style.display = show ? '' : 'none';
+      const id = tr.dataset.id;
+      const ev = id ? document.getElementById('ev-' + id) : null;
+      if (ev && !show) ev.setAttribute('hidden', '');
+      if (show) visible += 1;
+    });
+    if (emptyHint) emptyHint.hidden = visible > 0 || rows.length === 0;
+  }
+
   filters.forEach((btn) => {
     btn.addEventListener('click', () => {
       filters.forEach((b) => b.classList.remove('is-on'));
       btn.classList.add('is-on');
-      const f = btn.dataset.filter;
-      rows.forEach((tr) => {
-        const crop = tr.dataset.crop;
-        const status = tr.dataset.status;
-        let show = true;
-        if (f === 'Corn' || f === 'Soybeans') show = crop === f;
-        if (f === 'open') show = status === 'open';
-        tr.style.display = show ? '' : 'none';
-        const ev = document.getElementById('ev-' + tr.cells[1].textContent.trim());
-        if (ev && !show) ev.setAttribute('hidden', '');
-      });
+      activeFilter = btn.dataset.filter || 'all';
+      applyDeskFilters();
     });
   });
+  if (searchInput) {
+    searchInput.addEventListener('input', applyDeskFilters);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        searchInput.value = '';
+        applyDeskFilters();
+        searchInput.blur();
+      }
+    });
+  }
 })();
 </script>
+<script src="/static/mkt-desk-sort.js?v=1"></script>
 {% endblock %}

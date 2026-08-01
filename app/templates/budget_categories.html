@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Budget categories — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Budget · templates</p>
+    <h1>Category defaults</h1>
+    <p class="lede">Set corn and soybean $/ac defaults, then push them onto field budgets. Marketing COP today: corn ${{ "%.0f"|format(corn_cop) }}/ac · soy ${{ "%.0f"|format(soy_cop) }}/ac.</p>
+  </div>
+</section>
+
+<form method="post" action="/budget/categories/save" class="bud-cat-form">
+  <section class="panel" style="margin-bottom:1rem">
+    <h2 style="margin:0 0 0.5rem;font-family:var(--display)">Travel (all fields)</h2>
+    <p class="muted">Hours = round trips × 2 × (miles ÷ speed). Cost = hours × $/hr. Used on every enabled pass and spray.</p>
+    <div class="form-grid">
+      <label>Road speed (mph)
+        <input type="number" name="travel_speed" step="1" min="1" value="{{ '%.0f'|format(travel_speed) }}">
+      </label>
+      <label>Equipment + operator ($/hr)
+        <input type="number" name="travel_rate" step="1" min="0" value="{{ '%.0f'|format(travel_rate) }}">
+      </label>
+    </div>
+  </section>
+  <div class="bud-cat-columns">
+    <section class="panel bud-cat-panel tone-profit">
+      <h2>Corn defaults ($/ac)</h2>
+      {% for key, label in categories %}
+      <label>{{ label }}
+        <input type="number" name="corn_{{ key }}" step="0.01" min="0" value="{{ '%.2f'|format(corn.get(key, 0)) }}">
+      </label>
+      {% endfor %}
+    </section>
+    <section class="panel bud-cat-panel tone-tight">
+      <h2>Soybean defaults ($/ac)</h2>
+      {% for key, label in categories %}
+      <label>{{ label }}
+        <input type="number" name="soy_{{ key }}" step="0.01" min="0" value="{{ '%.2f'|format(soy.get(key, 0)) }}">
+      </label>
+      {% endfor %}
+    </section>
+  </div>
+  <div class="form-actions" style="margin-top:1rem;display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center">
+    <button type="submit" class="btn primary" name="apply_to_fields" value="">Save defaults only</button>
+    <button type="submit" class="btn" name="apply_to_fields" value="1">Save + apply to empty fields</button>
+    <button type="submit" class="btn ghost" name="apply_to_fields" value="all" onclick="return confirm('Overwrite all field budget categories with these defaults?');">Save + overwrite all fields</button>
+    <a class="btn ghost" href="/budget">Board</a>
+  </div>
+</form>
+{% endblock %}

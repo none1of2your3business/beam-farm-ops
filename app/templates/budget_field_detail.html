@@ -1,0 +1,567 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone %}
+{% block title %}{{ card.name if card else 'Field' }} budget — {{ farm_name }}{% endblock %}
+{% block content %}
+{% if not card or not budget %}
+<p class="empty">Field not found. <a href="/budget/fields">Back</a></p>
+{% else %}
+<section class="page-banner bud-banner tone-{{ card.tone }}">
+  <div class="page-banner-copy">
+    <p class="eyebrow">{{ card.crop }} · {{ "{:,.1f}".format(card.acres) }} ac · detailed plan</p>
+    <div class="page-banner-title-row">
+      <h1>{{ card.name }}</h1>
+      <span class="bud-tone-pill tone-{{ card.tone }}">
+        {% if card.tone == 'profit' %}Projected profit{% elif card.tone == 'loss' %}Projected loss{% elif card.tone == 'tight' %}Tight margin{% else %}Build a plan{% endif %}
+      </span>
+    </div>
+    <p class="lede">
+      Plan ${{ "{:,.0f}".format(detail.planned_total) }} (${{ "%.0f"|format(detail.planned_ac) }}/ac)
+      · spent ${{ "{:,.0f}".format(card.actual_total) }}
+      · P/L {% if card.projected_profit is not none %}<strong class="bud-ink-{{ card.tone }}">${{ "{:,.0f}".format(card.projected_profit) }}</strong>{% else %}—{% endif %}
+      · travel {{ "%.0f"|format(travel_speed) }} mph @ ${{ "%.0f"|format(travel_rate) }}/hr
+    </p>
+  </div>
+</section>
+
+<div class="bud-detail-grid">
+  <div class="bud-stat tone-{{ card.tone }}">
+    <span>Expected revenue</span>
+    <strong>{% if card.expected_revenue is not none %}${{ "{:,.0f}".format(card.expected_revenue) }}{% else %}—{% endif %}</strong>
+    <em>{% if card.expected_bu is not none %}{{ "{:,.0f}".format(card.expected_bu) }} bu{% else %}set yield{% endif %} @ {% if card.price is not none %}${{ "%.2f"|format(card.price) }}{% else %}no price{% endif %}</em>
+  </div>
+  <div class="bud-stat">
+    <span>Seed + fert + chem</span>
+    <strong>${{ "{:,.0f}".format((detail.seed.total or 0) + detail.fert_total + detail.spray_chem_total) }}</strong>
+    <em>Bags {% if detail.seed.bags is not none %}{{ "%.1f"|format(detail.seed.bags) }}{% else %}—{% endif %} · fert ${{ "{:,.0f}".format(detail.fert_total) }}</em>
+  </div>
+  <div class="bud-stat">
+    <span>Ops + hire + travel</span>
+    <strong>${{ "{:,.0f}".format(detail.pass_mach_total + detail.spray_hire_total + detail.travel_total) }}</strong>
+    <em>Travel ${{ "{:,.0f}".format(detail.travel_total) }} · {{ "%.1f"|format(detail.miles) }} mi one-way</em>
+  </div>
+</div>
+
+<form method="post" action="/budget/fields/{{ card.field_id }}/save" class="bud-detail-form" id="bud-detail-form" data-autosave>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Distance &amp; price</h2>
+      <p class="muted">One-way miles from main shop. Round-trip hours = 2 × miles ÷ {{ "%.0f"|format(travel_speed) }} mph × trips.</p>
+    </div>
+    <div class="form-grid">
+      <label>Miles (one-way)
+        <input type="number" name="distance_miles" step="0.1" min="0"
+               value="{% if field.distance_miles is not none %}{{ '%.1f'|format(field.distance_miles) }}{% endif %}">
+      </label>
+      <label>Price override $/bu
+        <input type="number" name="price_override" step="0.01" min="0"
+               value="{% if card.price_override is not none %}{{ '%.2f'|format(card.price_override) }}{% endif %}"
+               placeholder="Board: {% if card.price is not none %}{{ '%.2f'|format(card.price) }}{% else %}—{% endif %}">
+      </label>
+      <label>Margin goal $/ac
+        <input type="number" name="margin_goal_ac" step="0.01" value="{{ '%.2f'|format(card.margin_goal_ac) }}">
+      </label>
+      <label class="full">Notes
+        <input type="text" name="notes" value="{{ budget.notes or '' }}">
+      </label>
+    </div>
+  </section>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Seed</h2>
+      <p class="muted">Add one or more hybrids. Bags = pop × acres ÷ kernels/bag · cost = bags × $/bag (auto-fills from catalog).</p>
+    </div>
+
+    {% set seed = detail.seed %}
+    <div class="bud-seed-cover {% if seed.is_short %}is-short{% elif seed.is_over %}is-over{% else %}is-ok{% endif %}">
+      <div>
+        <strong>{{ "%.1f"|format(seed.allocated_acres) }}</strong> of
+        <strong>{{ "%.1f"|format(seed.field_acres) }}</strong> ac planted in plan
+        {% if seed.coverage_pct is not none %}· {{ seed.coverage_pct }}%{% endif %}
+      </div>
+      {% if seed.is_short %}
+      <p class="bud-seed-gap">Need <strong>{{ "%.1f"|format(seed.remaining_acres) }} more acres</strong> of seed to cover this field for a complete budget forecast.</p>
+      {% elif seed.is_over %}
+      <p class="bud-seed-gap">Over by <strong>{{ "%.1f"|format(-seed.remaining_acres) }} ac</strong> vs field size — check hybrid acres.</p>
+      {% else %}
+      <p class="bud-seed-gap ok">Field seed acres are fully allocated.</p>
+      {% endif %}
+    </div>
+
+    <div class="bud-repeat" id="seed-rows">
+      {% for row in seed.rows %}
+      {% set ln = row.line %}
+      <div class="bud-repeat-row form-grid bud-seed-row">
+        <label>Hybrid / variety
+          <select name="seed_hybrid_id" class="seed-hybrid-select"
+                  data-add-new="/inputs?focus=seed&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for h in hybrids %}
+            <option value="{{ h.id }}"
+                    data-cost="{% if h.cost_per_unit is not none %}{{ '%.2f'|format(h.cost_per_unit) }}{% endif %}"
+                    {% if ln.hybrid_id == h.id %}selected{% endif %}>
+              {{ h.crop }} · {% if h.brand %}{{ h.brand }} {% endif %}{{ h.name }}{% if h.cost_per_unit is not none %} · ${{ '%.0f'|format(h.cost_per_unit) }}/bag{% endif %}
+            </option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Acres
+          <input type="number" name="seed_acres" class="seed-acres" step="0.1" min="0"
+                 value="{{ '%.1f'|format(row.acres) }}">
+        </label>
+        <label>Population
+          <input type="number" name="seed_population" class="seed-pop" step="100" min="0"
+                 value="{% if row.population is not none %}{{ '%.0f'|format(row.population) }}{% endif %}">
+        </label>
+        <label>Kernels / bag
+          <input type="number" name="seed_bag_kernels" class="seed-bag" step="1000" min="1"
+                 value="{{ '%.0f'|format(row.bag_kernels) }}">
+        </label>
+        <label>$ / bag
+          <input type="number" name="seed_cost_per_bag" class="seed-cost" step="0.01" min="0"
+                 value="{% if row.cost_per_bag is not none %}{{ '%.2f'|format(row.cost_per_bag) }}{% endif %}">
+        </label>
+        <p class="muted bud-row-sum">
+          {% if row.bags is not none %}≈ {{ "%.2f"|format(row.bags) }} bags · ${{ "{:,.0f}".format(row.total) }}{% else %}set pop + $/bag{% endif %}
+        </p>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budSeedCover && window.__budSeedCover()">Remove</button>
+      </div>
+      {% else %}
+      <div class="bud-repeat-row form-grid bud-seed-row">
+        <label>Hybrid / variety
+          <select name="seed_hybrid_id" class="seed-hybrid-select"
+                  data-add-new="/inputs?focus=seed&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for h in hybrids %}
+            <option value="{{ h.id }}"
+                    data-cost="{% if h.cost_per_unit is not none %}{{ '%.2f'|format(h.cost_per_unit) }}{% endif %}">
+              {{ h.crop }} · {% if h.brand %}{{ h.brand }} {% endif %}{{ h.name }}{% if h.cost_per_unit is not none %} · ${{ '%.0f'|format(h.cost_per_unit) }}/bag{% endif %}
+            </option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Acres
+          <input type="number" name="seed_acres" class="seed-acres" step="0.1" min="0" value="{{ '%.1f'|format(detail.acres) }}">
+        </label>
+        <label>Population
+          <input type="number" name="seed_population" class="seed-pop" step="100" min="0" value="">
+        </label>
+        <label>Kernels / bag
+          <input type="number" name="seed_bag_kernels" class="seed-bag" step="1000" min="1" value="80000">
+        </label>
+        <label>$ / bag
+          <input type="number" name="seed_cost_per_bag" class="seed-cost" step="0.01" min="0" value="">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budSeedCover && window.__budSeedCover()">Remove</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add-seed-row">+ Hybrid / variety</button>
+    <p class="muted" style="margin-top:0.65rem">
+      {% if seed.bags is not none %}Plan seed ≈ {{ "%.1f"|format(seed.bags) }} bags · ${{ "{:,.0f}".format(seed.total) }}
+      ({% if seed.per_ac is not none %}${{ "%.2f"|format(seed.per_ac) }}/ac field{% else %}—{% endif %})
+      {% else %}Allocate acres + population + $/bag to calculate.{% endif %}
+    </p>
+    <template id="seed-row-tpl">
+      <div class="bud-repeat-row form-grid bud-seed-row">
+        <label>Hybrid / variety
+          <select name="seed_hybrid_id" class="seed-hybrid-select"
+                  data-add-new="/inputs?focus=seed&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for h in hybrids %}
+            <option value="{{ h.id }}"
+                    data-cost="{% if h.cost_per_unit is not none %}{{ '%.2f'|format(h.cost_per_unit) }}{% endif %}">
+              {{ h.crop }} · {% if h.brand %}{{ h.brand }} {% endif %}{{ h.name }}{% if h.cost_per_unit is not none %} · ${{ '%.0f'|format(h.cost_per_unit) }}/bag{% endif %}
+            </option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Acres
+          <input type="number" name="seed_acres" class="seed-acres" step="0.1" min="0" value="">
+        </label>
+        <label>Population
+          <input type="number" name="seed_population" class="seed-pop" step="100" min="0" value="">
+        </label>
+        <label>Kernels / bag
+          <input type="number" name="seed_bag_kernels" class="seed-bag" step="1000" min="1" value="80000">
+        </label>
+        <label>$ / bag
+          <input type="number" name="seed_cost_per_bag" class="seed-cost" step="0.01" min="0" value="">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budSeedCover && window.__budSeedCover()">Remove</button>
+      </div>
+    </template>
+  </section>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Fertilizer</h2>
+      <p class="muted">Liquid (gal/ac × lb/gal ÷ 2000) or dry (lb/ac ÷ 2000) × $/ton.
+        <a href="/inputs?focus=fert&next={{ next_q }}">Edit products in Inputs</a>
+      </p>
+    </div>
+    <div class="bud-repeat" id="fert-rows">
+      {% for row in detail.fert_rows %}
+      <div class="bud-repeat-row form-grid">
+        <label>Product
+          <select name="fert_product_id"
+                  data-add-new="/inputs?focus=fert&next={{ next_q }}">
+            {% for p in fert_products %}
+            <option value="{{ p.id }}" {% if row.product.id == p.id %}selected{% endif %}>
+              {{ p.name }} · {{ p.form }} · ${{ '%.0f'|format(p.price_per_ton) }}/ton · {{ p.apply_unit }}/ac
+            </option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Rate / ac
+          <input type="number" name="fert_rate" step="0.01" min="0" value="{{ '%.2f'|format(row.rate_per_ac) }}">
+        </label>
+        <p class="muted bud-row-sum">{% if row.total is not none %}${{ "{:,.0f}".format(row.total) }} · {{ "%.2f"|format(row.tons or 0) }} ton{% else %}set density / price{% endif %}</p>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove()">Remove</button>
+      </div>
+      {% else %}
+      <div class="bud-repeat-row form-grid">
+        <label>Product
+          <select name="fert_product_id"
+                  data-add-new="/inputs?focus=fert&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for p in fert_products %}
+            <option value="{{ p.id }}">{{ p.name }} · {{ p.form }} · ${{ '%.0f'|format(p.price_per_ton) }}/ton · {{ p.apply_unit }}/ac</option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Rate / ac
+          <input type="number" name="fert_rate" step="0.01" min="0" value="">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove()">Remove</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add-fert-row">+ Fertilizer product</button>
+    <template id="fert-row-tpl">
+      <div class="bud-repeat-row form-grid">
+        <label>Product
+          <select name="fert_product_id"
+                  data-add-new="/inputs?focus=fert&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for p in fert_products %}
+            <option value="{{ p.id }}">{{ p.name }} · {{ p.form }} · ${{ '%.0f'|format(p.price_per_ton) }}/ton · {{ p.apply_unit }}/ac</option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label>Rate / ac
+          <input type="number" name="fert_rate" step="0.01" min="0" value="">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove()">Remove</button>
+      </div>
+    </template>
+  </section>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Field passes</h2>
+      <p class="muted">Self uses machinery $/ac · Hired uses hire $/ac · each pass adds travel round trips.
+        <a href="/budget/fields/{{ card.field_id }}/new-pass?next={{ next_q }}">Add New pass…</a>
+      </p>
+    </div>
+    <div class="bud-pass-table-wrap">
+      <table class="data-table bud-pass-table">
+        <thead>
+          <tr>
+            <th>On</th>
+            <th>Pass</th>
+            <th>Hired?</th>
+            <th>Self $/ac</th>
+            <th>Hire $/ac</th>
+            <th>Round trips</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in budget.passes %}
+          <tr>
+            <td>
+              <input type="hidden" name="pass_id" value="{{ p.id }}">
+              <input type="checkbox" name="pass_enabled" value="{{ p.id }}" {% if p.enabled %}checked{% endif %}>
+            </td>
+            <td>{{ p.pass_label }}</td>
+            <td><input type="checkbox" name="pass_hired" value="{{ p.id }}" {% if p.is_hired %}checked{% endif %}></td>
+            <td><input type="number" name="pass_self_rate" step="0.01" min="0" value="{{ '%.2f'|format(p.self_rate_ac or 0) }}"></td>
+            <td><input type="number" name="pass_hired_rate" step="0.01" min="0" value="{{ '%.2f'|format(p.hired_rate_ac or 0) }}"></td>
+            <td><input type="number" name="pass_round_trips" step="0.5" min="0" value="{{ '%.1f'|format(p.round_trips or 0) }}"></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Spray passes</h2>
+      <p class="muted">Reuse mixes or add new. Multiple passes per year OK. Chem = mix $/ac · hire optional · travel per pass.</p>
+    </div>
+    <div class="bud-repeat" id="spray-rows">
+      {% for row in detail.spray_rows %}
+      {% set sp = row.pass %}
+      {% set si = loop.index0 %}
+      <div class="bud-repeat-row form-grid">
+        <label>Label
+          <input type="text" name="spray_label" value="{{ sp.label }}">
+        </label>
+        <label>Mix
+          <select name="spray_mix_id"
+                  data-add-new="/inputs?focus=spray&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for m in sprays %}
+            <option value="{{ m.id }}" {% if sp.spray_mix_id == m.id %}selected{% endif %}>
+              {{ m.name }}{% if m.cost_per_acre is not none %} · ${{ '%.2f'|format(m.cost_per_acre) }}/ac{% endif %}
+            </option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label class="bud-check">Hired?
+          <input type="checkbox" name="spray_hired" value="{{ si }}" {% if sp.is_hired %}checked{% endif %}>
+        </label>
+        <label>Hire $/ac
+          <input type="number" name="spray_hired_rate" step="0.01" min="0" value="{{ '%.2f'|format(sp.hired_rate_ac or 0) }}">
+        </label>
+        <label>Round trips
+          <input type="number" name="spray_round_trips" step="0.5" min="0" value="{{ '%.1f'|format(sp.round_trips or 1) }}">
+        </label>
+        <p class="muted bud-row-sum">Chem ${{ "{:,.0f}".format(row.chem_total) }} · hire ${{ "{:,.0f}".format(row.hire_total) }} · travel ${{ "{:,.0f}".format(row.travel_total) }}</p>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budRenumberSpray && window.__budRenumberSpray()">Remove</button>
+      </div>
+      {% else %}
+      <div class="bud-repeat-row form-grid">
+        <label>Label
+          <input type="text" name="spray_label" value="Pass 1">
+        </label>
+        <label>Mix
+          <select name="spray_mix_id"
+                  data-add-new="/inputs?focus=spray&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for m in sprays %}
+            <option value="{{ m.id }}">{{ m.name }}{% if m.cost_per_acre is not none %} · ${{ '%.2f'|format(m.cost_per_acre) }}/ac{% endif %}</option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label class="bud-check">Hired?
+          <input type="checkbox" name="spray_hired" value="0">
+        </label>
+        <label>Hire $/ac
+          <input type="number" name="spray_hired_rate" step="0.01" min="0" value="0">
+        </label>
+        <label>Round trips
+          <input type="number" name="spray_round_trips" step="0.5" min="0" value="1">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budRenumberSpray && window.__budRenumberSpray()">Remove</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add-spray-row">+ Spray pass</button>
+    <template id="spray-row-tpl">
+      <div class="bud-repeat-row form-grid">
+        <label>Label
+          <input type="text" name="spray_label" value="Spray pass">
+        </label>
+        <label>Mix
+          <select name="spray_mix_id"
+                  data-add-new="/inputs?focus=spray&next={{ next_q }}">
+            <option value="">— select —</option>
+            {% for m in sprays %}
+            <option value="{{ m.id }}">{{ m.name }}{% if m.cost_per_acre is not none %} · ${{ '%.2f'|format(m.cost_per_acre) }}/ac{% endif %}</option>
+            {% endfor %}
+            <option value="__add_new__">Add New…</option>
+          </select>
+        </label>
+        <label class="bud-check">Hired?
+          <input type="checkbox" name="spray_hired" value="0">
+        </label>
+        <label>Hire $/ac
+          <input type="number" name="spray_hired_rate" step="0.01" min="0" value="0">
+        </label>
+        <label>Round trips
+          <input type="number" name="spray_round_trips" step="0.5" min="0" value="1">
+        </label>
+        <button type="button" class="btn ghost bud-row-remove" onclick="this.closest('.bud-repeat-row').remove(); window.__budRenumberSpray && window.__budRenumberSpray()">Remove</button>
+      </div>
+    </template>
+  </section>
+
+  <section class="panel bud-section">
+    <div class="bud-section-head">
+      <h2>Other category $/ac</h2>
+      <p class="muted">Seed, fert, chem, fuel/ops, and rent roll up automatically from the plan above. Insurance &amp; other stay manual.</p>
+    </div>
+    <div class="form-grid">
+      {% for line in card.lines %}
+        {% if line.category in ('insurance', 'other') %}
+        <label>{{ line.label }}
+          <input type="number" name="{{ line.category }}" step="0.01" min="0" value="{{ '%.2f'|format(line.amount_per_ac) }}">
+        </label>
+        {% else %}
+        <p class="muted">{{ line.label }}: <strong>${{ '%.2f'|format(line.amount_per_ac) }}/ac</strong> (from plan)</p>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="form-actions bud-save-bar">
+    <button type="submit" class="btn primary">Save budget + sync field</button>
+    <a class="btn ghost" href="/budget/fields">Desk</a>
+    <a class="btn ghost" href="/budget/sheet">Sheet</a>
+    <a class="btn ghost" href="/fields/{{ card.field_id }}">Field detail</a>
+    <a class="btn ghost" href="/budget/what-if?field_id={{ card.field_id }}">What-if</a>
+    <a class="btn ghost" href="/inputs?focus=fert&next={{ next_q }}">Inputs catalog</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  const fieldAcres = {{ detail.acres|tojson }};
+
+  function wireAddNew(root) {
+    (root || document).querySelectorAll('select[data-add-new]').forEach((sel) => {
+      if (sel.dataset.wired) return;
+      sel.dataset.wired = '1';
+      sel.addEventListener('change', () => {
+        if (sel.value !== '__add_new__') return;
+        const base = sel.getAttribute('data-add-new');
+        if (base) window.location.href = base;
+        else sel.value = '';
+      });
+    });
+  }
+
+  function fillHybridCost(sel) {
+    const row = sel.closest('.bud-seed-row');
+    if (!row) return;
+    const costInp = row.querySelector('.seed-cost');
+    if (!costInp) return;
+    const opt = sel.options[sel.selectedIndex];
+    const catalog = opt ? (opt.getAttribute('data-cost') || '') : '';
+    // Always carry catalog cost when selecting a hybrid that has one
+    if (catalog !== '') costInp.value = catalog;
+  }
+
+  function wireSeedRows(root) {
+    (root || document).querySelectorAll('.seed-hybrid-select').forEach((sel) => {
+      if (sel.dataset.costWired) return;
+      sel.dataset.costWired = '1';
+      sel.addEventListener('change', () => {
+        if (sel.value === '__add_new__') return;
+        fillHybridCost(sel);
+        updateSeedCover();
+      });
+    });
+    (root || document).querySelectorAll('.seed-acres').forEach((inp) => {
+      if (inp.dataset.coverWired) return;
+      inp.dataset.coverWired = '1';
+      inp.addEventListener('input', updateSeedCover);
+    });
+  }
+
+  function updateSeedCover() {
+    const box = document.querySelector('.bud-seed-cover');
+    if (!box) return;
+    let allocated = 0;
+    document.querySelectorAll('#seed-rows .seed-acres').forEach((inp) => {
+      allocated += parseFloat(inp.value || '0') || 0;
+    });
+    const remaining = Math.round((fieldAcres - allocated) * 10) / 10;
+    const pct = fieldAcres > 0.05 ? Math.round((100 * allocated) / fieldAcres * 10) / 10 : null;
+    box.classList.remove('is-short', 'is-over', 'is-ok');
+    const strongs = box.querySelectorAll('strong');
+    if (strongs.length >= 2) {
+      strongs[0].textContent = allocated.toFixed(1);
+      strongs[1].textContent = Number(fieldAcres).toFixed(1);
+    }
+    let gap = box.querySelector('.bud-seed-gap');
+    if (!gap) {
+      gap = document.createElement('p');
+      gap.className = 'bud-seed-gap';
+      box.appendChild(gap);
+    }
+    if (remaining > 0.05) {
+      box.classList.add('is-short');
+      gap.className = 'bud-seed-gap';
+      gap.innerHTML = 'Need <strong>' + remaining.toFixed(1) + ' more acres</strong> of seed to cover this field for a complete budget forecast.';
+    } else if (remaining < -0.05) {
+      box.classList.add('is-over');
+      gap.className = 'bud-seed-gap';
+      gap.innerHTML = 'Over by <strong>' + Math.abs(remaining).toFixed(1) + ' ac</strong> vs field size — check hybrid acres.';
+    } else {
+      box.classList.add('is-ok');
+      gap.className = 'bud-seed-gap ok';
+      gap.textContent = 'Field seed acres are fully allocated.';
+    }
+    if (pct != null && strongs.length >= 2) {
+      const head = box.querySelector('div');
+      if (head) {
+        head.innerHTML =
+          '<strong>' + allocated.toFixed(1) + '</strong> of <strong>' +
+          Number(fieldAcres).toFixed(1) + '</strong> ac planted in plan · ' + pct + '%';
+      }
+    }
+  }
+  window.__budSeedCover = updateSeedCover;
+
+  function renumberSpray() {
+    document.querySelectorAll('#spray-rows .bud-repeat-row').forEach((row, i) => {
+      const cb = row.querySelector('input[name="spray_hired"]');
+      if (cb) cb.value = String(i);
+    });
+  }
+  window.__budRenumberSpray = renumberSpray;
+
+  const seedBtn = document.getElementById('add-seed-row');
+  const seedTpl = document.getElementById('seed-row-tpl');
+  const seedHost = document.getElementById('seed-rows');
+  if (seedBtn && seedTpl && seedHost) {
+    seedBtn.addEventListener('click', () => {
+      const node = seedTpl.content.cloneNode(true);
+      seedHost.appendChild(node);
+      wireAddNew(seedHost);
+      wireSeedRows(seedHost);
+      updateSeedCover();
+    });
+  }
+
+  const fertBtn = document.getElementById('add-fert-row');
+  const fertTpl = document.getElementById('fert-row-tpl');
+  const fertHost = document.getElementById('fert-rows');
+  if (fertBtn && fertTpl && fertHost) {
+    fertBtn.addEventListener('click', () => {
+      const node = fertTpl.content.cloneNode(true);
+      fertHost.appendChild(node);
+      wireAddNew(fertHost);
+    });
+  }
+  const sprayBtn = document.getElementById('add-spray-row');
+  const sprayTpl = document.getElementById('spray-row-tpl');
+  const sprayHost = document.getElementById('spray-rows');
+  if (sprayBtn && sprayTpl && sprayHost) {
+    sprayBtn.addEventListener('click', () => {
+      const node = sprayTpl.content.cloneNode(true);
+      sprayHost.appendChild(node);
+      renumberSpray();
+      wireAddNew(sprayHost);
+    });
+  }
+  wireAddNew(document);
+  wireSeedRows(document);
+  renumberSpray();
+  updateSeedCover();
+})();
+</script>
+{% endif %}
+{% endblock %}

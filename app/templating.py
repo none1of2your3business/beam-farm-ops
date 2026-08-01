@@ -16,8 +16,8 @@ TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
 def _year_context(request: Request) -> dict:
-    """Inject active crop year + one-shot flash toast into every template."""
-    empty = {"active_year": None, "crop_years": [], "flash": None}
+    """Inject active crop year, lookup lists, and one-shot flash toast into every template."""
+    empty = {"active_year": None, "crop_years": [], "flash": None, "lookup_lists": {}}
     try:
         user = request.session.get("user")
     except AssertionError:
@@ -34,7 +34,19 @@ def _year_context(request: Request) -> dict:
             active = db.get(CropYear, settings.active_crop_year_id)
         if active is None:
             active = next((y for y in years if y.is_active), years[0] if years else None)
-        return {"active_year": active, "crop_years": years, "flash": flash}
+        lookup_lists: dict = {}
+        try:
+            from app import lookups as lu
+
+            lookup_lists = lu.context_lists(db)
+        except Exception:
+            lookup_lists = {}
+        return {
+            "active_year": active,
+            "crop_years": years,
+            "flash": flash,
+            "lookup_lists": lookup_lists,
+        }
     finally:
         db.close()
 

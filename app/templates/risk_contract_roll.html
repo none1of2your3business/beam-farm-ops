@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Roll / price contract — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Grain · contracts</p>
+    <h1>Roll contract</h1>
+    <p class="lede">Partial price, HTA roll, set basis, or add a note on an existing contract.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/risk/contracts">Back to desk</a>
+  </div>
+</section>
+
+{% if contracts %}
+<form method="post" action="/risk/event" class="form-grid panel">
+  <label>Contract
+    <select name="contract_id" id="roll-contract">
+      {% for c in contracts %}
+      <option value="{{ c.id }}" data-crop="{{ c.crop }}">{{ c.number_label }} · {{ c.crop }} {{ c.buyer or '' }}{% if c.futures_month %} · {{ c.futures_month }}{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Event
+    <select name="event_type">
+      <option value="partial_price">Partial price</option>
+      <option value="hta_roll">HTA roll</option>
+      <option value="basis_set">Set basis</option>
+      <option value="note">Note</option>
+    </select>
+  </label>
+  <label>Date<input type="date" name="event_date" value="{{ today }}"></label>
+  <label>Bushels<input name="bushels"></label>
+  <label>Price / basis<input name="price"></label>
+  <label>Futures month
+    <select name="futures_month" id="event-futures-month">
+      <option value="">— select —</option>
+      {% for crop_key, months in futures_months_by_crop.items() %}
+      {% for m in months %}
+      <option value="{{ m.value }}" data-crop="{{ crop_key }}">{{ m.label }}</option>
+      {% endfor %}
+      {% endfor %}
+    </select>
+  </label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Save event</button>
+    <a class="btn ghost" href="/risk/contracts">Cancel</a>
+  </div>
+</form>
+{% else %}
+<p class="empty">No contracts yet. <a href="/risk/contracts/add">Add a contract</a> first.</p>
+{% endif %}
+
+<script>
+(function () {
+  const contractSel = document.getElementById('roll-contract');
+  const monthSel = document.getElementById('event-futures-month');
+  function filterFuturesMonths() {
+    if (!monthSel || !contractSel) return;
+    const opt = contractSel.options[contractSel.selectedIndex];
+    const crop = opt ? opt.dataset.crop : '';
+    let keep = monthSel.value;
+    Array.from(monthSel.options).forEach((o) => {
+      if (!o.value) {
+        o.hidden = false;
+        return;
+      }
+      const match = o.dataset.crop === crop;
+      o.hidden = !match;
+      if (!match && o.value === keep) keep = '';
+    });
+    monthSel.value = keep;
+  }
+  if (contractSel) {
+    contractSel.addEventListener('change', filterFuturesMonths);
+    filterFuturesMonths();
+  }
+})();
+</script>
+{% endblock %}

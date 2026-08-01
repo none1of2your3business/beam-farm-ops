@@ -14,15 +14,34 @@
 {% endif %}
 <form method="post" action="/purchases/product" class="form-grid panel">
   <label>Product name<input name="name" required></label>
-  <label>Category<select name="category"><option>chemical</option><option>fertilizer</option><option>seed</option><option>other</option></select></label>
-  <label>Unit<input name="unit" value="gal"></label>
+  <label>Category
+    <select name="category">
+      {% for c in lookup_lists.get('product_category', ['chemical', 'fertilizer', 'seed', 'other']) %}
+      <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Unit
+    <select name="unit">
+      {% for u in lookup_lists.get('product_unit', ['gal', 'lb', 'ton', 'bag', 'unit']) %}
+      <option value="{{ u }}"{% if u == 'gal' %} selected{% endif %}>{{ u }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <div class="form-actions full"><button class="btn primary" type="submit">Add product</button></div>
 </form>
 <form method="post" action="/purchases/buy" class="form-grid panel">
   <h2 class="full" style="margin:0;font-family:var(--display)">Record purchase (updates avg cost)</h2>
   <label>Product<select name="product_id">{% for p in products %}<option value="{{ p.id }}">{{ p.name }} (avg ${{ '%.2f'|format(p.avg_unit_cost) }} · on hand {{ p.on_hand }})</option>{% endfor %}</select></label>
   <label>Date<input type="date" name="purchase_date" value="{{ today }}" required></label>
-  <label>Vendor<input name="vendor"></label>
+  <label>Vendor
+    <select name="vendor">
+      <option value="">—</option>
+      {% for v in lookup_lists.get('vendor', []) %}
+      <option value="{{ v }}">{{ v }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <label>Qty<input name="quantity" required></label>
   <label>Total $<input name="total_cost" required></label>
   <div class="form-actions full"><button class="btn primary" type="submit">Buy</button></div>

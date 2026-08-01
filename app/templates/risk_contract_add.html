@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Add contract — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Grain · contracts</p>
+    <h1>Add contract</h1>
+    <p class="lede">Enter a new grain contract. It will show on the Contract desk after you save.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/risk/contracts">Back to desk</a>
+  </div>
+</section>
+
+<form method="post" action="/risk/contract" class="form-grid panel mkt-contract-form" id="contract-add-form">
+  <label>Contract #
+    <input name="contract_number" placeholder="e.g. Cargill #">
+  </label>
+  <label>Crop
+    <select name="crop" data-add-new="/risk/contracts/new/crop?next={{ add_next|urlencode }}">
+      {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+      {% if c != 'None' %}<option value="{{ c }}" {% if crop_preselect and crop_preselect == c %}selected{% endif %}>{{ c }}</option>{% endif %}
+      {% endfor %}
+      {% if crop_preselect and crop_preselect not in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+      <option value="{{ crop_preselect }}" selected>{{ crop_preselect }}</option>
+      {% endif %}
+      <option value="__add_new__">Add New…</option>
+    </select>
+  </label>
+  <label>Type
+    <select name="contract_type" data-add-new="/risk/contracts/new/contract-type?next={{ add_next|urlencode }}">
+      {% if lookup_lists.get('contract_type') %}
+      {% for opt in lookup_lists.contract_type %}
+      <option value="{{ opt.value }}" {% if type_preselect and type_preselect == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
+      {% for t in contract_types %}<option value="{{ t }}" {% if type_preselect and type_preselect == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      {% endif %}
+      <option value="__add_new__">Add New…</option>
+    </select>
+  </label>
+  <label>Elevator / buyer
+    <select name="buyer" data-add-new="/risk/contracts/new/buyer?next={{ add_next|urlencode }}">
+      <option value="">— select —</option>
+      {% for b in buyer_list %}
+      <option value="{{ b }}" {% if buyer_preselect and buyer_preselect == b %}selected{% endif %}>{{ b }}</option>
+      {% endfor %}
+      <option value="__add_new__">Add New…</option>
+    </select>
+  </label>
+  <label>Share partner (person you farm with)
+    <select name="with_party_id" data-add-new="/risk/contracts/new/with-party?next={{ add_next|urlencode }}">
+      <option value="">Me (my farms)</option>
+      {% for p in parties %}
+      <option value="{{ p.id }}" {% if with_party_preselect and with_party_preselect == p.id %}selected{% endif %}>{{ p.name }}{% if p.party_type %} ({{ p.party_type }}){% endif %}</option>
+      {% endfor %}
+      <option value="__add_new__">Add New…</option>
+    </select>
+  </label>
+  <p class="full muted" style="margin:-0.35rem 0 0.25rem">Share partner means you use this contract on that person’s farms. They do <strong>not</strong> own a share of the contract.</p>
+  <label>Bushels<input name="bushels" required></label>
+  <label>Cash price<input name="cash_price"></label>
+  <label>Futures<input name="futures_price"></label>
+  <label>Basis<input name="basis"></label>
+  <label>Futures month
+    <select name="futures_month" id="futures-month-select">
+      <option value="">— select —</option>
+      {% for crop_key, months in futures_months_by_crop.items() %}
+      {% for m in months %}
+      <option value="{{ m.value }}" data-crop="{{ crop_key }}">{{ m.label }}</option>
+      {% endfor %}
+      {% endfor %}
+    </select>
+  </label>
+  <label>Delivery start<input type="date" name="delivery_start"></label>
+  <label>Delivery end<input type="date" name="delivery_end"></label>
+  <label>Status
+    <select name="status">
+      {% for s in contract_statuses %}
+      <option value="{{ s }}" {% if s == 'open' %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Save contract</button>
+    <a class="btn ghost" href="/risk/contracts">Cancel</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  document.querySelectorAll('select[data-add-new]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      if (sel.value !== '__add_new__') return;
+      const base = sel.getAttribute('data-add-new');
+      if (base) window.location.href = base;
+      else sel.value = '';
+    });
+  });
+
+  const cropSel = document.querySelector('#contract-add-form select[name="crop"]');
+  const monthSel = document.getElementById('futures-month-select');
+  function filterFuturesMonths() {
+    if (!monthSel || !cropSel) return;
+    const crop = cropSel.value;
+    let keep = monthSel.value;
+    Array.from(monthSel.options).forEach((opt) => {
+      if (!opt.value) {
+        opt.hidden = false;
+        return;
+      }
+      const match = opt.dataset.crop === crop;
+      opt.hidden = !match;
+      if (!match && opt.value === keep) keep = '';
+    });
+    monthSel.value = keep;
+  }
+  if (cropSel) {
+    cropSel.addEventListener('change', filterFuturesMonths);
+    filterFuturesMonths();
+  }
+})();
+</script>
+{% endblock %}

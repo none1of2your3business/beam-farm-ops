@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}{{ farm_name or "Beam Farm Ops" }}{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=delete-1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
@@ -39,6 +39,13 @@
         <strong>{{ active_year.year }}</strong>
       </div>
       {% endif %}
+      <div class="topbar-save">
+        <form method="post" action="/backup/save">
+          <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+          <button type="submit" class="topbar-save-btn" title="Save a restoreable backup to Desktop → General files → Farm Ops Backups">Save</button>
+        </form>
+        <a class="topbar-saves-link" href="/backup/saves" title="View and restore saves">Saves</a>
+      </div>
       {{ top_hubs(active or 'dashboard', user) }}
     </div>
   </header>
@@ -63,6 +70,20 @@
   </script>
   {% endif %}
   <script src="/static/toast.js"></script>
+  <div id="app-autosave-status" class="app-autosave-status" aria-live="polite" hidden></div>
+  <script src="/static/autosave.js?v=3"></script>
+  <script>
+  (function () {
+    document.querySelectorAll('select[data-add-new]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        if (sel.value !== '__add_new__') return;
+        const base = sel.getAttribute('data-add-new');
+        if (base) window.location.href = base;
+        else sel.value = '';
+      });
+    });
+  })();
+  </script>
   <script>
   (function () {
     const reveals = document.querySelectorAll('.reveal');

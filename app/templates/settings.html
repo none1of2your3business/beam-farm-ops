@@ -8,7 +8,13 @@
   </div>
 </section>
 
-<form method="post" action="/settings/farm" class="form-grid panel">
+{% if warn_default_password %}
+<p class="banner-warn" role="alert">
+  Admin still uses the default password (<code>farm2026</code>). Change it below before sharing this app.
+</p>
+{% endif %}
+
+<form method="post" action="/settings/farm" class="form-grid panel" data-autosave>
   <label class="full">Farm name
     <input type="text" name="farm_name_value" value="{{ settings.farm_name if settings else 'Beam Farm' }}" required>
   </label>
@@ -16,6 +22,38 @@
     <button type="submit" class="btn primary">Save</button>
   </div>
 </form>
+
+<section class="section-block">
+  <h2>Change password</h2>
+  <p class="muted">Signed in as <strong>{{ user.username }}</strong>. Use at least 8 characters.</p>
+  <form method="post" action="/settings/password" class="form-grid panel" data-no-autosave data-no-guard autocomplete="off">
+    <label class="full">Current password
+      <input type="password" name="current_password" required autocomplete="current-password">
+    </label>
+    <label>New password
+      <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+    </label>
+    <label>Confirm new password
+      <input type="password" name="confirm_password" required minlength="8" autocomplete="new-password">
+    </label>
+    <div class="form-actions full">
+      <button type="submit" class="btn primary">Update password</button>
+    </div>
+  </form>
+</section>
+
+<section class="section-block">
+  <h2>Selection lists</h2>
+  <p class="muted">Clean up every dropdown (crops, haulers, contract types, vendors, and more). Hide unused values so selects stay short.</p>
+  <p><a class="btn" href="/lists">Edit all selection lists</a>
+     <a class="btn" href="/parties">Parties</a></p>
+</section>
+
+<section class="section-block">
+  <h2>Manual saves</h2>
+  <p class="muted">Yellow <strong>Save</strong> in the top bar writes a dated restore file to Desktop → General files → Farm Ops Backups (keeps 5 newest).</p>
+  <p><a class="btn" href="/backup/saves">View / restore saves</a></p>
+</section>
 
 <section class="section-block">
   <h2>Crop years</h2>
@@ -34,7 +72,7 @@
     {% endfor %}
   </ul>
 
-  <form method="post" action="/years/add" class="form-grid panel">
+  <form method="post" action="/years/add" class="form-grid panel" data-no-autosave>
     <label>Year
       <input type="number" name="year" min="2000" max="2100" required>
     </label>

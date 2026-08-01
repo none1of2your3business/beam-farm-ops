@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_chip %}
+{% block title %}Complete planting — {{ field.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head planting-fill-head">
+  <div>
+    <p class="eyebrow">{{ crop_chip(field.crop) }} · Planting coverage</p>
+    <h1>Complete planting · {{ field.name }}</h1>
+    <p class="lede">Fill the rest of the field — acres and units auto-calculate from rate.</p>
+  </div>
+  <a class="btn ghost" href="/fields">Back to fields</a>
+</section>
+
+{% if error %}<p class="flash error">{{ error }}</p>{% endif %}
+{% if msg %}<p class="banner-ok">{{ msg }}</p>{% endif %}
+
+<section class="panel planting-cov-summary">
+  <div class="planting-cov-meters">
+    <div>
+      <span class="muted">Field acres</span>
+      <strong>{{ "{:,.1f}".format(coverage.field_acres or 0) }}</strong>
+    </div>
+    <div>
+      <span class="muted">Planted (units × rate)</span>
+      <strong>{{ "{:,.1f}".format(coverage.planted_acres or 0) }}</strong>
+    </div>
+    <div>
+      <span class="muted">Remaining</span>
+      <strong class="{% if coverage.status == 'incomplete' %}planting-gap{% endif %}">{{ "{:,.1f}".format(coverage.remaining_acres or 0) }}</strong>
+    </div>
+    <div>
+      <span class="muted">Status</span>
+      <strong class="planting-status planting-status-{{ coverage.status }}">{{ coverage.label }}</strong>
+    </div>
+  </div>
+
+  {% if coverage.rows %}
+  <div class="table-wrap planting-cov-table">
+    <table class="simple-table">
+      <thead>
+        <tr><th>Hybrid</th><th>Units</th><th>Seeds/unit</th><th>Population</th><th>Acres</th></tr>
+      </thead>
+      <tbody>
+        {% for r in coverage.rows %}
+        <tr>
+          <td><strong>{{ r.hybrid_name }}</strong>{% if r.brand %}<div class="muted">{{ r.brand }}</div>{% endif %}</td>
+          <td>{% if r.units is not none %}{{ "{:,.2f}".format(r.units) }}{% else %}—{% endif %}</td>
+          <td>{% if r.seeds_per_unit %}{{ "{:,.0f}".format(r.seeds_per_unit) }}{% else %}—{% endif %}</td>
+          <td>{% if r.population is not none %}{{ "{:,.0f}".format(r.population) }}{% elif r.rate %}{{ r.rate }}{% else %}—{% endif %}</td>
+          <td>{{ "{:,.2f}".format(r.acres or 0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted planting-formula-note">
+    Acres = units × seeds/unit ÷ population.
+    Corn 80,000 · soybeans 140,000 · Beck’s soybeans 130,000.
+  </p>
+  {% else %}
+  <p class="muted" style="margin-top:0.75rem">No as-planted hybrid rows on this field yet.</p>
+  {% endif %}
+</section>
+
+{% if coverage.status == 'complete' %}
+<section class="panel">
+  <p class="banner-ok" style="margin:0">Planting covers this field. <a href="/fields">Back to fields</a> · <a href="/fields/{{ field.id }}/operations">Ledger</a></p>
+</section>
+{% else %}
+<form method="post" action="/fields/{{ field.id }}/planting/complete" class="panel planting-fill-form" id="planting-fill-form"
+      data-remaining="{{ coverage.remaining_acres or 0 }}"
+      data-field-spu="{{ field_crop_spu }}">
+  <h2 class="planting-fill-title">Fill remaining acres</h2>
+
+  <div class="planting-fill-metrics">
+    <label class="planting-fill-label">Acres to add
+      <input type="number" name="acres" id="fill-acres" step="0.01" min="0.01" required
+             value="{{ '%.4f'|format(coverage.remaining_acres) if coverage.remaining_acres else '' }}">
+    </label>
+    <label class="planting-fill-label">Units to add
+      <input type="number" name="units" id="fill-units" step="0.0001" min="0" required value="">
+    </label>
+    <p class="muted planting-fill-calc" id="fill-calc-hint">Units auto-fill from acres × population ÷ seeds/unit.</p>
+  </div>
+
+  <label class="planting-fill-label">Notes (optional)
+    <input type="text" name="notes" placeholder="e.g. finished with planter after rain">
+  </label>
+
+  <fieldset class="planting-mode-set">
+    <legend>How to fill</legend>
+
+    <div class="planting-mode-block">
+      <label class="planting-mode-option">
+        <input type="radio" name="mode" value="extend" {% if coverage.rows %}checked{% endif %} {% if not coverage.rows %}disabled{% endif %}>
+        <span class="planting-mode-copy">
+          <strong>Extend a planted hybrid</strong>
+          <em>Apply its rate / population across the rest of the field</em>
+        </span>
+      </label>
+      {% if coverage.rows %}
+      <label class="planting-fill-label planting-mode-indent">Hybrid to extend
+        <select name="source_link_id" id="fill-source">
+          {% for r in coverage.rows %}
+          <option value="{{ r.link_id }}"
+                  data-pop="{{ r.population if r.population is not none else '' }}"
+                  data-spu="{{ r.seeds_per_unit or field_crop_spu }}"
+                  {% if coverage.primary and coverage.primary.link_id == r.link_id %}selected{% endif %}>
+            {{ r.hybrid_name }} · {{ "{:,.1f}".format(r.acres or 0) }} ac
+            {% if r.population is not none %} · {{ "{:,.0f}".format(r.population) }} seeds/ac{% elif r.rate %} · {{ r.rate }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+    </div>
+
+    <div class="planting-mode-block">
+      <label class="planting-mode-option">
+        <input type="radio" name="mode" value="new" {% if not coverage.rows %}checked{% endif %}>
+        <span class="planting-mode-copy">
+          <strong>Different hybrid / rate</strong>
+          <em>Select another variety and set population for the remaining acres</em>
+        </span>
+      </label>
+      <div class="planting-new-fields planting-mode-indent" id="planting-new-fields">
+        <label class="planting-fill-label">Hybrid / variety
+          <select name="hybrid_id" id="fill-hybrid">
+            <option value="">— select —</option>
+            {% for h in hybrids %}
+            <option value="{{ h.id }}" data-spu="{{ hybrid_spu.get(h.id, field_crop_spu) }}" data-crop="{{ h.crop }}">
+              {{ h.name }}{% if h.brand %} ({{ h.brand }}){% endif %} · {{ h.crop }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="planting-fill-label">Population (seeds/ac)
+          <input type="number" name="population" id="fill-population" step="1" min="0" placeholder="e.g. 140000">
+        </label>
+        <label class="planting-fill-label">Rate label (optional)
+          <input type="text" name="rate" id="fill-rate" placeholder="e.g. 140k seeds/ac">
+        </label>
+      </div>
+    </div>
+  </fieldset>
+
+  <div class="form-actions planting-fill-actions">
+    <button type="submit" class="btn primary">Save fill</button>
+    <a class="btn ghost" href="/fields">Cancel</a>
+  </div>
+</form>
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById("planting-fill-form");
+  if (!form) return;
+
+  var acresEl = document.getElementById("fill-acres");
+  var unitsEl = document.getElementById("fill-units");
+  var hintEl = document.getElementById("fill-calc-hint");
+  var sourceEl = document.getElementById("fill-source");
+  var hybridEl = document.getElementById("fill-hybrid");
+  var popEl = document.getElementById("fill-population");
+  var rateEl = document.getElementById("fill-rate");
+  var newBox = document.getElementById("planting-new-fields");
+  var remaining = parseFloat(form.getAttribute("data-remaining") || "0") || 0;
+  var lock = false; // prevent feedback loop
+
+  function mode() {
+    var el = form.querySelector('input[name="mode"]:checked');
+    return el ? el.value : "extend";
+  }
+
+  function ratePair() {
+    if (mode() === "extend" && sourceEl && sourceEl.selectedOptions[0]) {
+      var opt = sourceEl.selectedOptions[0];
+      return {
+        pop: parseFloat(opt.getAttribute("data-pop") || "") || 0,
+        spu: parseFloat(opt.getAttribute("data-spu") || "") || 0
+      };
+    }
+    var pop = parseFloat((popEl && popEl.value) || "") || 0;
+    var spu = parseFloat(form.getAttribute("data-field-spu") || "") || 0;
+    if (hybridEl && hybridEl.selectedOptions[0]) {
+      var hs = parseFloat(hybridEl.selectedOptions[0].getAttribute("data-spu") || "");
+      if (hs) spu = hs;
+    }
+    return { pop: pop, spu: spu };
+  }
+
+  function unitsFromAcres(acres, pop, spu) {
+    if (!(acres > 0) || !(pop > 0) || !(spu > 0)) return null;
+    return Math.round((acres * pop / spu) * 10000) / 10000;
+  }
+
+  function acresFromUnits(units, pop, spu) {
+    if (!(units > 0) || !(pop > 0) || !(spu > 0)) return null;
+    return Math.round((units * spu / pop) * 10000) / 10000;
+  }
+
+  function setHint(text) {
+    if (hintEl) hintEl.textContent = text;
+  }
+
+  function recalcFromAcres() {
+    var pair = ratePair();
+    var acres = parseFloat(acresEl.value || "") || 0;
+    var units = unitsFromAcres(acres, pair.pop, pair.spu);
+    lock = true;
+    if (units != null) {
+      unitsEl.value = String(units);
+      setHint("Units = " + acres.toFixed(4) + " ac × " + Math.round(pair.pop).toLocaleString() +
+        " seeds/ac ÷ " + Math.round(pair.spu).toLocaleString() + " seeds/unit");
+    } else {
+      unitsEl.value = "";
+      setHint(mode() === "new"
+        ? "Enter population (seeds/ac) to calculate units."
+        : "Need a population on the selected hybrid to calculate units.");
+    }
+    lock = false;
+  }
+
+  function recalcFromUnits() {
+    if (lock) return;
+    var pair = ratePair();
+    var units = parseFloat(unitsEl.value || "") || 0;
+    var acres = acresFromUnits(units, pair.pop, pair.spu);
+    lock = true;
+    if (acres != null) {
+      acresEl.value = String(acres);
+      setHint("Acres = " + units.toFixed(4) + " units × " + Math.round(pair.spu).toLocaleString() +
+        " ÷ " + Math.round(pair.pop).toLocaleString() + " seeds/ac");
+    }
+    lock = false;
+  }
+
+  function syncMode() {
+    var on = mode() === "new";
+    if (newBox) {
+      newBox.classList.toggle("is-dimmed", !on);
+      newBox.querySelectorAll("select, input").forEach(function (el) {
+        el.disabled = !on;
+      });
+    }
+    if (!acresEl.value && remaining > 0) {
+      acresEl.value = String(Math.round(remaining * 10000) / 10000);
+    }
+    recalcFromAcres();
+  }
+
+  form.querySelectorAll('input[name="mode"]').forEach(function (r) {
+    r.addEventListener("change", syncMode);
+  });
+  if (sourceEl) sourceEl.addEventListener("change", recalcFromAcres);
+  if (hybridEl) hybridEl.addEventListener("change", recalcFromAcres);
+  if (popEl) {
+    popEl.addEventListener("input", function () {
+      if (rateEl && popEl.value && !rateEl.value) {
+        rateEl.placeholder = Math.round(parseFloat(popEl.value) || 0).toLocaleString() + " seeds/ac";
+      }
+      recalcFromAcres();
+    });
+  }
+  acresEl.addEventListener("input", function () {
+    if (!lock) recalcFromAcres();
+  });
+  unitsEl.addEventListener("input", function () {
+    if (!lock) recalcFromUnits();
+  });
+
+  syncMode();
+})();
+</script>
+{% endblock %}

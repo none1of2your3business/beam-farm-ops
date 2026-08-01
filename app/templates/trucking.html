@@ -2,13 +2,36 @@
 {% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
 {% block title %}Trucking — {{ farm_name }}{% endblock %}
 {% block content %}
-<section class="page-head"><div><p class="eyebrow">Hauling</p><h1>Trucking rates &amp; loads</h1></div></section>
-<p class="muted" style="margin:0 0 1rem">Freight rates and loads. Scale tickets that update bin inventory are under Marketing and Storage → <a href="/bins/ticket">Ticket</a>.</p>
+<section class="page-head"><div><p class="eyebrow">Hauling</p><h1>Trucking rates &amp; loads</h1></div>
+  <div class="form-actions"><a class="btn" href="/bins/lists">Edit lists</a></div>
+</section>
+<p class="muted" style="margin:0 0 1rem">Freight rates and loads. Manage haulers, destinations, and $/bu rates on <a href="/bins/lists">Bins Lists</a>. Scale tickets: <a href="/bins/ticket">Move grain</a>.</p>
 <form method="post" action="/trucking/rate" class="form-grid panel">
   <h2 class="full" style="margin:0;font-family:var(--display)">Rate table</h2>
-  <label>Destination<input name="destination" required></label>
-  <label>Hauler<input name="hauler"></label>
-  <label>$/bu<input name="rate_per_bu"></label>
+  <label>Destination
+    <select name="destination" required>
+      <option value="">— select —</option>
+      {% for d in lookup_lists.get('destination', []) %}
+      <option value="{{ d }}">{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Hauler
+    <select name="hauler">
+      <option value="">—</option>
+      {% for h in lookup_lists.get('hauler', []) %}
+      <option value="{{ h }}">{{ h }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>$/bu
+    <select name="rate_per_bu">
+      <option value="">—</option>
+      {% for r in lookup_lists.get('freight_rate', []) %}
+      <option value="{{ r }}">${{ '%.4f'|format(r) }}/bu</option>
+      {% endfor %}
+    </select>
+  </label>
   <label>$/load<input name="rate_per_load"></label>
   <label>Miles<input name="miles"></label>
   <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
@@ -22,9 +45,29 @@
 <form method="post" action="/trucking/load" class="form-grid panel">
   <h2 class="full" style="margin:0;font-family:var(--display)">Load log</h2>
   <label>Date<input type="date" name="load_date" value="{{ today }}"></label>
-  <label>Crop<select name="crop"><option>Corn</option><option>Soybeans</option></select></label>
-  <label>Destination<input name="destination" required></label>
-  <label>Hauler<input name="hauler"></label>
+  <label>Crop
+    <select name="crop">
+      {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+      {% if c != 'None' %}<option value="{{ c }}">{{ c }}</option>{% endif %}
+      {% endfor %}
+    </select>
+  </label>
+  <label>Destination
+    <select name="destination" required>
+      <option value="">— select —</option>
+      {% for d in lookup_lists.get('destination', []) %}
+      <option value="{{ d }}">{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Hauler
+    <select name="hauler">
+      <option value="">—</option>
+      {% for h in lookup_lists.get('hauler', []) %}
+      <option value="{{ h }}">{{ h }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <label>Bushels<input name="bushels" required></label>
   <label>Rate paid<input name="rate_paid"></label>
   <label>Ticket #<input name="ticket_number"></label>
@@ -32,7 +75,8 @@
   <div class="form-actions full"><button class="btn primary" type="submit">Log load</button></div>
 </form>
 {% if loads %}
-{% for group_crop in ['Corn', 'Soybeans'] %}
+{% for group_crop in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+{% if group_crop != 'None' %}
 {% set group = loads|selectattr('crop', 'equalto', group_crop)|list %}
 {% if group %}
 <section class="crop-section {{ crop_tone(group_crop) }}">
@@ -48,6 +92,7 @@
   </tr>{% endfor %}
   </tbody></table></div>
 </section>
+{% endif %}
 {% endif %}
 {% endfor %}
 {% endif %}

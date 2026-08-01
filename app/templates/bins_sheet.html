@@ -6,18 +6,13 @@
   <div>
     <p class="eyebrow">Inventory · Spreadsheet</p>
     <h1>Bins Sheet</h1>
-    <p class="lede">Edit name, crop, capacity, and Me on-hand across every bin — click a column header to sort. Save all when ready.</p>
+    <p class="lede">Edit name, crop, who the grain is for, capacity, and <strong>bin total</strong> on-hand — ownership % is applied when you save. Click a column header to sort.</p>
   </div>
   <div class="form-actions fields-toolbar">
     <a class="btn" href="/bins">Bins overview</a>
-    <a class="btn" href="/bins/ticket">Ticket / move</a>
-    <form method="post" action="/bins/carry-toggle" class="bins-carry-toggle">
-      <input type="hidden" name="next" value="/bins/sheet">
-      <input type="hidden" name="bins_show_carry" value="{% if bins_show_carry %}0{% else %}1{% endif %}">
-      <button class="btn {% if bins_show_carry %}primary{% endif %}" type="submit" title="Uses rates from Carry cost">
-        {% if bins_show_carry %}Hide monthly carry ${% else %}Show monthly carry ${% endif %}
-      </button>
-    </form>
+    <a class="btn" href="/bins/ticket">Move grain</a>
+    <a class="btn" href="/bins/new">Add bin</a>
+    <a class="btn" href="/risk/carry">Carry cost</a>
   </div>
 </section>
 
@@ -36,12 +31,12 @@
         <tr>
           <th class="sheet-name">Bin</th>
           <th>Crop</th>
+          <th>For / with</th>
           <th>Capacity bu</th>
-          <th>On hand (Me)</th>
-          <th>Other owners</th>
-          <th>Total bu</th>
+          <th>On hand (total)</th>
+          <th>Split preview</th>
           <th>% full</th>
-          {% if bins_show_carry %}<th>Carry $/mo</th>{% endif %}
+          <th>Carry $/mo</th>
           <th>Notes</th>
         </tr>
       </thead>
@@ -55,41 +50,51 @@
           </td>
           <td>
             <select name="crop" class="sheet-crop">
-              <option value="Corn" {% if b.crop == 'Corn' %}selected{% endif %}>Corn</option>
-              <option value="Soybeans" {% if b.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+              {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+              {% if c != 'None' %}<option value="{{ c }}" {% if b.crop == c %}selected{% endif %}>{{ c }}</option>{% endif %}
+              {% endfor %}
+              {% if b.crop and b.crop not in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+              <option value="{{ b.crop }}" selected>{{ b.crop }}</option>
+              {% endif %}
             </select>
             {{ crop_badge(b.crop, short=true) }}
           </td>
+          <td>
+            <select name="with_party_id">
+              <option value="" {% if not b.with_party_id %}selected{% endif %}>Me</option>
+              {% for p in parties %}
+              <option value="{{ p.id }}" {% if b.with_party_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+              {% endfor %}
+            </select>
+          </td>
           <td><input name="capacity_bu" type="number" step="1" min="0" value="{{ b.capacity_bu if b.capacity_bu is not none else '' }}" class="sheet-num sheet-cap" placeholder="—"></td>
-          <td><input name="on_hand_bu" type="number" step="0.1" min="0" value="{{ card.me_bu }}" class="sheet-num sheet-onhand"></td>
-          <td class="sheet-calc muted">
-            {% for s in card.shares if (s.owner_name or '')|lower != 'me' %}
-              {{ s.owner_name }} {{ "{:,.0f}".format(s.bushels) }}{% if not loop.last %}; {% endif %}
+          <td><input name="on_hand_bu" type="number" step="0.1" min="0" value="{{ card.total_bu }}" class="sheet-num sheet-onhand" title="Bin total — ownership % applied on save"></td>
+          <td class="sheet-calc muted sheet-split"
+              data-ownership='[{% for name, pct in card.ownership %}{"n":{{ name|tojson }},"p":{{ pct }}}{% if not loop.last %},{% endif %}{% endfor %}]'>
+            {% for name, pct in card.ownership %}
+              {{ name }} {{ "{:,.0f}".format(card.total_bu * pct / 100) }}{% if not loop.last %}; {% endif %}
             {% else %}
               —
             {% endfor %}
           </td>
-          <td class="sheet-calc sheet-total" data-other="{{ (card.total_bu - card.me_bu)|round(1) }}">{{ "{:,.0f}".format(card.total_bu) }}</td>
           <td class="sheet-calc sheet-pct">{{ card.pct if card.has_cap else '—' }}{% if card.has_cap %}%{% endif %}</td>
-          {% if bins_show_carry %}
           <td class="sheet-calc bin-carry-cell {{ crop_tone(b.crop) }}">
             {% if card.carry_mo is defined and card.carry_mo is not none %}~${{ "{:,.2f}".format(card.carry_mo) }}{% else %}—{% endif %}
           </td>
-          {% endif %}
           <td><input name="notes" type="text" value="{{ b.notes or '' }}" class="sheet-notes"></td>
         </tr>
         {% endfor %}
       </tbody>
       <tfoot>
         <tr class="sheet-totals-row">
-          <td colspan="{% if bins_show_carry %}9{% else %}8{% endif %}">
+          <td colspan="9">
             <div class="sheet-totals" id="bin-sheet-totals">
               <span>Bins <strong>{{ stats.bin_count }}</strong></span>
               <span>On hand <strong id="tot-bu">—</strong></span>
               <span>Capacity <strong id="tot-cap">—</strong></span>
-              {% if bins_show_carry %}
-              <span>Carry / mo <strong>${{ "{:,.2f}".format(stats.carry_total_mo or 0) }}</strong></span>
-              {% endif %}
+              <span>Corn carry / mo <strong>{% if stats.carry_corn_mo is not none %}${{ "{:,.0f}".format(stats.carry_corn_mo) }}{% else %}—{% endif %}</strong></span>
+              <span>Soy carry / mo <strong>{% if stats.carry_soy_mo is not none %}${{ "{:,.0f}".format(stats.carry_soy_mo) }}{% else %}—{% endif %}</strong></span>
+              <span>Total carry / mo <strong>${{ "{:,.0f}".format(stats.carry_total_mo or 0) }}</strong></span>
             </div>
           </td>
         </tr>
@@ -118,16 +123,26 @@
     return isFinite(v) ? v : 0;
   }
 
+  function formatSplit(owners, total) {
+    if (!owners || !owners.length) return "—";
+    return owners.map(function (o) {
+      var amt = Math.round(total * (o.p || 0) / 100);
+      return o.n + " " + amt.toLocaleString("en-US");
+    }).join("; ");
+  }
+
   function recalc() {
     var totBu = 0, totCap = 0;
     form.querySelectorAll(".sheet-row").forEach(function (row) {
-      var on = num(row.querySelector(".sheet-onhand"));
+      var total = num(row.querySelector(".sheet-onhand"));
       var cap = num(row.querySelector(".sheet-cap"));
-      var other = parseFloat(row.querySelector(".sheet-total").getAttribute("data-other") || "0") || 0;
-      var total = on + other;
-      var totEl = row.querySelector(".sheet-total");
+      var splitEl = row.querySelector(".sheet-split");
       var pctEl = row.querySelector(".sheet-pct");
-      if (totEl) totEl.textContent = Math.round(total).toLocaleString("en-US");
+      if (splitEl) {
+        var owners = [];
+        try { owners = JSON.parse(splitEl.getAttribute("data-ownership") || "[]"); } catch (e) {}
+        splitEl.textContent = formatSplit(owners, total);
+      }
       if (pctEl) {
         if (cap > 0) pctEl.textContent = (Math.round(1000 * total / cap) / 10) + "%";
         else pctEl.textContent = "—";

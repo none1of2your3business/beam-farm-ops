@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Budget · Add New</p>
+    <h1>{{ page_title }}</h1>
+    <p class="lede">{{ page_lede }}</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="{{ next_url }}">Back</a>
+  </div>
+</section>
+
+<form method="post" action="{{ form_action }}" class="form-grid panel">
+  <input type="hidden" name="next" value="{{ next_url }}">
+
+  {% if kind == 'hybrid' %}
+  <label class="full">Name
+    <input type="text" name="name" required autofocus placeholder="e.g. P1185">
+  </label>
+  <label>Crop
+    <input type="text" name="crop" value="{{ default_crop or 'Corn' }}">
+  </label>
+  <label>Brand
+    <input type="text" name="brand" placeholder="optional">
+  </label>
+  <label>$ / bag
+    <input type="number" name="cost_per_bag" step="0.01" min="0" placeholder="e.g. 280">
+  </label>
+  {% elif kind == 'pass' %}
+  <label class="full">Pass name
+    <input type="text" name="label" required autofocus placeholder="e.g. Vertical till">
+  </label>
+  <label>Self $/ac
+    <input type="number" name="self_rate_ac" step="0.01" min="0" value="0">
+  </label>
+  <label>Round trips
+    <input type="number" name="round_trips" step="0.5" min="0" value="1">
+  </label>
+  {% elif kind == 'spray' %}
+  <label class="full">Mix name
+    <input type="text" name="name" required autofocus placeholder="e.g. Pre-emerge">
+  </label>
+  <label>Timing
+    <input type="text" name="timing" placeholder="optional">
+  </label>
+  <label>Crop
+    <input type="text" name="crop" value="{{ default_crop or '' }}">
+  </label>
+  <label>Cost $/ac
+    <input type="number" name="cost_per_acre" step="0.01" min="0" placeholder="chem rollup">
+  </label>
+  {% endif %}
+
+  <div class="form-actions full">
+    <button type="submit" class="btn primary">Save</button>
+    <a class="btn" href="{{ next_url }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

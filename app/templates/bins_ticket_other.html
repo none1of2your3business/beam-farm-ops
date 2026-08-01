@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Other move — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Move grain · Other move</p>
+    <h1>Other move</h1>
+    <p class="lede">Fill / harvest, one-bin delivery, field → elevator, or bin transfer — when you are not splitting a scale ticket across sources.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/bins/ticket">All move options</a>
+    <a class="btn" href="/bins/ticket/scale">Scale Tickets</a>
+  </div>
+</section>
+
+{% if request.query_params.get('saved') %}
+<p class="banner-ok">Movement saved.</p>
+{% endif %}
+
+<form method="post" action="/bins/move" class="form-grid panel" id="other-move">
+  <label>Type<select name="move_type"><option value="fill">Fill / harvest to bin</option><option value="delivery">Delivery from one bin</option><option value="elevator">Field → elevator (no bin)</option><option value="transfer">Bin transfer</option></select></label>
+  <label>Bin<select name="bin_id"><option value="">—</option>{% for b in bins %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}</select></label>
+  <label>To bin (transfer)<select name="to_bin_id"><option value="">—</option>{% for b in bins %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}</select></label>
+  <label>Field<select name="field_id"><option value="">—</option>{% for f in fields %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select></label>
+  <label>Owner share
+    <select name="owner_name">
+      {% for o in lookup_lists.get('grain_owner', ['Me']) %}
+      <option value="{{ o }}"{% if o == 'Me' %} selected{% endif %}>{{ o }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Crop
+    <select name="crop">
+      {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+      {% if c != 'None' %}<option value="{{ c }}">{{ c }}</option>{% endif %}
+      {% endfor %}
+    </select>
+  </label>
+  <label>Wet bu<input name="wet_bu"></label>
+  <label>Moisture %<input name="moisture"></label>
+  <label>Net bu<input name="net_bu"></label>
+  <label>Ticket #<input name="ticket_number" placeholder="optional"></label>
+  <label>Destination
+    <select name="destination">
+      <option value="">—</option>
+      {% for d in lookup_lists.get('destination', ticket_destinations or []) %}
+      <option value="{{ d }}">{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Contract<select name="contract_id"><option value="">—</option>{% for c in contracts %}<option value="{{ c.id }}">#{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}{% if c.with_party_id %} · {{ c.with_label }}{% endif %}</option>{% endfor %}</select></label>
+  <label>Date<input type="date" name="move_date" value="{{ today }}"></label>
+  <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+  <div class="form-actions full"><button class="btn primary" type="submit">Save movement</button></div>
+</form>
+<p class="muted">Moisture shrink: net = wet × (100 − moist) / (100 − 15 corn or 13 soy).</p>
+
+{% if moves %}
+<div class="section-head" style="margin-top:1.5rem">
+  <h2>Recent tickets / moves</h2>
+</div>
+<div class="table-wrap"><table><thead><tr><th>Date</th><th>Crop</th><th>Type</th><th>Bin</th><th>Field</th><th>Bu</th><th>M%</th><th>Ticket</th><th>Owner</th><th></th></tr></thead><tbody>
+{% for m in moves %}<tr class="crop-row {{ crop_tone(m.crop) }}">
+  <td>{{ m.move_date }}</td>
+  <td>{{ crop_badge(m.crop, short=true) }}</td>
+  <td>{{ m.move_type }}</td>
+  <td>{% if m.bin_id %}{{ bin_name.get(m.bin_id, m.bin_id) }}{% else %}—{% endif %}</td>
+  <td>{% if m.field_id %}{{ field_name.get(m.field_id, m.field_id) }}{% else %}—{% endif %}</td>
+  <td>{{ m.net_bu }}{% if m.wet_bu %} (wet {{ m.wet_bu }}){% endif %}</td>
+  <td>{{ m.moisture or '—' }}</td>
+  <td>{{ m.ticket_number or '—' }}</td>
+  <td>{{ m.owner_name }}</td>
+  <td>
+    <form method="post" action="/bins/moves/{{ m.id }}/delete" style="display:inline"
+          onsubmit="return confirm('Delete this {{ m.move_type }} ({{ m.net_bu }} bu{% if m.ticket_number %}, ticket {{ m.ticket_number }}{% endif %})?\n\nBin inventory and contract delivery will be reversed.');">
+      <input type="hidden" name="next" value="/bins/ticket/other">
+      <button type="submit" class="linkish danger">Delete</button>
+    </form>
+  </td>
+</tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+{% endblock %}

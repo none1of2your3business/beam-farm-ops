@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_chip %}
+{% block title %}Invoice — {{ field.name }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head crop-panel {{ crop_tone(field.crop) }}">
+  <div>
+    <p class="eyebrow">{{ crop_chip(field.crop) }} · {{ field.ownership_mode }} · invoice</p>
+    <h1>{{ field.name }}</h1>
+    <p class="lede muted" style="margin:0.35rem 0 0">
+      {% if field.ownership_mode == 'on_shares' %}
+      Bill the partner for their share of seed, sprays, inputs, and ops — not yours.
+      {% elif field.ownership_mode == 'custom_work' %}
+      Bill the customer for selected work and products.
+      {% else %}
+      Build an invoice from this field’s ledger.
+      {% endif %}
+    </p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/fields/{{ field.id }}/operations">Field ledger</a>
+    <a class="btn ghost" href="/fields/{{ field.id }}">Field</a>
+    <a class="btn ghost" href="/invoices">All invoices</a>
+  </div>
+</section>
+
+{% if bill_error %}
+<p class="banner-warn">{{ bill_error }}</p>
+{% endif %}
+{% if request.query_params.get('error') == 'empty' %}
+<p class="banner-warn">Select at least one line, or add a custom charge.</p>
+{% endif %}
+{% if request.query_params.get('error') == 'partner' %}
+<p class="banner-warn">Partner / party must be set before invoicing.</p>
+{% endif %}
+
+{% if party and partner_pct > 0 %}
+<form method="post" action="/fields/{{ field.id }}/invoice" class="inv-builder" id="field-invoice">
+  <div class="inv-builder-layout">
+    <div class="inv-builder-main">
+      <section class="panel inv-meta-panel">
+        <div class="form-grid inv-meta-grid">
+          <label>Bill to
+            {% if partners and partners|length > 1 %}
+            <select name="bill_party_id" id="bill-party" onchange="location.href='/fields/{{ field.id }}/invoice?party_id='+this.value">
+              {% for p in partners if p.party %}
+              <option value="{{ p.party.id }}" {% if party and party.id == p.party.id %}selected{% endif %}>
+                {{ p.label }} · {{ p.pct|int if p.pct == p.pct|int else p.pct }}%
+              </option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input type="hidden" name="bill_party_id" value="{{ party.id }}">
+            <input type="text" value="{{ party.name }}{% if party.party_type %} ({{ party.party_type }}){% endif %}" disabled>
+            {% endif %}
+          </label>
+          <label>Their share
+            <input type="text" value="{{ partner_pct|int if partner_pct == partner_pct|int else partner_pct }}%" disabled>
+          </label>
+          <label>Invoice date<input type="date" name="invoice_date" value="{{ today }}"></label>
+          <label>Due date<input type="date" name="due_date" value=""></label>
+          <label class="full">Notes<input type="text" name="notes" placeholder="optional"></label>
+        </div>
+      </section>
+
+      <section class="panel inv-lines-panel">
+        <div class="inv-section-head">
+          <div>
+            <h2>Billable from ledger</h2>
+            <p class="muted">
+              Planting seed, sprays, inputs, and logged ops.
+              Checked lines bill {{ partner_pct|int if partner_pct == partner_pct|int else partner_pct }}% to {{ party.name }}.
+            </p>
+          </div>
+          {% if selectable_count %}
+          <div class="inv-bulk-actions">
+            <button type="button" class="btn" id="inv-select-all">Select all open</button>
+            <button type="button" class="btn ghost" id="inv-clear-all">Clear</button>
+          </div>
+          {% endif %}
+        </div>
+
+        {% if items %}
+        {% for group_name, group_items in groups.items() %}
+        <div class="inv-group">
+          <h3 class="inv-group-title">{{ group_name }}</h3>
+          <ul class="inv-line-list">
+            {% for it in group_items %}
+            <li class="inv-line {% if it.invoice_id %}is-invoiced{% elif not it.selectable %}is-disabled{% endif %}">
+              <label class="inv-line-check">
+                {% if it.invoice_id %}
+                <input type="checkbox" disabled title="Already invoiced">
+                {% elif it.selectable %}
+                <input type="checkbox" name="{{ it.input_name }}" value="{{ it.id }}"
+                       class="inv-item-check"
+                       data-amt="{{ '%.2f'|format(it.share or 0) }}"
+                       {% if it.default_checked %}checked{% endif %}>
+                {% else %}
+                <input type="checkbox" disabled title="No billable cost yet">
+                {% endif %}
+                <span class="inv-line-body">
+                  <span class="inv-line-top">
+                    <strong>{{ it.title }}</strong>
+                    <span class="inv-line-type">{{ it.type_label }}</span>
+                  </span>
+                  <span class="inv-line-meta muted">
+                    {% if it.date %}{{ it.date }} · {% endif %}
+                    {{ it.detail or '—' }}
+                  </span>
+                </span>
+              </label>
+              <div class="inv-line-money">
+                {% if it.cost is not none %}
+                <span class="inv-cost muted">Full ${{ '%.2f'|format(it.cost) }}</span>
+                <strong class="inv-share">${{ '%.2f'|format(it.share or 0) }}</strong>
+                {% else %}
+                <span class="muted">No $ yet</span>
+                {% endif %}
+                {% if it.invoice_id %}
+                <a class="inv-prior" href="/invoices/{{ it.invoice_id }}">#{{ it.invoice_id }}</a>
+                {% endif %}
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="inv-empty">
+          <p><strong>Nothing billable on this field yet.</strong></p>
+          <p class="muted">
+            Completed planting shows here when seed is assigned on the ledger (with hybrid cost).
+            You can also assign sprays/inputs, log ops, or add a custom charge below.
+          </p>
+          <a class="btn" href="/fields/{{ field.id }}/operations">Open field ledger</a>
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="panel inv-custom-panel">
+        <div class="inv-section-head">
+          <div>
+            <h2>Custom charges</h2>
+            <p class="muted">Extra application fees or products that aren’t on the ledger. Saved on the field when you create the invoice.</p>
+          </div>
+        </div>
+        <div id="custom-lines" class="inv-custom-lines">
+          <div class="form-grid inv-custom-row">
+            <label>Name<input name="custom_name" placeholder="e.g. Custom application"></label>
+            <label>Qty<input name="custom_qty" type="number" step="0.01" min="0" value="1"></label>
+            <label>Rate $<input name="custom_rate" type="number" step="0.01" min="0" value="0" class="inv-custom-rate"></label>
+          </div>
+        </div>
+        <button type="button" class="btn" id="add-custom-line">+ Add line</button>
+      </section>
+    </div>
+
+    <aside class="inv-summary-panel panel">
+      <p class="eyebrow">Invoice preview</p>
+      <h2>{{ party.name }}</h2>
+      <p class="muted inv-summary-share">
+        {{ partner_pct|int if partner_pct == partner_pct|int else partner_pct }}% share
+        {% if field_acres %} · {{ "{:g}".format(field_acres) }} ac{% endif %}
+      </p>
+      <dl class="inv-summary-stats">
+        <div>
+          <dt>Open lines</dt>
+          <dd>{{ selectable_count }}</dd>
+        </div>
+        <div>
+          <dt>Already billed</dt>
+          <dd>{{ already_count }}</dd>
+        </div>
+        <div>
+          <dt>Open share $</dt>
+          <dd>${{ "{:,.2f}".format(open_share_total) }}</dd>
+        </div>
+      </dl>
+      <p class="inv-total" id="inv-total">$0.00</p>
+      <p class="muted" id="inv-total-hint">Select lines to preview the total.</p>
+      <div class="form-actions inv-summary-actions">
+        <button class="btn primary" type="submit"
+                onclick="return confirm('Create this invoice for {{ party.name }}?\n\nSelected ledger items will be marked as invoiced.');">
+          Create invoice
+        </button>
+      </div>
+    </aside>
+  </div>
+</form>
+
+<template id="custom-line-tpl">
+  <div class="form-grid inv-custom-row">
+    <label>Name<input name="custom_name" placeholder="e.g. Product not logged"></label>
+    <label>Qty<input name="custom_qty" type="number" step="0.01" min="0" value="1"></label>
+    <label>Rate $<input name="custom_rate" type="number" step="0.01" min="0" value="0" class="inv-custom-rate"></label>
+  </div>
+</template>
+
+<script>
+(function () {
+  var form = document.getElementById("field-invoice");
+  if (!form) return;
+  var totalEl = document.getElementById("inv-total");
+  var hintEl = document.getElementById("inv-total-hint");
+  var addBtn = document.getElementById("add-custom-line");
+  var wrap = document.getElementById("custom-lines");
+  var tpl = document.getElementById("custom-line-tpl");
+  var selectAll = document.getElementById("inv-select-all");
+  var clearAll = document.getElementById("inv-clear-all");
+
+  function money(n) {
+    return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function recalc() {
+    var t = 0;
+    var n = 0;
+    form.querySelectorAll(".inv-item-check:checked").forEach(function (el) {
+      var a = parseFloat(el.getAttribute("data-amt") || "0");
+      if (isFinite(a)) { t += a; n += 1; }
+    });
+    wrap.querySelectorAll(".inv-custom-row").forEach(function (row) {
+      var qty = parseFloat((row.querySelector('input[name="custom_qty"]') || {}).value || "0");
+      var rate = parseFloat((row.querySelector('input[name="custom_rate"]') || {}).value || "0");
+      var name = ((row.querySelector('input[name="custom_name"]') || {}).value || "").trim();
+      if (name && isFinite(qty) && isFinite(rate) && qty * rate) {
+        t += qty * rate;
+        n += 1;
+      }
+    });
+    if (totalEl) totalEl.textContent = money(t);
+    if (hintEl) {
+      hintEl.textContent = n
+        ? (n + " line" + (n === 1 ? "" : "s") + " selected")
+        : "Select lines to preview the total.";
+    }
+  }
+
+  form.addEventListener("change", recalc);
+  form.addEventListener("input", recalc);
+  if (addBtn && tpl && wrap) {
+    addBtn.addEventListener("click", function () {
+      wrap.appendChild(tpl.content.cloneNode(true));
+      recalc();
+    });
+  }
+  if (selectAll) {
+    selectAll.addEventListener("click", function () {
+      form.querySelectorAll(".inv-item-check").forEach(function (el) { el.checked = true; });
+      recalc();
+    });
+  }
+  if (clearAll) {
+    clearAll.addEventListener("click", function () {
+      form.querySelectorAll(".inv-item-check").forEach(function (el) { el.checked = false; });
+      recalc();
+    });
+  }
+  recalc();
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,9 +1,0 @@
-﻿START HERE (Mac)
-
-1. Copy this whole folder (or the .zip) to your USB drive
-2. On the Mac, copy it off the USB to Documents
-3. Open Cursor → File → Open Folder → select this folder
-4. Then tell Cursor: "set up and run this app on Mac"
-
-Your farm data IS included: data/beam_farm_ops.db
-Login: admin / farm2026

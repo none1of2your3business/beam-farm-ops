@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Hybrids · Add New</p>
+    <h1>{{ page_title }}</h1>
+    <p class="lede">{{ page_lede }}</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="{{ back_href or '/inputs/hybrids/sheet' }}">Back</a>
+  </div>
+</section>
+
+{% if error %}
+<p class="banner-warn">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="{{ form_action }}" class="form-grid panel">
+  {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
+  {% if hybrid_id %}<input type="hidden" name="hybrid_id" value="{{ hybrid_id }}">{% endif %}
+  <label>{{ field_label }}
+    <input name="{{ field_name }}" required autofocus placeholder="{{ placeholder }}">
+  </label>
+  <label class="full">Notes<textarea name="notes" rows="2" placeholder="optional"></textarea></label>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Save</button>
+    <a class="btn" href="{{ back_href or '/inputs/hybrids/sheet' }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

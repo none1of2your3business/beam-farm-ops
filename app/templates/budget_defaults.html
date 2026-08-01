@@ -1,0 +1,449 @@
+{% extends "base.html" %}
+{% from "_field_picker.html" import field_picker %}
+{% block title %}Budget defaults — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner bud-banner tone-neutral">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Budget · starter templates</p>
+    <h1>Defaults hub</h1>
+    <p class="lede">
+      Set seed and fertilizer with the calculators, add any other $/ac costs,
+      then save or apply the starter onto the fields you pick.
+    </p>
+  </div>
+</section>
+
+{% if not year %}
+<p class="empty">Set an active crop year in <a href="/settings">Settings</a> first.</p>
+{% else %}
+
+<form method="post" action="/budget/defaults/save" class="bud-defaults-form" id="bud-defaults-form" data-autosave-action="save">
+  <section class="panel bud-def-travel">
+    <h2>Travel (farm-wide)</h2>
+    <p class="muted">Hours = round trips × 2 × (miles ÷ speed). Cost = hours × $/hr.</p>
+    <div class="form-grid">
+      <label>Road speed (mph)
+        <input type="number" name="travel_speed" step="1" min="1" value="{{ '%.0f'|format(travel_speed) }}">
+      </label>
+      <label>Equipment + operator ($/hr)
+        <input type="number" name="travel_rate" step="1" min="0" value="{{ '%.0f'|format(travel_rate) }}">
+      </label>
+    </div>
+  </section>
+
+  <div class="bud-def-crop-tabs" role="tablist">
+    <button type="button" class="bud-def-tab is-active" data-crop-panel="corn">Corn template</button>
+    <button type="button" class="bud-def-tab" data-crop-panel="soy">Soybean template</button>
+  </div>
+
+  {% macro crop_panel(prefix, label, tmpl, tone) -%}
+  <section class="panel bud-def-panel tone-{{ tone }}" data-panel="{{ prefix }}" data-crop-calc="{{ prefix }}" {% if prefix != 'corn' %}hidden{% endif %}>
+    <h2>{{ label }} starter</h2>
+
+    {# ——— Seed calculator ——— #}
+    <section class="bud-calc tone-seed" data-seed-calc>
+      <div class="bud-calc-head">
+        <div>
+          <h3>Seed calculator</h3>
+          <p class="muted">$/ac = (population ÷ kernels per bag) × $/bag</p>
+        </div>
+        <div class="bud-calc-result">
+          <span>Seed $/ac</span>
+          <strong data-seed-ac>—</strong>
+        </div>
+      </div>
+      <div class="form-grid">
+        <label>Population (seeds/ac)
+          <input type="number" name="{{ prefix }}_seed_pop" class="seed-pop" step="100" min="0"
+                 value="{% if tmpl.seed.population is not none %}{{ '%.0f'|format(tmpl.seed.population) }}{% endif %}"
+                 placeholder="e.g. 34000">
+        </label>
+        <label>Kernels / bag
+          <input type="number" name="{{ prefix }}_seed_bag" class="seed-bag" step="1000" min="1"
+                 value="{{ '%.0f'|format(tmpl.seed.bag_kernels or 80000) }}">
+        </label>
+        <label>$ / bag (unit)
+          <input type="number" name="{{ prefix }}_seed_cost" class="seed-cost" step="0.01" min="0"
+                 value="{% if tmpl.seed.cost_per_bag is not none %}{{ '%.2f'|format(tmpl.seed.cost_per_bag) }}{% endif %}"
+                 placeholder="e.g. 280">
+        </label>
+        <label class="bud-calc-readonly">Bags / ac
+          <output data-seed-bags class="bud-calc-output">—</output>
+        </label>
+      </div>
+      <p class="muted bud-calc-formula" data-seed-formula></p>
+    </section>
+
+    {# ——— Fertilizer calculator ——— #}
+    <section class="bud-calc tone-fert" data-fert-calc>
+      <div class="bud-calc-head">
+        <div>
+          <h3>Fertilizer calculator</h3>
+          <p class="muted">Dry: (lb/ac ÷ 2000) × $/ton · Liquid: (gal/ac × lb/gal ÷ 2000) × $/ton</p>
+        </div>
+        <div class="bud-calc-result">
+          <span>Fert $/ac</span>
+          <strong data-fert-ac>—</strong>
+        </div>
+      </div>
+      <div class="bud-def-fert" data-fert-rows>
+        {% for i in range(6) %}
+        {% set row = tmpl.fert[i] if i < tmpl.fert|length else {} %}
+        {% set pname = row.get('product_name') or '' %}
+        <div class="bud-def-fert-card" data-fert-row>
+          <div class="bud-def-fert-main">
+            <label>Product
+              <select name="{{ prefix }}_fert_name" class="fert-name">
+                <option value="">— select product —</option>
+                {% for p in fert_products %}
+                <option value="{{ p.name }}"
+                        data-price="{{ '%.2f'|format(p.price_per_ton or 0) }}"
+                        data-density="{% if p.density_lb_per_gal is not none %}{{ '%.2f'|format(p.density_lb_per_gal) }}{% endif %}"
+                        data-unit="{{ p.apply_unit or 'lb' }}"
+                        data-form="{{ p.form or 'dry' }}"
+                        {% if pname == p.name %}selected{% endif %}>
+                  {{ p.name }} · {{ p.form }} · ${{ '%.0f'|format(p.price_per_ton or 0) }}/ton
+                </option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Rate / ac
+              <input type="number" name="{{ prefix }}_fert_rate" class="fert-rate" step="0.01" min="0"
+                     value="{% if row.get('rate_per_ac') %}{{ '%.2f'|format(row.rate_per_ac) }}{% endif %}"
+                     placeholder="lb or gal">
+            </label>
+            <label>Unit
+              <select name="{{ prefix }}_fert_unit" class="fert-unit">
+                <option value="lb" {% if (row.get('apply_unit') or 'lb') == 'lb' %}selected{% endif %}>lb/ac</option>
+                <option value="gal" {% if row.get('apply_unit') == 'gal' %}selected{% endif %}>gal/ac</option>
+              </select>
+            </label>
+            <label>$ / ton
+              <input type="number" name="{{ prefix }}_fert_price" class="fert-price" step="0.01" min="0"
+                     value="{% if row.get('price_per_ton') is not none %}{{ '%.2f'|format(row.price_per_ton) }}{% endif %}"
+                     placeholder="avg $/ton">
+            </label>
+            <label>lb / gal
+              <input type="number" name="{{ prefix }}_fert_density" class="fert-density" step="0.01" min="0"
+                     value="{% if row.get('density_lb_per_gal') is not none %}{{ '%.2f'|format(row.density_lb_per_gal) }}{% endif %}"
+                     placeholder="liquids">
+            </label>
+          </div>
+          <div class="bud-def-fert-sum">
+            <span data-fert-row-ac>—</span>
+            <em data-fert-row-tons></em>
+            <button type="button" class="btn ghost fert-row-clear" title="Clear row">Clear</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="bud-calc-actions">
+        <a class="btn ghost" href="/inputs?focus=fert&next=/budget/defaults">Edit products / purchases</a>
+        <span class="muted" data-fert-formula></span>
+      </div>
+    </section>
+
+    {# ——— Other costs (seed/fert come from calculators above) ——— #}
+    <section class="bud-calc tone-other">
+      <div class="bud-calc-head">
+        <div>
+          <h3>Other costs ($/ac)</h3>
+          <p class="muted">Extras beyond seed and fertilizer. Seed and fert $/ac come from the calculators above.</p>
+        </div>
+      </div>
+      {# Hidden — filled from calculators on save so board categories stay in sync #}
+      <input type="hidden" name="{{ prefix }}_cat_seed" class="cat-seed" value="{{ '%.2f'|format(tmpl.categories.get('seed', 0)) }}">
+      <input type="hidden" name="{{ prefix }}_cat_fertilizer" class="cat-fertilizer" value="{{ '%.2f'|format(tmpl.categories.get('fertilizer', 0)) }}">
+      <div class="form-grid bud-def-cats">
+        {% for key, cat_label in categories if key not in ['seed', 'fertilizer'] %}
+        <label>{{ cat_label }}
+          <input type="number" name="{{ prefix }}_cat_{{ key }}" class="cat-{{ key }}" step="0.01" min="0"
+                 value="{{ '%.2f'|format(tmpl.categories.get(key, 0)) }}"
+                 data-other-cat="1">
+        </label>
+        {% endfor %}
+        <label>Margin goal $/ac
+          <input type="number" name="{{ prefix }}_margin" class="margin-goal" step="0.01"
+                 value="{{ '%.2f'|format(tmpl.margin_goal_ac or 0) }}">
+        </label>
+      </div>
+    </section>
+
+    <h3 style="margin-top:1rem">Field passes</h3>
+    <p class="muted">Turn on each pass and set self or hire $/ac. These copy onto selected fields.</p>
+    <div class="bud-pass-table-wrap">
+      <table class="data-table bud-pass-table">
+        <thead>
+          <tr>
+            <th>On</th>
+            <th>Pass</th>
+            <th>Hired?</th>
+            <th>Self $/ac</th>
+            <th>Hire $/ac</th>
+            <th>Trips</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key, plabel, trips, _op in pass_catalog %}
+          {% set spec = tmpl.passes.get(key, {}) %}
+          <tr>
+            <td>
+              <input type="hidden" name="{{ prefix }}_pass_key" value="{{ key }}">
+              <input type="checkbox" name="{{ prefix }}_pass_on" value="{{ key }}" class="pass-on" {% if spec.get('enabled', 1) %}checked{% endif %}>
+            </td>
+            <td>{{ plabel }}</td>
+            <td><input type="checkbox" name="{{ prefix }}_pass_hired" value="{{ key }}" {% if spec.get('is_hired') %}checked{% endif %}></td>
+            <td><input type="number" name="{{ prefix }}_pass_self" class="pass-self" step="0.01" min="0" value="{{ '%.2f'|format(spec.get('self_rate_ac') or 0) }}"></td>
+            <td><input type="number" name="{{ prefix }}_pass_hire" class="pass-hire" step="0.01" min="0" value="{{ '%.2f'|format(spec.get('hired_rate_ac') or 0) }}"></td>
+            <td><input type="number" name="{{ prefix }}_pass_trips" step="0.5" min="0" value="{{ '%.1f'|format(spec.get('round_trips') or trips) }}"></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="muted bud-pass-ops-sum">Enabled pass machinery ≈ <strong data-pass-ac>—</strong> $/ac (before travel)</p>
+
+    <div class="bud-plan-summary" data-plan-summary>
+      <h3>Starter plan</h3>
+      <ul>
+        <li><span>Seed</span><strong data-sum-seed>—</strong></li>
+        <li><span>Fertilizer</span><strong data-sum-fert>—</strong></li>
+        <li><span>Other costs</span><strong data-sum-other>—</strong></li>
+        <li><span>Passes</span><strong data-sum-pass>—</strong></li>
+        <li class="bud-plan-total"><span>Plan total</span><strong data-sum-total>—</strong></li>
+      </ul>
+      <p class="muted">This is what gets copied when you apply planned costs + passes to fields.</p>
+    </div>
+  </section>
+  {%- endmacro %}
+
+  {{ crop_panel('corn', 'Corn', corn, 'profit') }}
+  {{ crop_panel('soy', 'Soybean', soy, 'tight') }}
+
+  <section class="panel bud-def-apply">
+    <h2>Apply to fields</h2>
+    <p class="muted">{{ year.year }} · pick fields, choose what to push, then apply. Save-only keeps the templates without touching fields.</p>
+    {{ field_picker(fields, name='field_ids', label='Fields to apply') }}
+
+    <fieldset class="bud-def-parts">
+      <legend>Include in apply</legend>
+      <label><input type="checkbox" name="part_categories" value="1" checked> Planned $/ac costs</label>
+      <label><input type="checkbox" name="part_passes" value="1" checked> Field passes</label>
+      <label><input type="checkbox" name="part_seed" value="1" checked> Seed rates</label>
+      <label><input type="checkbox" name="part_fert" value="1" checked> Fertilizer rates</label>
+      <label><input type="checkbox" name="part_margin" value="1" checked> Margin goal</label>
+    </fieldset>
+
+    <div class="form-actions bud-def-actions">
+      <button type="submit" class="btn primary" name="action" value="save">Save templates only</button>
+      <button type="submit" class="btn" name="action" value="apply_empty"
+              onclick="return confirmApply('empty')">Save + apply to selected (empty only)</button>
+      <button type="submit" class="btn" name="action" value="apply_overwrite"
+              onclick="return confirmApply('overwrite')">Save + overwrite selected</button>
+      <a class="btn ghost" href="/budget">Board</a>
+      <a class="btn ghost" href="/budget/fields">Field desk</a>
+    </div>
+  </section>
+</form>
+
+<script>
+(function () {
+  function num(el) {
+    if (!el) return NaN;
+    var v = parseFloat(String(el.value || '').replace(',', ''));
+    return isFinite(v) ? v : NaN;
+  }
+  function money(n) {
+    if (!isFinite(n)) return '—';
+    return '$' + n.toFixed(2);
+  }
+  function money0(n) {
+    if (!isFinite(n)) return '—';
+    return '$' + Math.round(n).toLocaleString();
+  }
+
+  function seedAc(pop, bag, cost) {
+    if (!(pop > 0) || !(bag > 0) || !(cost >= 0) || !isFinite(cost)) return NaN;
+    return (pop / bag) * cost;
+  }
+
+  function fertRowAc(rate, unit, price, density) {
+    if (!(rate > 0) || !(price >= 0) || !isFinite(price)) return { ac: NaN, tons: NaN };
+    var tons;
+    if ((unit || 'lb') === 'gal') {
+      if (!(density > 0)) return { ac: NaN, tons: NaN };
+      tons = (rate * density) / 2000;
+    } else {
+      tons = rate / 2000;
+    }
+    return { ac: tons * price, tons: tons };
+  }
+
+  function syncFertProduct(row) {
+    var sel = row.querySelector('.fert-name');
+    if (!sel) return;
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) return;
+    var price = opt.getAttribute('data-price') || '';
+    var dens = opt.getAttribute('data-density') || '';
+    var unit = opt.getAttribute('data-unit') || 'lb';
+    var priceEl = row.querySelector('.fert-price');
+    var densEl = row.querySelector('.fert-density');
+    var unitEl = row.querySelector('.fert-unit');
+    if (priceEl && price !== '') priceEl.value = price;
+    if (densEl) densEl.value = dens;
+    if (unitEl && unit) unitEl.value = unit;
+  }
+
+  function updatePanel(panel) {
+    if (!panel) return;
+
+    // Seed
+    var pop = num(panel.querySelector('.seed-pop'));
+    var bag = num(panel.querySelector('.seed-bag'));
+    var cost = num(panel.querySelector('.seed-cost'));
+    var sAc = seedAc(pop, bag, cost);
+    var bagsAc = (pop > 0 && bag > 0) ? (pop / bag) : NaN;
+    var seedOut = panel.querySelector('[data-seed-ac]');
+    var bagsOut = panel.querySelector('[data-seed-bags]');
+    var seedFormula = panel.querySelector('[data-seed-formula]');
+    if (seedOut) seedOut.textContent = money(sAc);
+    if (bagsOut) bagsOut.textContent = isFinite(bagsAc) ? bagsAc.toFixed(3) : '—';
+    if (seedFormula) {
+      seedFormula.textContent = isFinite(sAc)
+        ? ('(' + Math.round(pop) + ' ÷ ' + Math.round(bag) + ') × $' + cost.toFixed(2) + ' = ' + money(sAc) + '/ac')
+        : 'Enter population, kernels/bag, and $/bag';
+    }
+    var seedHidden = panel.querySelector('.cat-seed');
+    if (seedHidden) seedHidden.value = isFinite(sAc) ? sAc.toFixed(2) : '0';
+
+    // Fert rows
+    var fertTotal = 0;
+    var fertAny = false;
+    panel.querySelectorAll('[data-fert-row]').forEach(function (row) {
+      var rate = num(row.querySelector('.fert-rate'));
+      var unitEl = row.querySelector('.fert-unit');
+      var unit = unitEl ? unitEl.value : 'lb';
+      var price = num(row.querySelector('.fert-price'));
+      var dens = num(row.querySelector('.fert-density'));
+      var calc = fertRowAc(rate, unit, price, dens);
+      var out = row.querySelector('[data-fert-row-ac]');
+      var tonsOut = row.querySelector('[data-fert-row-tons]');
+      if (out) out.textContent = isFinite(calc.ac) ? (money(calc.ac) + '/ac') : '—';
+      if (tonsOut) {
+        tonsOut.textContent = isFinite(calc.tons)
+          ? (calc.tons.toFixed(4) + ' ton/ac')
+          : ((unit === 'gal' && !(dens > 0) && rate > 0) ? 'need lb/gal' : '');
+      }
+      if (isFinite(calc.ac)) {
+        fertTotal += calc.ac;
+        fertAny = true;
+      }
+    });
+    var fertOut = panel.querySelector('[data-fert-ac]');
+    var fertFormula = panel.querySelector('[data-fert-formula]');
+    if (fertOut) fertOut.textContent = fertAny ? money(fertTotal) : '—';
+    if (fertFormula) {
+      fertFormula.textContent = fertAny
+        ? ('Sum of products = ' + money(fertTotal) + '/ac')
+        : 'Add product + rate + $/ton';
+    }
+    var fertHidden = panel.querySelector('.cat-fertilizer');
+    if (fertHidden) fertHidden.value = fertAny ? fertTotal.toFixed(2) : '0';
+
+    // Other costs (manual)
+    var otherAc = 0;
+    panel.querySelectorAll('[data-other-cat]').forEach(function (inp) {
+      var v = num(inp);
+      if (isFinite(v)) otherAc += v;
+    });
+
+    // Pass ops
+    var passAc = 0;
+    panel.querySelectorAll('tbody tr').forEach(function (tr) {
+      var on = tr.querySelector('.pass-on');
+      if (!on || !on.checked) return;
+      var hired = tr.querySelector('input[name$="_pass_hired"]');
+      var selfInp = tr.querySelector('.pass-self');
+      var hireInp = tr.querySelector('.pass-hire');
+      var rate = (hired && hired.checked) ? num(hireInp) : num(selfInp);
+      if (isFinite(rate)) passAc += rate;
+    });
+    var passOut = panel.querySelector('[data-pass-ac]');
+    if (passOut) passOut.textContent = money(passAc);
+
+    // Starter plan summary
+    var seedPart = isFinite(sAc) ? sAc : 0;
+    var fertPart = fertAny ? fertTotal : 0;
+    var total = seedPart + fertPart + otherAc + passAc;
+    var set = function (sel, val, ok) {
+      var el = panel.querySelector(sel);
+      if (el) el.textContent = ok ? money(val) : '—';
+    };
+    set('[data-sum-seed]', seedPart, isFinite(sAc));
+    set('[data-sum-fert]', fertPart, fertAny);
+    set('[data-sum-other]', otherAc, true);
+    set('[data-sum-pass]', passAc, true);
+    var totalEl = panel.querySelector('[data-sum-total]');
+    if (totalEl) totalEl.textContent = money0(total);
+  }
+
+  function wirePanel(panel) {
+    panel.addEventListener('input', function () { updatePanel(panel); });
+    panel.addEventListener('change', function (e) {
+      var t = e.target;
+      if (t && t.classList && t.classList.contains('fert-name')) {
+        syncFertProduct(t.closest('[data-fert-row]'));
+      }
+      updatePanel(panel);
+    });
+    panel.querySelectorAll('.fert-row-clear').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var row = btn.closest('[data-fert-row]');
+        if (!row) return;
+        row.querySelectorAll('input').forEach(function (inp) { inp.value = ''; });
+        row.querySelectorAll('select').forEach(function (sel) {
+          if (sel.classList.contains('fert-unit')) sel.value = 'lb';
+          else sel.value = '';
+        });
+        updatePanel(panel);
+      });
+    });
+    updatePanel(panel);
+  }
+
+  document.querySelectorAll('[data-crop-calc]').forEach(wirePanel);
+
+  document.querySelectorAll('.bud-def-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var id = tab.getAttribute('data-crop-panel');
+      document.querySelectorAll('.bud-def-tab').forEach(function (t) { t.classList.toggle('is-active', t === tab); });
+      document.querySelectorAll('.bud-def-panel').forEach(function (p) {
+        p.hidden = p.getAttribute('data-panel') !== id;
+      });
+    });
+  });
+
+  window.confirmApply = function (mode) {
+    var n = document.querySelectorAll('#bud-defaults-form input[name="field_ids"]:checked').length;
+    if (!n) {
+      alert('Choose at least one field to apply.');
+      return false;
+    }
+    if (mode === 'overwrite') {
+      return confirm('Overwrite budget plans on ' + n + ' selected field' + (n === 1 ? '' : 's') + '?');
+    }
+    return true;
+  };
+
+  // Keep hidden seed/fert $/ac synced from calculators before save
+  var form = document.getElementById('bud-defaults-form');
+  if (form) {
+    form.addEventListener('submit', function () {
+      document.querySelectorAll('[data-crop-calc]').forEach(updatePanel);
+    });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}

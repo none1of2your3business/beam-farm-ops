@@ -27,7 +27,7 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-Or double-click **`run.bat`**. Open **http://127.0.0.1:8001** — `admin` / `farm2026`.
+Or double-click **`run.bat`**. Open **http://127.0.0.1:8001** — `admin` / `farm2026`. Set a strong `SECRET_KEY` in `.env` (startup warns loudly if it is still the default).
 
 ## Cross-platform sync (Windows + Mac + iPhone)
 

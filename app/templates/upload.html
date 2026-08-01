@@ -4,22 +4,24 @@
 <section class="page-head"><div><p class="eyebrow">Import hub</p><h1>Master Upload</h1></div>
 <div class="form-actions"><a class="btn ghost" href="/photos">Photos</a><a class="btn ghost" href="/export">Excel export</a></div></section>
 {% if message %}<p class="panel" style="border-color:var(--accent)">{{ message }}</p>{% endif %}
-<p class="lede">Drop Cargill CSVs, crop-acres Excel, planting season reports, Panorama files, or chem / mix sheets. Guided recipes open a preview so you confirm columns before anything is saved.</p>
+<p class="lede">Drop CG&B Schedules CSVs, Cargill contract reports, crop-acres Excel, Panorama files, or chem / mix sheets. Contract files open a guided review so you confirm matching before anything is saved.</p>
 <form method="post" action="/upload/file" enctype="multipart/form-data" class="form-grid panel">
   <label>Type
     <select name="import_type">
-      <option value="planting_csv">Planting / season report CSV (guided)</option>
-      <option value="cargill_csv">Cargill / elevator CSV (auto)</option>
+      <option value="cgb_contracts">CG&B Schedules (CSV) — map columns</option>
+      <option value="cargill_contracts">Cargill Contract Report (Excel/CSV) — map columns</option>
+      <option value="cargill_csv">Cargill / elevator CSV tickets (auto)</option>
       <option value="fields_excel">Crop acres Excel (auto)</option>
+      <option value="panorama_planting">Panorama Seasonal Inputs (planting CSV)</option>
       <option value="panorama_file">Panorama / 20|20 file</option>
       <option value="spray_mix">Chem prices / spray mix (guided)</option>
       <option value="generic">Generic / store only</option>
     </select>
   </label>
-  <label class="full">File<input type="file" name="file" required></label>
+  <label class="full">File<input type="file" name="file" accept=".xlsx,.xlsm,.csv,.txt" required></label>
   <div class="form-actions full"><button class="btn primary" type="submit">Upload</button></div>
 </form>
-<p class="muted"><a href="/inputs/upload">Or open Inputs guided upload →</a></p>
+<p class="muted">For CG&B <strong>Schedules-….csv</strong> or Cargill <strong>Contract Report.xlsx</strong>, use the matching option — you’ll confirm column matching and skip duplicates. Wrong type is usually auto-detected from the headers.</p>
 <form method="post" action="/upload/save-mapping" class="form-grid panel">
   <h2 class="full" style="margin:0;font-family:var(--display)">Save column mapping template</h2>
   <label>Name<input name="name" required placeholder="My Cargill layout"></label>
@@ -33,6 +35,23 @@
 {% endif %}
 <p class="muted">Panorama live API configured: {% if live_ready %}yes{% else %}no — on hold / see /panorama{% endif %}</p>
 {% if batches %}
-<ul class="simple-list">{% for b in batches %}<li><span><strong>{{ b.filename }}</strong><span class="muted">{{ b.import_type }} · {{ b.status }} · {{ b.row_count }} rows · {{ b.notes }}</span></span></li>{% endfor %}</ul>
+<ul class="simple-list">
+  {% for b in batches %}
+  <li>
+    <span>
+      <strong>{{ b.filename }}</strong>
+      <span class="muted">{{ b.import_type }} · {{ b.status }} · {{ b.row_count }} rows · {{ b.notes }}</span>
+    </span>
+    {% if b.status not in ['discarded', 'committed', 'complete'] %}
+    <form method="post" action="/upload/batches/{{ b.id }}/discard" style="display:inline"
+          onsubmit="return confirm('Discard import “{{ b.filename }}”?');">
+      <button type="submit" class="linkish danger">Discard</button>
+    </form>
+    {% elif b.import_type in ['cgb_contracts','cargill_contracts'] and b.status not in ['discarded'] %}
+    <a href="/upload/contracts/{{ b.id }}">Open</a>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
 {% endif %}
 {% endblock %}

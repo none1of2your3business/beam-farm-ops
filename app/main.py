@@ -1,17 +1,24 @@
+import logging
+import os
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import DEFAULT_USERS, hash_password, verify_password
 from app.database import Base, SessionLocal, engine, get_db
 from app.equipment_costs import cost_per_acre, equipment_annual_costs
+from app.flash import redirect_flash, set_flash
+from app.httputil import wants_json
+from app.formutil import as_list, parse_float
+from app import local_backup
 from app.migrate import run_migrations
 from app.models import (
     AppSettings,
@@ -31,25 +38,124 @@ from app import permissions as perms
 from app.importers import is_summary_field_name
 from app.routers_extra import router as extra_router
 from app.routers_more import router as more_router
+from app.routers_lists import router as lists_router
+from app.routers_budget import router as budget_router
 from app.templating import templates
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 
-app = FastAPI(title="Beam Farm Ops")
+DEFAULT_SECRET_KEY = "beam-farm-ops-change-me-in-production"
+WEAK_SECRET_KEYS = {
+    DEFAULT_SECRET_KEY,
+    "change-me-to-a-long-random-string",
+    "",
+}
+_log = logging.getLogger("beam_farm_ops")
+
+
+def _secret_key() -> str:
+    return (os.getenv("SECRET_KEY") or DEFAULT_SECRET_KEY).strip() or DEFAULT_SECRET_KEY
+
+
+def _warn_if_weak_secret() -> None:
+    secret = _secret_key()
+    if secret in WEAK_SECRET_KEYS:
+        msg = (
+            "SECURITY: SECRET_KEY is missing or still the default. "
+            "Set a long random SECRET_KEY in .env before any shared/deployed use."
+        )
+        _log.warning(msg)
+        logging.getLogger("uvicorn.error").warning(msg)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _warn_if_weak_secret()
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
+    db = SessionLocal()
+    try:
+        seed_initial_data(db)
+        from app.lookups import seed_lookups
+
+        seed_lookups(db)
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="Beam Farm Ops", lifespan=_lifespan)
+
+@app.middleware("http")
+async def fetch_post_json_redirects(request: Request, call_next):
+    """Turn POST redirects into JSON for app-wide fetch autosave.
+
+    Registered before SessionMiddleware so we can clear flash and return JSON
+    before the session cookie is written.
+    """
+    response = await call_next(request)
+    if request.method != "POST" or not wants_json(request):
+        return response
+    if response.status_code not in (301, 302, 303, 307, 308):
+        return response
+    loc = response.headers.get("location") or ""
+    path = loc.split("?", 1)[0]
+    if path.endswith("/login") or path == "/login":
+        return JSONResponse(
+            {"ok": False, "error": "Please sign in again"},
+            status_code=401,
+        )
+    try:
+        request.session.pop("flash", None)
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "redirect": loc})
+
+# Last added = outermost: session wraps the fetch JSON middleware.
 app.add_middleware(
     SessionMiddleware,
-    secret_key=__import__("os").getenv("SECRET_KEY", "beam-farm-ops-change-me-in-production"),
+    secret_key=_secret_key(),
 )
+
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+# Register before /fields/{field_id} so /fields/lists is not captured as an id
+app.include_router(lists_router)
 
 OWNERSHIP_LABELS = {
     "operated_by_me": "Operated by me",
     "on_shares": "On shares",
     "custom_work": "Custom work",
 }
+
+
+def _normalize_ownership_filter(raw: list[str] | str | None) -> list[str]:
+    """Parse ownership filter query values. Empty list = show all."""
+    allowed = list(OWNERSHIP_LABELS.keys())
+    allowed_set = set(allowed)
+    items: list[str] = []
+    if raw is None:
+        return []
+    parts = [raw] if isinstance(raw, str) else list(raw)
+    for part in parts:
+        for bit in str(part or "").split(","):
+            bit = bit.strip()
+            if not bit or bit == "all":
+                continue
+            if bit in allowed_set and bit not in items:
+                items.append(bit)
+    if not items or set(items) == allowed_set:
+        return []
+    return items
+
+
+def _ownership_query(selected: list[str]) -> str:
+    """Query string fragment for ownership multi-select (no leading &)."""
+    if not selected:
+        return ""
+    return "&".join(f"ownership={k}" for k in selected)
 LEASE_LABELS = {
-    "cash_rent": "Cash Rent/Property Taxes",
+    "cash_rent": "Cash rent",
     "flex_rent": "Flex rent",
     "crop_share": "Crop share",
     "none": "None",
@@ -104,15 +210,15 @@ def seed_initial_data(db: Session) -> None:
     db.commit()
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    Base.metadata.create_all(bind=engine)
-    run_migrations()
-    db = SessionLocal()
+def admin_still_on_default_password(db: Session) -> bool:
+    """True when the seeded admin account still verifies as farm2026."""
+    admin = db.scalar(select(User).where(User.username == "admin"))
+    if not admin or not admin.password_hash:
+        return False
     try:
-        seed_initial_data(db)
-    finally:
-        db.close()
+        return verify_password("farm2026", admin.password_hash)
+    except Exception:
+        return False
 
 
 def current_user(request: Request) -> dict | None:
@@ -286,25 +392,15 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "year": year,
             "years": years,
             "stats": stats,
-            "fields": fields[:8],
-            "ownership_labels": OWNERSHIP_LABELS,
-            "modules": [
-                {"name": "Fields", "href": "/fields", "status": "ready", "module": "fields", "tone": "green", "blurb": "Acres, rent, costs"},
-                {"name": "Trials", "href": "/trials", "status": "ready", "module": "trials", "tone": "sky", "blurb": "Compare what works"},
-                {"name": "Insights / AI", "href": "/insights", "status": "ready", "module": "insights", "tone": "gold", "blurb": "Briefing + what-if"},
-                {"name": "Panorama sync", "href": "/panorama", "status": "ready", "module": "panorama", "tone": "clay", "blurb": "File upload ready"},
-                {"name": "Storage bins", "href": "/bins", "status": "ready", "module": "grain", "tone": "gold", "blurb": "Inventory & tickets"},
-                {"name": "Marketing and Storage", "href": "/risk", "status": "ready", "module": "risk", "tone": "clay", "blurb": "Futures & basis % sold"},
-                {"name": "Inputs & plans", "href": "/inputs", "status": "ready", "module": "library", "tone": "green", "blurb": "Seed, chem & costs"},
-                {"name": "Purchases", "href": "/purchases", "status": "ready", "module": "purchases", "tone": "sky", "blurb": "Avg cost → fields"},
-                {"name": "Invoices", "href": "/invoices", "status": "ready", "module": "invoices", "tone": "gold", "blurb": "Custom work"},
-                {"name": "Settlements", "href": "/settlements", "status": "ready", "module": "settlements", "tone": "clay", "blurb": "Landlord / partner"},
-                {"name": "Trucking", "href": "/trucking", "status": "ready", "module": "trucking", "tone": "sky", "blurb": "Rates & loads"},
-                {"name": "Equipment", "href": "/equipment", "status": "ready", "module": "equipment", "tone": "green", "blurb": "$/acre ownership"},
-                {"name": "Balance sheet", "href": "/balance", "status": "ready", "module": "balance", "tone": "gold", "blurb": "Banker pack"},
-                {"name": "Scan receipts", "href": "/scan", "status": "ready", "module": "upload", "tone": "sky", "blurb": "Phone photo + guided file"},
-                {"name": "Master Upload", "href": "/upload", "status": "ready", "module": "upload", "tone": "sky", "blurb": "Cargill & Excel"},
-                {"name": "Team access", "href": "/team", "status": "ready", "module": "team", "tone": "green", "blurb": "Roles & logins"},
+            "warn_default_password": admin_still_on_default_password(db),
+            "hubs": [
+                {"name": "Fields", "href": "/fields", "tone": "green", "blurb": "List, sheet, add field"},
+                {"name": "Inputs", "href": "/inputs/ops", "tone": "sky", "blurb": "Catalog, assign, inventory"},
+                {"name": "Bins", "href": "/bins", "tone": "gold", "blurb": "Bins, tickets, truck"},
+                {"name": "Marketing", "href": "/risk", "tone": "board", "blurb": "Board, contracts, carry"},
+                {"name": "Budget", "href": "/budget", "tone": "clay", "blurb": "Field spend, P/L color, money"},
+                {"name": "Capture", "href": "/capture", "tone": "green", "blurb": "Scan, upload, photos"},
+                {"name": "Admin", "href": "/admin", "tone": "sky", "blurb": "Settings, team, log", "owner_only": True},
             ],
             "role": user.get("role"),
             "can_access": perms.can_access,
@@ -363,7 +459,7 @@ def add_year(
 def fields_list(
     request: Request,
     crop: Optional[str] = None,
-    ownership: Optional[str] = None,
+    ownership: list[str] = Query(default=[]),
     view: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
@@ -373,18 +469,31 @@ def fields_list(
 
     year = get_active_year(db)
     fields: list[Field] = []
+    ownership_sel = _normalize_ownership_filter(ownership)
     if year:
         q = (
             select(Field)
             .where(Field.crop_year_id == year.id)
-            .options(joinedload(Field.party))
+            .options(
+                joinedload(Field.party),
+                joinedload(Field.shares).joinedload(FieldShare.party),
+            )
             .order_by(Field.crop, Field.name)
         )
         fields = real_fields(list(db.scalars(q).unique()))
         if crop and crop != "all":
             fields = [f for f in fields if f.crop == crop]
-        if ownership and ownership != "all":
-            fields = [f for f in fields if f.ownership_mode == ownership]
+        if ownership_sel:
+            allowed = set(ownership_sel)
+            fields = [f for f in fields if f.ownership_mode in allowed]
+
+    # Backfill corn planting machinery $ when coverage is already complete
+    if fields:
+        from app.op_cost_ensure import ensure_all_completed_corn_planting_costs
+
+        n_plant = ensure_all_completed_corn_planting_costs(db, fields)
+        if n_plant:
+            db.commit()
 
     corn_cop, soy_cop = _cop_rates(db)
     stats = field_stats(fields)
@@ -392,69 +501,34 @@ def fields_list(
     stats["corn_cop"] = corn_cop
     stats["soy_cop"] = soy_cop
 
-    # Year operations summary for field cards (no need to open each field)
-    field_ops_summary: dict[int, dict] = {}
-    if year and fields:
-        from app.models import FieldHybrid, FieldOperation, FieldSprayMix
-
-        fids = [f.id for f in fields]
-        ops = list(
-            db.scalars(
-                select(FieldOperation)
-                .where(FieldOperation.field_id.in_(fids))
-                .order_by(FieldOperation.op_date.desc(), FieldOperation.id.desc())
-            )
-        )
-        hybrid_links = list(
-            db.scalars(select(FieldHybrid).where(FieldHybrid.field_id.in_(fids)))
-        )
-        spray_links = list(
-            db.scalars(select(FieldSprayMix).where(FieldSprayMix.field_id.in_(fids)))
-        )
-        for fid in fids:
-            field_ops_summary[fid] = {"types": [], "labels": [], "count": 0, "latest": None}
-
-        type_order: dict[int, list[str]] = {fid: [] for fid in fids}
-        latest: dict[int, object] = {}
-        counts: dict[int, int] = {fid: 0 for fid in fids}
-
-        for o in ops:
-            fid = o.field_id
-            counts[fid] = counts.get(fid, 0) + 1
-            label = (o.op_type or "Op").strip() or "Op"
-            if label not in type_order[fid]:
-                type_order[fid].append(label)
-            d = o.op_date
-            if d and (fid not in latest or (latest[fid] is None or d > latest[fid])):
-                latest[fid] = d
-
-        # Fallbacks when assignments exist without a FieldOperation row yet
-        hybrid_fields = {link.field_id for link in hybrid_links}
-        spray_fields = {link.field_id for link in spray_links}
-        for fid in hybrid_fields:
-            if "Planting" not in type_order.get(fid, []) and not any(
-                t.casefold().startswith("plant") for t in type_order.get(fid, [])
-            ):
-                type_order.setdefault(fid, []).append("Seed assigned")
-                counts[fid] = counts.get(fid, 0) + 1
-        for fid in spray_fields:
-            if "Spraying" not in type_order.get(fid, []) and not any(
-                "spray" in t.casefold() for t in type_order.get(fid, [])
-            ):
-                type_order.setdefault(fid, []).append("Spray assigned")
-                counts[fid] = counts.get(fid, 0) + 1
-
-        for fid in fids:
-            field_ops_summary[fid] = {
-                "types": type_order.get(fid, [])[:6],
-                "count": counts.get(fid, 0),
-                "latest": latest.get(fid),
-            }
-
     view_mode = (view or "overview").strip().lower()
     if view_mode not in ("overview", "sheet"):
         view_mode = "overview"
 
+    farm_with_parties: list[Party] = []
+    share_partners_by_field: dict[int, list[dict]] = {}
+    if view_mode == "sheet":
+        farm_with_parties = _farm_with_parties(db)
+        for f in fields:
+            share_partners_by_field[f.id] = _field_share_partner_rows(f)
+
+    field_cards: list[dict] = []
+    ledger_by_id: dict[int, dict] = {}
+    year_cost = 0.0
+    year_acres = 0.0
+    year_cost_ac = None
+    if view_mode == "overview" and year and fields:
+        from app.field_ledger import load_year_field_cards
+
+        field_cards, meta = load_year_field_cards(db, year, fields)
+        ledger_by_id = {c["field"].id: c for c in field_cards}
+        year_cost = meta["year_cost"]
+        year_acres = meta["year_acres"]
+        year_cost_ac = meta["year_cost_ac"]
+        stats["year_cost"] = year_cost
+        stats["year_cost_ac"] = year_cost_ac
+
+    ownership_qs = _ownership_query(ownership_sel)
     template = "fields_sheet.html" if view_mode == "sheet" else "fields.html"
     return templates.TemplateResponse(
         template,
@@ -465,17 +539,25 @@ def fields_list(
             "farm_name": farm_name(db),
             "year": year,
             "fields": fields,
+            "field_cards": field_cards,
+            "ledger_by_id": ledger_by_id,
             "stats": stats,
+            "year_cost": year_cost,
+            "year_acres": year_acres,
+            "year_cost_ac": year_cost_ac,
             "filter_crop": crop or "all",
-            "filter_ownership": ownership or "all",
+            "filter_ownerships": ownership_sel,
+            "filter_ownership": ",".join(ownership_sel) if ownership_sel else "all",
+            "ownership_qs": ownership_qs,
             "ownership_labels": OWNERSHIP_LABELS,
             "lease_labels": LEASE_LABELS,
             "view": view_mode,
             "corn_cop": corn_cop,
             "soy_cop": soy_cop,
+            "farm_with_parties": farm_with_parties,
+            "share_partners_by_field": share_partners_by_field,
             "saved": request.query_params.get("saved"),
             "msg": request.query_params.get("msg"),
-            "field_ops_summary": field_ops_summary,
         },
     )
 
@@ -484,7 +566,7 @@ def fields_list(
 def fields_sheet(
     request: Request,
     crop: Optional[str] = None,
-    ownership: Optional[str] = None,
+    ownership: list[str] = Query(default=[]),
     db: Session = Depends(get_db),
 ):
     return fields_list(request, crop=crop, ownership=ownership, view="sheet", db=db)
@@ -500,6 +582,7 @@ def fields_sheet_save(
     expected_yield: list[str] = Form(default=[]),
     rent_per_acre: list[str] = Form(default=[]),
     ownership_mode: list[str] = Form(default=[]),
+    share_partners: list[str] = Form(default=[]),
     notes: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
@@ -511,12 +594,16 @@ def fields_sheet_save(
     if not year:
         return RedirectResponse("/settings", status_code=303)
 
-    def as_list(vals):
-        if vals is None:
-            return []
-        if isinstance(vals, (str, int, float)):
-            return [vals]
-        return list(vals)
+    wants_json = (
+        (request.headers.get("x-requested-with") or "").lower() == "fetch"
+        or (request.query_params.get("format") or "").lower() == "json"
+        or "application/json" in (request.headers.get("accept") or "")
+    )
+
+    def _reject(message: str):
+        if wants_json:
+            return JSONResponse({"ok": False, "error": message}, status_code=400)
+        return redirect_flash(request, "/fields/sheet", message, "error")
 
     ids = [int(x) for x in as_list(field_id)]
     crops = as_list(crop)
@@ -525,29 +612,85 @@ def fields_sheet_save(
     yields = as_list(expected_yield)
     rents = as_list(rent_per_acre)
     owns = as_list(ownership_mode)
+    partners_raw = as_list(share_partners)
     notes_l = as_list(notes)
+
+    n = len(ids)
+    aligned = {
+        "crop": crops,
+        "acres_total": totals,
+        "acres_mine": mines,
+        "expected_yield": yields,
+        "rent_per_acre": rents,
+        "ownership_mode": owns,
+        "share_partners": partners_raw,
+        "notes": notes_l,
+    }
+    for label, vals in aligned.items():
+        if len(vals) != n:
+            return _reject(
+                f"Fields sheet row mismatch ({label}: {len(vals)} vs {n} fields) — nothing saved."
+            )
+
+    # Bind each submitted field_id to its own row values (never rely on sparse index fallback)
+    by_id: dict[int, dict] = {}
+    for i, fid in enumerate(ids):
+        by_id[fid] = {
+            "crop": crops[i],
+            "acres_total": totals[i],
+            "acres_mine": mines[i],
+            "expected_yield": yields[i],
+            "rent_per_acre": rents[i],
+            "ownership_mode": owns[i],
+            "share_partners": partners_raw[i],
+            "notes": notes_l[i],
+        }
 
     allowed_crops = {"Corn", "Soybeans", "None"}
     allowed_own = set(OWNERSHIP_LABELS.keys())
     updated = 0
+    partner_pct_warn = False
 
-    for i, fid in enumerate(ids):
+    from app import marketing_analytics as mkt
+
+    for fid, row in by_id.items():
         field = db.get(Field, fid)
         if not field or field.crop_year_id != year.id:
             continue
-        new_crop = str(crops[i] if i < len(crops) else field.crop).strip() or "None"
+        _ = list(field.shares or [])
+        new_crop = str(row["crop"] or "").strip() or "None"
         if new_crop not in allowed_crops:
             new_crop = field.crop
-        new_own = str(owns[i] if i < len(owns) else field.ownership_mode).strip()
+        new_own = str(row["ownership_mode"] or "").strip()
         if new_own not in allowed_own:
             new_own = field.ownership_mode
 
-        at = _parse_float(str(totals[i] if i < len(totals) else field.acres_total)) or 0
-        am = _parse_float(str(mines[i] if i < len(mines) else field.acres_mine)) or 0
-        ey_raw = str(yields[i] if i < len(yields) else "")
-        ey = _parse_float(ey_raw, default=None) if ey_raw.strip() else None
-        rp = _parse_float(str(rents[i] if i < len(rents) else field.rent_per_acre)) or 0
-        nt = str(notes_l[i] if i < len(notes_l) else (field.notes or "")).strip() or None
+        at = parse_float(str(row["acres_total"])) or 0
+        am = parse_float(str(row["acres_mine"])) or 0
+        ey_raw = str(row["expected_yield"] or "")
+        ey = parse_float(ey_raw, default=None) if ey_raw.strip() else None
+        rp = parse_float(str(row["rent_per_acre"])) or 0
+        nt = str(row["notes"] or "").strip() or None
+
+        parsed_partners: list[tuple[int, float | None]] = []
+        if new_own == "on_shares":
+            parsed_partners = _parse_sheet_share_partners(str(row["share_partners"] or ""))
+
+        old_rows = _field_share_partner_rows(field)
+        old_ids = [r["party_id"] for r in old_rows]
+        new_ids = [pid for pid, _ in parsed_partners]
+        old_pct = {r["party_id"]: round(float(r["pct"]), 2) for r in old_rows}
+        new_pct = {
+            pid: (round(float(pct), 2) if pct is not None else None) for pid, pct in parsed_partners
+        }
+        pct_changed = any(
+            new_pct.get(pid) is not None and new_pct.get(pid) != old_pct.get(pid) for pid in new_ids
+        )
+        partner_changed = new_own == "on_shares" and (
+            field.ownership_mode != "on_shares"
+            or old_ids != new_ids
+            or pct_changed
+        )
 
         changed = (
             field.crop != new_crop
@@ -557,7 +700,50 @@ def fields_sheet_save(
             or float(field.rent_per_acre or 0) != float(rp)
             or field.ownership_mode != new_own
             or (field.notes or None) != nt
+            or partner_changed
         )
+
+        party_objs: list = []
+        pcts: list[float] = []
+        me_pct: float | None = None
+        if new_own == "on_shares" and parsed_partners:
+            old_pct_by_id = {r["party_id"]: float(r["pct"]) for r in old_rows}
+            me_pct = float(field.my_share_pct) if field.my_share_pct is not None else None
+            if me_pct is None and at > 0:
+                me_pct = round(100.0 * am / at, 1)
+            if me_pct is None:
+                me_pct = 50.0
+            remaining = max(0.0, 100.0 - me_pct)
+
+            for pid, pct in parsed_partners:
+                party = db.get(Party, pid)
+                if not party:
+                    continue
+                party_objs.append(party)
+                if pct is not None:
+                    pcts.append(float(pct))
+                elif pid in old_pct_by_id and old_ids == new_ids:
+                    pcts.append(old_pct_by_id[pid])
+                else:
+                    pcts.append(-1.0)
+
+            if party_objs:
+                if any(p < 0 for p in pcts):
+                    known_sum = sum(p for p in pcts if p >= 0)
+                    slots = [i for i, p in enumerate(pcts) if p < 0]
+                    left = max(0.0, remaining - known_sum)
+                    if slots:
+                        each = round(left / len(slots), 2)
+                        for j, idx in enumerate(slots):
+                            pcts[idx] = (
+                                each
+                                if j < len(slots) - 1
+                                else round(left - each * (len(slots) - 1), 2)
+                            )
+                partner_sum = sum(float(p) for p in pcts)
+                if abs((me_pct + partner_sum) - 100.0) > 0.5:
+                    partner_pct_warn = True
+
         if not changed:
             continue
 
@@ -569,9 +755,27 @@ def fields_sheet_save(
         field.ownership_mode = new_own
         field.notes = nt
         field.updated_at = datetime.utcnow()
+
+        if partner_changed and party_objs and me_pct is not None:
+            mkt.set_field_share_partners(
+                db,
+                field,
+                party_objs,
+                me_pct=me_pct,
+                partner_pcts=pcts,
+            )
+
         updated += 1
 
     db.commit()
+    warn_txt = "Partners don’t total 100% — check %s." if partner_pct_warn else None
+    if wants_json:
+        payload = {"ok": True, "saved": updated}
+        if warn_txt:
+            payload["warning"] = warn_txt
+        return JSONResponse(payload)
+    if warn_txt:
+        set_flash(request, warn_txt, "warn")
     return RedirectResponse(f"/fields/sheet?saved={updated}", status_code=303)
 
 
@@ -594,6 +798,102 @@ def _ensure_party(db: Session, name: str, party_type: str = "partner") -> Party 
     db.add(party)
     db.flush()
     return party
+
+
+def _farm_with_parties(db: Session) -> list[Party]:
+    """People you farm with — partners & landlords, then other party types."""
+    parties = list(db.scalars(select(Party).order_by(Party.name)))
+    preferred = {"partner", "landlord"}
+    preferred_list = [p for p in parties if (p.party_type or "").lower() in preferred]
+    # If the farm only has partners/landlords tagged, use that; otherwise show all
+    # (same people list used for grain bins / contracts "farmed with").
+    pool = preferred_list if preferred_list else parties
+    rank = {"partner": 0, "landlord": 1, "customer": 2, "buyer": 3, "other": 4}
+
+    def sort_key(p: Party):
+        return (rank.get((p.party_type or "other").lower(), 9), (p.name or "").lower())
+
+    return sorted(pool, key=sort_key)
+
+
+def _field_primary_share_partner_id(field: Field) -> int | None:
+    """Primary share partner for sheet/marketing: field.party_id or first non-Me share."""
+    rows = _field_share_partner_rows(field)
+    if not rows:
+        return None
+    if getattr(field, "party_id", None):
+        for r in rows:
+            if r["party_id"] == int(field.party_id):
+                return int(field.party_id)
+    return int(rows[0]["party_id"])
+
+
+def _field_share_partner_rows(field: Field) -> list[dict]:
+    """Non-Me share partners for a field: [{party_id, name, pct}, ...]."""
+    shares = list(getattr(field, "shares", None) or [])
+    partners = sorted(
+        [
+            s
+            for s in shares
+            if int(getattr(s, "is_me", 0) or 0) != 1 and getattr(s, "party_id", None)
+        ],
+        key=lambda s: (int(getattr(s, "sort_order", 0) or 0), int(getattr(s, "id", 0) or 0)),
+    )
+    out: list[dict] = []
+    for s in partners:
+        name = None
+        if getattr(s, "party", None) is not None:
+            name = getattr(s.party, "name", None)
+        name = name or getattr(s, "display_name", None) or getattr(s, "partner_name", None) or "Partner"
+        out.append(
+            {
+                "party_id": int(s.party_id),
+                "name": name,
+                "pct": float(getattr(s, "share_pct", 0) or 0),
+            }
+        )
+    if out:
+        return out
+    # Legacy: party_id set but no share rows yet
+    if getattr(field, "party_id", None) and getattr(field, "party", None):
+        rem = max(0.0, 100.0 - float(getattr(field, "my_share_pct", None) or 50.0))
+        return [
+            {
+                "party_id": int(field.party_id),
+                "name": field.party.name,
+                "pct": rem,
+            }
+        ]
+    return []
+
+
+def _parse_sheet_share_partners(raw: str) -> list[tuple[int, float | None]]:
+    """Parse '8:16,9:34' or '8,9' into [(party_id, pct|None), ...]."""
+    out: list[tuple[int, float | None]] = []
+    seen: set[int] = set()
+    for bit in str(raw or "").split(","):
+        bit = bit.strip()
+        if not bit:
+            continue
+        if ":" in bit:
+            left, right = bit.split(":", 1)
+            if not left.strip().isdigit():
+                continue
+            pid = int(left.strip())
+            try:
+                pct: float | None = float(right.strip().replace(",", ""))
+            except ValueError:
+                pct = None
+        else:
+            if not bit.isdigit():
+                continue
+            pid = int(bit)
+            pct = None
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append((pid, pct))
+    return out
 
 
 def _replace_field_shares(
@@ -625,6 +925,11 @@ def _replace_field_shares(
         pid_raw = str(party_ids[i] if i < len(party_ids) else "").strip()
         is_me_raw = str(is_me_flags[i] if i < len(is_me_flags) else "0").strip().lower()
         is_me = 1 if is_me_raw in ("1", "true", "yes", "on", "me") else 0
+        if pid_raw in ("__me__", "me"):
+            is_me = 1
+            pid_raw = ""
+        if pid_raw == "__add_new__":
+            continue
         if not name and not pid_raw and pct is None and not is_me:
             continue
         if pct is None:
@@ -635,12 +940,12 @@ def _replace_field_shares(
             party_id = party.id if party else None
         if is_me or name.lower() == "me":
             is_me = 1
-            name = name if name and name.lower() != "me" else "Me"
+            name = "Me"
             party_id = None
             me_pct = pct
         elif first_partner_id is None and party_id:
             first_partner_id = party_id
-        elif not name and party_id:
+        if not name and party_id:
             p = db.get(Party, party_id)
             name = p.name if p else "Partner"
         db.add(
@@ -695,6 +1000,38 @@ def _seed_shares_from_legacy(field: Field) -> list[FieldShare]:
     return rows
 
 
+def _field_form_context(
+    request: Request,
+    db: Session,
+    *,
+    user,
+    year,
+    field: Field | None,
+    shares: list,
+    error: str | None = None,
+) -> dict:
+    farm_with = _farm_with_parties(db)
+    party_added = None
+    added = (request.query_params.get("with_party_added") or "").strip()
+    if added.isdigit():
+        party_added = db.get(Party, int(added))
+    return {
+        "request": request,
+        "user": user,
+        "active": "fields",
+        "farm_name": farm_name(db),
+        "year": year,
+        "field": field,
+        "shares": shares,
+        "parties": farm_with,
+        "farm_with_parties": farm_with,
+        "farm_with_ids": [p.id for p in farm_with],
+        "party_added": party_added,
+        "ownership_labels": OWNERSHIP_LABELS,
+        "error": error,
+    }
+
+
 @app.get("/fields/new", response_class=HTMLResponse)
 def field_new(request: Request, db: Session = Depends(get_db)):
     user = current_user(request)
@@ -703,23 +1040,18 @@ def field_new(request: Request, db: Session = Depends(get_db)):
     year = get_active_year(db)
     if not year:
         return RedirectResponse("/settings", status_code=303)
-    parties = list(db.scalars(select(Party).order_by(Party.name)))
     return templates.TemplateResponse(
         "field_form.html",
-        {
-            "request": request,
-            "user": user,
-            "active": "fields",
-            "farm_name": farm_name(db),
-            "year": year,
-            "field": None,
-            "shares": [
+        _field_form_context(
+            request,
+            db,
+            user=user,
+            year=year,
+            field=None,
+            shares=[
                 FieldShare(partner_name="Me", share_pct=100.0, is_me=1, sort_order=0),
             ],
-            "parties": parties,
-            "ownership_labels": OWNERSHIP_LABELS,
-            "error": None,
-        },
+        ),
     )
 
 
@@ -736,33 +1068,22 @@ def field_edit(request: Request, field_id: int, db: Session = Depends(get_db)):
     if not field:
         return RedirectResponse("/fields", status_code=303)
     year = db.get(CropYear, field.crop_year_id)
-    parties = list(db.scalars(select(Party).order_by(Party.name)))
     shares = _seed_shares_from_legacy(field)
     return templates.TemplateResponse(
         "field_form.html",
-        {
-            "request": request,
-            "user": user,
-            "active": "fields",
-            "farm_name": farm_name(db),
-            "year": year,
-            "field": field,
-            "shares": shares,
-            "parties": parties,
-            "ownership_labels": OWNERSHIP_LABELS,
-            "error": None,
-        },
+        _field_form_context(
+            request,
+            db,
+            user=user,
+            year=year,
+            field=field,
+            shares=shares,
+        ),
     )
 
 
 def _parse_float(value: str, default: float | None = 0.0) -> float | None:
-    value = (value or "").strip().replace(",", "")
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
+    return parse_float(value, default=default)
 
 
 @app.post("/fields/save")
@@ -825,16 +1146,49 @@ async def field_save(
 
     share_names = _as_form_list(share_name)
     share_pcts = _as_form_list(share_pct)
+    share_pids = _as_form_list(share_party_id)
+    share_me_flags = _as_form_list(share_is_me)
+
+    if ownership_mode == "on_shares":
+        has_partner = False
+        n = max(len(share_pids), len(share_me_flags), len(share_names), 0)
+        for i in range(n):
+            pid_raw = str(share_pids[i] if i < len(share_pids) else "").strip()
+            is_me_raw = str(share_me_flags[i] if i < len(share_me_flags) else "0").strip().lower()
+            is_me = is_me_raw in ("1", "true", "yes", "on", "me") or pid_raw in ("__me__", "me")
+            if is_me or pid_raw in ("", "__add_new__"):
+                continue
+            if pid_raw.isdigit() or (share_names[i] if i < len(share_names) else "").strip():
+                has_partner = True
+                break
+        if not has_partner and party_id.strip().isdigit():
+            # Landlord / primary party fills in for missing share rows
+            from app import marketing_analytics as mkt
+
+            party = db.get(Party, int(party_id.strip()))
+            if party:
+                mkt.link_field_to_share_partner(
+                    db,
+                    field,
+                    party,
+                    me_pct=float(field.my_share_pct) if field.my_share_pct is not None else 50.0,
+                )
+                db.commit()
+                return RedirectResponse(f"/fields/{field.id}", status_code=303)
+        if not has_partner:
+            dest = f"/fields/{field_id}/edit" if field_id else "/fields/new"
+            return RedirectResponse(f"{dest}?msg=share_partner_required", status_code=303)
+
     if ownership_mode == "on_shares" or any(str(x).strip() for x in share_names) or any(
         str(x).strip() for x in share_pcts
-    ):
+    ) or any(str(x).strip() not in ("", "__add_new__") for x in share_pids):
         _replace_field_shares(
             db,
             field,
             share_name=share_names,
             share_pct=share_pcts,
-            share_party_id=_as_form_list(share_party_id),
-            share_is_me=_as_form_list(share_is_me),
+            share_party_id=share_pids,
+            share_is_me=share_me_flags,
         )
 
     db.commit()
@@ -935,6 +1289,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             "settings": settings,
             "years": years,
             "active_year": get_active_year(db),
+            "warn_default_password": admin_still_on_default_password(db),
         },
     )
 
@@ -952,6 +1307,103 @@ def settings_farm(
         settings.farm_name = farm_name_value.strip() or "Beam Farm"
         db.commit()
     return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/password")
+def settings_change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    session_user = current_user(request)
+    if not session_user:
+        return RedirectResponse("/login", status_code=303)
+
+    db_user = db.get(User, session_user.get("id"))
+    if not db_user:
+        return redirect_flash(request, "/settings", "Could not find your account.", "error")
+
+    if not verify_password(current_password, db_user.password_hash):
+        return redirect_flash(request, "/settings", "Current password is incorrect.", "error")
+
+    new_password = (new_password or "").strip()
+    confirm_password = (confirm_password or "").strip()
+    if len(new_password) < 8:
+        return redirect_flash(
+            request, "/settings", "New password must be at least 8 characters.", "error"
+        )
+    if new_password != confirm_password:
+        return redirect_flash(request, "/settings", "New passwords do not match.", "error")
+    if verify_password(new_password, db_user.password_hash):
+        return redirect_flash(
+            request, "/settings", "New password must be different from the current one.", "warn"
+        )
+
+    db_user.password_hash = hash_password(new_password)
+    db.commit()
+    return redirect_flash(request, "/settings", "Password updated.", "ok")
+
+
+@app.post("/backup/save")
+def backup_save(
+    request: Request,
+    next: str = Form("/"),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    next_url = (next or "/").strip()
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    try:
+        dest, pruned = local_backup.create_save()
+        msg = f"Saved: {dest.name}"
+        if pruned:
+            msg += f" (removed {pruned} older save{'s' if pruned != 1 else ''})"
+        return redirect_flash(request, next_url, msg, "ok")
+    except Exception as exc:
+        return redirect_flash(request, next_url, f"Save failed: {exc}", "error")
+
+
+@app.get("/backup/saves", response_class=HTMLResponse)
+def backup_saves_page(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    saves = local_backup.list_saves()
+    return templates.TemplateResponse(
+        "backup_saves.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "settings",
+            "farm_name": farm_name(db),
+            "saves": saves,
+            "backup_dir": str(local_backup.BACKUP_DIR),
+        },
+    )
+
+
+@app.post("/backup/restore")
+def backup_restore(
+    request: Request,
+    filename: str = Form(...),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    try:
+        src = local_backup.restore_save(filename)
+        return redirect_flash(
+            request,
+            "/",
+            f"Restored from {src.name}. Refresh if anything looks stale.",
+            "ok",
+        )
+    except Exception as exc:
+        return redirect_flash(request, "/backup/saves", f"Restore failed: {exc}", "error")
 
 
 def _parse_date(value: str) -> date | None:
@@ -1481,6 +1933,259 @@ def team_toggle(request: Request, user_id: int, db: Session = Depends(get_db)):
     return RedirectResponse("/team", status_code=303)
 
 
-# After core routes so /fields/new is registered before /fields/{field_id}
+def _hub_ops_page(
+    request: Request,
+    db: Session,
+    *,
+    module: str,
+    active: str,
+    ops_title: str,
+    ops_lede: str,
+    ops_actions: list[dict],
+    ops_note: str = "",
+    ops_lists_href: str = "",
+):
+    user = require_module(request, module)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        "hub_ops.html",
+        {
+            "request": request,
+            "user": user,
+            "active": active,
+            "farm_name": farm_name(db),
+            "ops_title": ops_title,
+            "ops_lede": ops_lede,
+            "ops_actions": ops_actions,
+            "ops_note": ops_note,
+            "ops_lists_href": ops_lists_href,
+        },
+    )
+
+
+@app.get("/fields/ops", response_class=HTMLResponse)
+def fields_ops(request: Request, db: Session = Depends(get_db)):
+    user = require_module(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+
+    from datetime import date as date_cls
+
+    from app.models import AppSettings
+    from app.operation_rates import effective_rates
+
+    year = get_active_year(db)
+    fields: list[Field] = []
+    if year:
+        q = (
+            select(Field)
+            .where(Field.crop_year_id == year.id)
+            .options(joinedload(Field.party))
+            .order_by(Field.crop, Field.name)
+        )
+        fields = real_fields(list(db.scalars(q).unique()))
+
+    settings = db.scalar(select(AppSettings).limit(1))
+    op_rates = [
+        {
+            "key": r.key,
+            "number": r.number,
+            "label": r.label,
+            "rate_per_ac": r.rate_per_ac,
+        }
+        for r in effective_rates(settings)
+    ]
+
+    return templates.TemplateResponse(
+        "fields_ops.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "fields_ops",
+            "farm_name": farm_name(db),
+            "year": year,
+            "fields": fields,
+            "op_rates": op_rates,
+            "today": date_cls.today().isoformat(),
+            "saved_rates": request.query_params.get("saved_rates"),
+            "assigned": request.query_params.get("assigned"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@app.post("/fields/ops/rates")
+async def fields_ops_rates_save(request: Request, db: Session = Depends(get_db)):
+    user = require_module(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+
+    from app.activity import log_activity
+    from app.models import AppSettings
+    from app.operation_rates import save_rate_overrides
+
+    settings = db.scalar(select(AppSettings).limit(1))
+    if not settings:
+        settings = AppSettings()
+        db.add(settings)
+        db.flush()
+
+    form = await request.form()
+    keys = [str(x) for x in form.getlist("rate_key")]
+    labels = [str(x) for x in form.getlist("rate_label")]
+    rates = [str(x) for x in form.getlist("rate_per_ac")]
+    updates: dict = {}
+    for i, key in enumerate(keys):
+        label = labels[i] if i < len(labels) else ""
+        raw = rates[i] if i < len(rates) else ""
+        try:
+            rate = float(str(raw).replace(",", ""))
+        except ValueError:
+            continue
+        updates[key] = {"rate": rate, "label": label}
+
+    settings.operation_rates_json = save_rate_overrides(settings, updates)
+    log_activity(db, user.get("username"), "op_rates_save", f"{len(updates)} rates")
+    db.commit()
+    return RedirectResponse("/fields/ops?saved_rates=1", status_code=303)
+
+
+@app.post("/fields/ops/assign")
+async def fields_ops_assign(request: Request, db: Session = Depends(get_db)):
+    user = require_module(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+
+    from datetime import date as date_cls
+
+    from app.activity import log_activity
+    from app.models import AppSettings
+    from app.op_cost_ensure import add_rate_operation
+    from app.operation_rates import rate_by_key
+
+    form = await request.form()
+    rate_key = str(form.get("op_rate_key") or "").strip()
+    notes = str(form.get("notes") or "").strip()
+    op_date_raw = str(form.get("op_date") or "").strip()
+    field_ids = [int(x) for x in form.getlist("field_id") if str(x).isdigit()]
+
+    settings = db.scalar(select(AppSettings).limit(1))
+    rate = rate_by_key(rate_key, settings)
+    if not rate:
+        return RedirectResponse("/fields/ops?error=bad_op", status_code=303)
+    if not field_ids:
+        return RedirectResponse("/fields/ops?error=no_fields", status_code=303)
+
+    when = date_cls.today()
+    if op_date_raw:
+        try:
+            when = date_cls.fromisoformat(op_date_raw)
+        except ValueError:
+            when = date_cls.today()
+
+    n = 0
+    for fid in field_ids:
+        field = db.get(Field, fid)
+        if not field:
+            continue
+        row = add_rate_operation(
+            db,
+            field,
+            rate_key,
+            op_date=when,
+            extra_note=notes,
+            billable=0,
+            settings=settings,
+        )
+        if row is not None:
+            n += 1
+
+    log_activity(
+        db,
+        user.get("username"),
+        "op_assign",
+        f"{rate.label} → {n} fields",
+    )
+    db.commit()
+    return RedirectResponse(f"/fields/ops?assigned={n}", status_code=303)
+
+
+@app.get("/inputs/ops", response_class=HTMLResponse)
+def inputs_ops(request: Request, db: Session = Depends(get_db)):
+    return _hub_ops_page(
+        request,
+        db,
+        module="library",
+        active="inputs_ops",
+        ops_title="Inputs — main operations",
+        ops_lede="Catalog seed and chem, edit hybrid costs on the sheet, assign to fields, or bring in a purchase file.",
+        ops_actions=[
+            {"href": "/inputs", "label": "Catalog", "primary": True},
+            {"href": "/inputs/hybrids/sheet", "label": "Hybrid sheet"},
+            {"href": "/inputs/assign", "label": "Assign to fields"},
+            {"href": "/purchases", "label": "Inventory / purchases"},
+            {"href": "/inputs/upload", "label": "Upload inputs"},
+        ],
+        ops_lists_href="/inputs/lists",
+    )
+
+
+@app.get("/money", response_class=HTMLResponse)
+def money_ops(request: Request, db: Session = Depends(get_db)):
+    """Legacy Money URL — Budget hub now owns money tabs."""
+    return RedirectResponse("/budget/money", status_code=303)
+
+
+@app.get("/capture", response_class=HTMLResponse)
+def capture_ops(request: Request, db: Session = Depends(get_db)):
+    return _hub_ops_page(
+        request,
+        db,
+        module="upload",
+        active="capture_ops",
+        ops_title="Capture — main operations",
+        ops_lede="Scan a receipt, import a spreadsheet, or drop photos. Reports and Panorama are in the tabs.",
+        ops_actions=[
+            {"href": "/scan", "label": "Scan docs", "primary": True},
+            {"href": "/upload", "label": "Import files"},
+            {"href": "/photos", "label": "Photos"},
+            {"href": "/export", "label": "Export / reports"},
+        ],
+        ops_lists_href="/capture/lists",
+    )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_ops(request: Request, db: Session = Depends(get_db)):
+    user = require_module(request, "settings")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user.get("role") != "owner":
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(
+        "hub_ops.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "admin_ops",
+            "farm_name": farm_name(db),
+            "ops_title": "Admin — main operations",
+            "ops_lede": "Farm settings, team logins, and the activity log.",
+            "ops_actions": [
+                {"href": "/settings", "label": "Settings", "primary": True},
+                {"href": "/lists", "label": "All selection lists"},
+                {"href": "/team", "label": "Team"},
+                {"href": "/activity", "label": "Activity log"},
+                {"href": "/export", "label": "Export"},
+            ],
+            "ops_note": "",
+            "ops_lists_href": "/lists",
+        },
+    )
+
+
+# After core routes so /fields/new and /fields/ops are registered before /fields/{field_id}
+app.include_router(budget_router)
 app.include_router(extra_router)
 app.include_router(more_router)

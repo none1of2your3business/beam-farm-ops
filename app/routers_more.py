@@ -15,21 +15,32 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.activity import log_activity
-from app.flash import redirect_flash
 from app.database import get_db
 from app.duplicates import (
     confirm_if_duplicates,
-    find_assignment_dups,
-    find_hybrid_assign_dups,
     find_operation_dups,
     find_plan_dups,
     find_soil_dups,
-    find_spray_assign_dups,
 )
-from app.field_ledger import build_field_ledger
+from app.field_ledger import (
+    apply_planting_fill,
+    build_field_ledger,
+    hybrid_link_cost,
+    planting_coverage,
+    seeds_per_unit,
+)
+from app.op_cost_ensure import ensure_corn_planting_cost
+from app.operation_rates import (
+    cost_for_key,
+    display_name,
+    effective_rates,
+    is_operator_paid_op,
+    op_type_for_rate,
+    rate_by_key,
+    rate_marker,
+)
 from app.grain_utils import shrink_net_bu
 from app import cme_quotes
-from app.units import deplete_qty_from_rate
 from app.models import (
     ActivityLog,
     AppSettings,
@@ -65,7 +76,6 @@ from app.models import (
     SettlementLine,
     SoilTest,
     SprayMix,
-    SprayMixLine,
     TruckLoad,
     TruckingRate,
     MarketingTarget,
@@ -116,27 +126,14 @@ def _need(request: Request, module: str):
     return user
 
 
-def _need_edit_fields(request: Request):
-    """Fields module + write permission (blocks viewer)."""
-    user = _need(request, "fields")
-    if isinstance(user, RedirectResponse):
-        return user
-    if not perms.can_edit_fields(user.get("role")):
-        return redirect_flash(request, "/fields", "View-only role — editing is disabled.", "warn")
-    return user
-
-
 def _f(value: str, default: float | None = 0.0) -> float | None:
     value = (value or "").strip().replace(",", "")
     if not value:
         return default
     try:
-        out = float(value)
+        return float(value)
     except ValueError:
         return default
-    if out != out or out in (float("inf"), float("-inf")):  # NaN / ±
-        return default
-    return out
 
 
 def _d(value: str) -> date | None:
@@ -149,123 +146,7 @@ def _d(value: str) -> date | None:
         return None
 
 
-def _field_insurance_budget(
-    field: Field,
-    db: Session,
-    settings: AppSettings | None,
-) -> tuple[float | None, float | None]:
-    """Return (insurance_premium_share, budget_cop_ac) for build_field_ledger.
-
-    Premium is split by field acres / policy acres when policy acres are set.
-    When policy acres are missing, split across all same-crop fields in the year
-    so the farm total never exceeds the premium.
-    """
-    ins_premium: float | None = None
-    if field.crop_year_id and field.crop and field.crop not in ("None", ""):
-        policies = list(
-            db.scalars(
-                select(CropInsurance).where(
-                    CropInsurance.crop_year_id == field.crop_year_id,
-                    CropInsurance.crop == field.crop,
-                )
-            )
-        )
-        if policies:
-            field_ac = float(field.acres_mine or field.acres_total or 0)
-            crop_fields = list(
-                db.scalars(
-                    select(Field).where(
-                        Field.crop_year_id == field.crop_year_id,
-                        Field.crop == field.crop,
-                    )
-                )
-            )
-            crop_ac_total = sum(float(f.acres_mine or f.acres_total or 0) for f in crop_fields) or 0.0
-            share_total = 0.0
-            for pol in policies:
-                prem = float(pol.premium or 0)
-                if prem <= 0:
-                    continue
-                pol_ac = float(pol.acres or 0)
-                if pol_ac > 0 and field_ac > 0:
-                    # Cap at 100% of premium if field acres exceed policy acres
-                    share_total += prem * min(1.0, field_ac / pol_ac)
-                elif crop_ac_total > 0 and field_ac > 0:
-                    share_total += prem * (field_ac / crop_ac_total)
-                elif len(crop_fields) == 1:
-                    share_total += prem
-            if share_total > 0:
-                ins_premium = round(share_total, 2)
-
-    budget_cop_ac: float | None = None
-    if settings:
-        crop_lower = (field.crop or "").strip().lower()
-        if "corn" in crop_lower:
-            v = getattr(settings, "corn_cost_per_ac", None)
-            budget_cop_ac = float(v) if v else None
-        elif "soy" in crop_lower:
-            v = getattr(settings, "soy_cost_per_ac", None)
-            budget_cop_ac = float(v) if v else None
-
-    return ins_premium, budget_cop_ac
-
-
-# Season milestones shown on Field Operations Center (done vs still needed).
-_SEASON_MILESTONES = [
-    ("Planting", ("planting", "plant")),
-    ("Spraying", ("spraying", "spray")),
-    ("Dry Fertilizer", ("dry fertilizer", "fertilizer")),
-    ("Sidedress", ("sidedress", "side-dress", "side dress")),
-    ("Lime", ("lime",)),
-    ("Harvest", ("harvest",)),
-]
-
-
-def _op_matches_milestone(op_type: str, needles: tuple[str, ...]) -> bool:
-    t = (op_type or "").strip().lower()
-    return any(n in t for n in needles)
-
-
-def _season_checklist(
-    ops: list[FieldOperation],
-    hybrids: list,
-    sprays: list,
-) -> list[dict]:
-    """Mark common season passes done from logged ops / seed / spray links."""
-    rows: list[dict] = []
-    live_ops = [o for o in ops if not getattr(o, "voided", 0)]
-    for label, needles in _SEASON_MILESTONES:
-        matches = [o for o in live_ops if _op_matches_milestone(o.op_type or "", needles)]
-        done = bool(matches)
-        latest = None
-        if matches:
-            dated = [o.op_date for o in matches if o.op_date]
-            latest = max(dated) if dated else None
-        # Seed / spray assignments also count even without a typed op
-        if not done and label == "Planting" and any(
-            h for h, _ in hybrids if h and not getattr(h, "voided", 0)
-        ):
-            done = True
-            dated = [h.applied_date for h, _ in hybrids if h and not getattr(h, "voided", 0) and h.applied_date]
-            latest = max(dated) if dated else latest
-        if not done and label == "Spraying" and any(
-            s for s, _ in sprays if s and not getattr(s, "voided", 0)
-        ):
-            done = True
-            dated = [s.applied_date for s, _ in sprays if s and not getattr(s, "voided", 0) and s.applied_date]
-            latest = max(dated) if dated else latest
-        rows.append(
-            {
-                "label": label,
-                "done": done,
-                "count": len(matches),
-                "latest": latest.isoformat() if latest else None,
-            }
-        )
-    return rows
-
-
-# ---------- Field detail (ops center: costs, P&L, plans, soil) ----------
+# ---------- Field detail (ops, costs, soil, plans) ----------
 @router.get("/fields/{field_id}", response_class=HTMLResponse)
 def field_detail(request: Request, field_id: int, db: Session = Depends(get_db)):
     user = _need(request, "fields")
@@ -277,7 +158,6 @@ def field_detail(request: Request, field_id: int, db: Session = Depends(get_db))
         .options(
             joinedload(Field.party),
             joinedload(Field.shares).joinedload(FieldShare.party),
-            joinedload(Field.crop_year),
         )
     )
     if not field:
@@ -286,14 +166,12 @@ def field_detail(request: Request, field_id: int, db: Session = Depends(get_db))
         db.scalars(
             select(FieldOperation)
             .where(FieldOperation.field_id == field_id)
-            .order_by(FieldOperation.op_date.desc(), FieldOperation.id.desc())
+            .order_by(FieldOperation.op_date.desc())
         )
     )
     assigns = list(
         db.scalars(
-            select(FieldAssignment)
-            .where(FieldAssignment.field_id == field_id)
-            .order_by(FieldAssignment.assign_date.desc(), FieldAssignment.id.desc())
+            select(FieldAssignment).where(FieldAssignment.field_id == field_id).order_by(FieldAssignment.id.desc())
         )
     )
     plans = list(db.scalars(select(FieldPlan).where(FieldPlan.field_id == field_id).order_by(FieldPlan.id.desc())))
@@ -304,6 +182,7 @@ def field_detail(request: Request, field_id: int, db: Session = Depends(get_db))
     soils = list(
         db.scalars(select(SoilTest).where(SoilTest.field_id == field_id).order_by(SoilTest.test_date.desc()))
     )
+    # rotation: same field name in other years
     prior = list(
         db.scalars(
             select(Field)
@@ -313,62 +192,12 @@ def field_detail(request: Request, field_id: int, db: Session = Depends(get_db))
             .order_by(CropYear.year.desc())
         )
     )
-
-    product_ids = [a.product_id for a in assigns if a.product_id]
-    products_by_id: dict[int, InputProduct] = {}
-    if product_ids:
-        for p in db.scalars(select(InputProduct).where(InputProduct.id.in_(product_ids))):
-            products_by_id[p.id] = p
-
-    settings = db.scalar(select(AppSettings).limit(1))
-    board = cme_quotes.board_from_settings(settings)
-    contracts: list[GrainContract] = []
-    if field.crop_year_id:
-        contracts = list(
-            db.scalars(
-                select(GrainContract).where(
-                    GrainContract.crop_year_id == field.crop_year_id,
-                    GrainContract.crop == field.crop,
-                )
-            )
-        )
-
-    ins_prem, budget_cop_ac = _field_insurance_budget(field, db, settings)
-    ledger = build_field_ledger(
-        field,
-        ops=ops,
-        assigns=assigns,
-        products_by_id=products_by_id,
-        spray_links=sprays,
-        hybrid_links=hybrids,
-        plans=plans,
-        soils=soils,
-        settings=settings,
-        board=board,
-        contracts=contracts,
-        insurance_premium=ins_prem,
-        budget_cop_ac=budget_cop_ac,
-    )
-
-    open_plans = [p for p in plans if (p.status or "").lower() != "done"]
-    done_plans = [p for p in plans if (p.status or "").lower() == "done"]
-    acres = ledger["acres"] or 0
-    planned_remaining = 0.0
-    for p in open_plans:
-        if p.estimated_cost_per_acre is not None and acres:
-            planned_remaining += float(p.estimated_cost_per_acre) * acres
-    planned_remaining = round(planned_remaining, 2)
-
-    season_checklist = _season_checklist(ops, hybrids, sprays)
-    done_milestones = sum(1 for m in season_checklist if m["done"])
-
-    # Recent costed activity (exclude undated rent for the ops list — shown in breakdown)
-    recent_events = [
-        e
-        for e in reversed(ledger["events"])
-        if e.get("type") in ("op", "input", "spray", "hybrid")
-    ][:12]
-
+    op_cost = sum(o.cost or 0 for o in ops)
+    assign_cost = sum((a.quantity or 0) * (a.unit_cost or 0) for a in assigns)
+    rent = field.rent_my_share
+    total_cost = op_cost + assign_cost + rent
+    acres = field.acres_mine or field.acres_total or 0
+    cost_ac = round(total_cost / acres, 2) if acres else None
     shares = list(field.shares or [])
     if not shares and (field.my_share_pct is not None or field.ownership_mode == "on_shares"):
         shares = [
@@ -404,22 +233,16 @@ def field_detail(request: Request, field_id: int, db: Session = Depends(get_db))
             "ops": ops,
             "assigns": assigns,
             "plans": plans,
-            "open_plans": open_plans,
-            "done_plans": done_plans,
-            "planned_remaining": planned_remaining,
             "hybrids": hybrids,
             "sprays": sprays,
             "soils": soils,
             "prior": prior,
-            "ledger": ledger,
-            "settings": settings,
-            "season_checklist": season_checklist,
-            "done_milestones": done_milestones,
-            "recent_events": recent_events,
-            "products_by_id": products_by_id,
+            "op_cost": op_cost,
+            "assign_cost": assign_cost,
+            "rent": rent,
+            "total_cost": total_cost,
+            "cost_ac": cost_ac,
             "today": date.today().isoformat(),
-            "insurance_premium": ins_prem,
-            "can_edit_fields": perms.can_edit_fields(user.get("role")),
         },
     )
 
@@ -477,7 +300,6 @@ def field_operations(request: Request, field_id: int, db: Session = Depends(get_
             )
         )
 
-    ins_prem, budget_cop_ac = _field_insurance_budget(field, db, settings)
     ledger = build_field_ledger(
         field,
         ops=ops,
@@ -490,9 +312,44 @@ def field_operations(request: Request, field_id: int, db: Session = Depends(get_
         settings=settings,
         board=board,
         contracts=contracts,
-        insurance_premium=ins_prem,
-        budget_cop_ac=budget_cop_ac,
     )
+
+    # Auto-post corn planting machinery cost when planting is already complete
+    created = ensure_corn_planting_cost(db, field)
+    if created is not None:
+        db.commit()
+        ops = list(
+            db.scalars(
+                select(FieldOperation)
+                .where(FieldOperation.field_id == field_id)
+                .order_by(FieldOperation.op_date.asc(), FieldOperation.id.asc())
+            )
+        )
+        ledger = build_field_ledger(
+            field,
+            ops=ops,
+            assigns=assigns,
+            products_by_id=products_by_id,
+            spray_links=sprays,
+            hybrid_links=hybrids,
+            plans=plans,
+            soils=soils,
+            settings=settings,
+            board=board,
+            contracts=contracts,
+        )
+
+    acres_basis = float(field.acres_total or 0) or float(field.acres_mine or 0)
+    rate_options = [
+        {
+            "key": r.key,
+            "number": r.number,
+            "label": display_name(r),
+            "rate": r.rate_per_ac,
+            "est_cost": round(r.rate_per_ac * acres_basis, 2) if acres_basis else 0.0,
+        }
+        for r in effective_rates(settings)
+    ]
 
     return templates.TemplateResponse(
         "field_operations.html",
@@ -505,7 +362,153 @@ def field_operations(request: Request, field_id: int, db: Session = Depends(get_
             "ledger": ledger,
             "settings": settings,
             "today": date.today().isoformat(),
+            "op_rates": rate_options,
+            "acres_basis": acres_basis,
+            "planting_cost_added": bool(created),
         },
+    )
+
+
+@router.get("/fields/{field_id}/planting/complete", response_class=HTMLResponse)
+def field_planting_complete(request: Request, field_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    field = db.scalar(
+        select(Field).where(Field.id == field_id).options(joinedload(Field.party))
+    )
+    if not field:
+        return RedirectResponse("/fields", status_code=303)
+
+    links = list(db.scalars(select(FieldHybrid).where(FieldHybrid.field_id == field_id)))
+    hybrid_pairs = [(h, db.get(Hybrid, h.hybrid_id)) for h in links]
+    coverage = planting_coverage(field, hybrid_pairs)
+
+    year_id = field.crop_year_id
+    crop = (field.crop or "").strip()
+    hybrids_q = select(Hybrid).where(Hybrid.crop_year_id == year_id).order_by(Hybrid.name)
+    catalog = list(db.scalars(hybrids_q))
+    if crop and crop not in ("None", ""):
+        same = [h for h in catalog if (h.crop or "") == crop]
+        other = [h for h in catalog if (h.crop or "") != crop]
+        catalog = same + other
+
+    return templates.TemplateResponse(
+        "field_planting_complete.html",
+        {
+            "request": request,
+            "user": user,
+            "active": "fields",
+            "farm_name": _farm(db),
+            "field": field,
+            "coverage": coverage,
+            "hybrids": catalog,
+            "hybrid_spu": {h.id: seeds_per_unit(h.crop, h.brand) for h in catalog},
+            "field_crop_spu": seeds_per_unit(field.crop, None),
+            "error": request.query_params.get("err"),
+            "msg": request.query_params.get("msg"),
+        },
+    )
+
+
+@router.post("/fields/{field_id}/planting/complete")
+def field_planting_complete_save(
+    request: Request,
+    field_id: int,
+    mode: str = Form(...),
+    acres: str = Form(""),
+    units: str = Form(""),
+    source_link_id: str = Form(""),
+    hybrid_id: str = Form(""),
+    rate: str = Form(""),
+    population: str = Form(""),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    field = db.get(Field, field_id)
+    if not field:
+        return RedirectResponse("/fields", status_code=303)
+
+    links = list(db.scalars(select(FieldHybrid).where(FieldHybrid.field_id == field_id)))
+    hybrid_pairs = [(h, db.get(Hybrid, h.hybrid_id)) for h in links]
+    coverage = planting_coverage(field, hybrid_pairs)
+
+    try:
+        acres_f = float(str(acres).replace(",", "").strip() or "0")
+    except ValueError:
+        acres_f = 0.0
+    if acres_f <= 0:
+        acres_f = float(coverage.get("remaining_acres") or 0)
+
+    units_f = None
+    raw_units = (units or "").strip()
+    if raw_units:
+        try:
+            units_f = float(raw_units.replace(",", ""))
+        except ValueError:
+            units_f = None
+
+    pop = None
+    raw_pop = (population or "").strip()
+    if raw_pop:
+        try:
+            pop = float(raw_pop.replace(",", ""))
+        except ValueError:
+            pop = None
+
+    sid = int(source_link_id) if str(source_link_id).strip().isdigit() else None
+    hid = int(hybrid_id) if str(hybrid_id).strip().isdigit() else None
+
+    result = apply_planting_fill(
+        db,
+        field,
+        mode=mode,
+        acres=acres_f,
+        units=units_f,
+        source_link_id=sid,
+        hybrid_id=hid,
+        rate=rate.strip() or None,
+        population=pop,
+        notes=notes.strip() or None,
+    )
+    if not result.get("ok"):
+        from urllib.parse import quote
+
+        err = quote(str(result.get("error") or "Could not save"), safe="")
+        return RedirectResponse(
+            f"/fields/{field_id}/planting/complete?err={err}",
+            status_code=303,
+        )
+
+    log_activity(
+        db,
+        user.get("username"),
+        "planting_fill",
+        f"{field.name}: +{result['acres_added']:g} ac / +{result.get('units_added', 0):g} u · {result['hybrid_name']} ({result['mode']})",
+    )
+    db.commit()
+
+    from urllib.parse import quote
+
+    # Re-check coverage for redirect message
+    links2 = list(db.scalars(select(FieldHybrid).where(FieldHybrid.field_id == field_id)))
+    pairs2 = [(h, db.get(Hybrid, h.hybrid_id)) for h in links2]
+    cov2 = planting_coverage(field, pairs2)
+    if cov2["status"] == "complete":
+        field2 = db.get(Field, field_id)
+        if field2 and ensure_corn_planting_cost(db, field2) is not None:
+            db.commit()
+        return RedirectResponse(
+            f"/fields?msg=planting_complete&field={field_id}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/fields/{field_id}/planting/complete?msg="
+        + quote(f"Added {result['acres_added']:g} ac. Still {cov2['remaining_acres']:g} ac short."),
+        status_code=303,
     )
 
 
@@ -516,7 +519,7 @@ def field_yield(
     expected_yield: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    user = _need_edit_fields(request)
+    user = _need(request, "fields")
     if isinstance(user, RedirectResponse):
         return user
     field = db.get(Field, field_id)
@@ -540,27 +543,57 @@ def field_operation(
     description: str = Form(""),
     cost: str = Form("0"),
     billable: str = Form(""),
+    op_rate_key: str = Form(""),
     confirm_duplicate: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    user = _need_edit_fields(request)
+    user = _need(request, "fields")
     if isinstance(user, RedirectResponse):
         return user
     field = db.get(Field, field_id)
     if not field:
         return RedirectResponse("/fields", status_code=303)
+
+    rate_key = (op_rate_key or "").strip()
+    settings = db.scalar(select(AppSettings).limit(1))
+    rate = rate_by_key(rate_key, settings) if rate_key else None
     when = _d(op_date) or date.today()
+
+    if rate:
+        final_type = op_type_for_rate(rate)
+        final_cost = cost_for_key(rate.key, field, settings)
+        # Allow manual override if user typed a different cost
+        override = _f(cost)
+        if cost.strip() and override is not None and abs(override - final_cost) > 0.009:
+            final_cost = override
+        desc_bits = [rate_marker(rate.key), f"${rate.rate_per_ac:g}/ac × {float(field.acres_total or 0):g} ac"]
+        if (field.ownership_mode or "").strip() == "on_shares":
+            desc_bits.append("operator pays 100% (landlord 0)")
+        if description.strip():
+            desc_bits.append(description.strip())
+        final_desc = " · ".join(desc_bits)
+        # Machinery catalog: never bill landlord by default
+        final_billable = 1 if billable else 0
+        if (field.ownership_mode or "").strip() == "on_shares":
+            final_billable = 0
+    else:
+        final_type = op_type.strip() or "other"
+        final_cost = _f(cost) or 0
+        final_desc = description.strip() or None
+        final_billable = 1 if billable else 0
+
     pairs = [
         ("op_date", when.isoformat()),
-        ("op_type", op_type),
-        ("description", description),
-        ("cost", cost),
+        ("op_type", final_type),
+        ("description", final_desc or ""),
+        ("cost", str(final_cost)),
+        ("op_rate_key", rate_key),
     ]
-    if billable:
-        pairs.append(("billable", billable))
+    if final_billable:
+        pairs.append(("billable", "1"))
     block = confirm_if_duplicates(
         request,
-        hits=find_operation_dups(db, field_id, when, op_type, description),
+        hits=find_operation_dups(db, field_id, when, final_type, final_desc or ""),
         confirm_duplicate=confirm_duplicate,
         action=f"/fields/{field_id}/operation",
         cancel_url=f"/fields/{field_id}/operations",
@@ -576,422 +609,629 @@ def field_operation(
         FieldOperation(
             field_id=field_id,
             op_date=when,
-            op_type=op_type.strip() or "other",
-            description=description.strip() or None,
-            cost=_f(cost) or 0,
-            billable=1 if billable else 0,
+            op_type=final_type,
+            description=final_desc,
+            cost=final_cost,
+            billable=final_billable,
         )
     )
-    log_activity(db, user.get("username"), "field_operation", f"{field.name}: {op_type}")
+    log_activity(db, user.get("username"), "field_operation", f"{field.name}: {final_type}")
     db.commit()
-    return RedirectResponse(f"/fields/{field_id}", status_code=303)
+    return RedirectResponse(f"/fields/{field_id}/operations", status_code=303)
 
 
-
-OP_WIZARD_TYPES = [
-    ("planting", "Planting", "Seed / hybrid pass"),
-    ("spraying", "Spraying", "Chem / tank mix"),
-    ("dry_fertilizer", "Dry Fertilizer", "Dry or bulk fert"),
-    ("sidedress", "Sidedress", "In-season N"),
-    ("harvest", "Harvest", "Yield & destination"),
-    ("lime", "Lime", "Ag lime / pH"),
-    ("custom", "Add New", "Custom operation type"),
-]
-
-_OP_KIND_LABELS = {
-    "planting": "Planting",
-    "spraying": "Spraying",
-    "dry_fertilizer": "Dry Fertilizer",
-    "sidedress": "Sidedress",
-    "harvest": "Harvest",
-    "lime": "Lime",
-}
-
-
-@router.get("/fields/{field_id}/add-operation", response_class=HTMLResponse)
-def field_add_operation_wizard(request: Request, field_id: int, db: Session = Depends(get_db)):
+@router.post("/fields/{field_id}/operations/{op_id}/delete")
+def field_operation_delete(
+    request: Request,
+    field_id: int,
+    op_id: int,
+    db: Session = Depends(get_db),
+):
     user = _need(request, "fields")
     if isinstance(user, RedirectResponse):
         return user
-    field = db.get(Field, field_id)
+    op = db.get(FieldOperation, op_id)
+    if op and op.field_id == field_id:
+        label = f"{op.op_type} ${op.cost}"
+        db.delete(op)
+        log_activity(db, user.get("username"), "field_operation_delete", label)
+        db.commit()
+    return RedirectResponse(f"/fields/{field_id}/operations?deleted=1", status_code=303)
+
+
+@router.post("/fields/{field_id}/assignments/{assign_id}/delete")
+def field_assignment_delete(
+    request: Request,
+    field_id: int,
+    assign_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    row = db.get(FieldAssignment, assign_id)
+    if row and row.field_id == field_id:
+        db.delete(row)
+        log_activity(db, user.get("username"), "field_assignment_delete", f"#{assign_id}")
+        db.commit()
+    return RedirectResponse(f"/fields/{field_id}/operations?deleted=1", status_code=303)
+
+
+@router.post("/fields/{field_id}/sprays/{link_id}/delete")
+def field_spray_delete(
+    request: Request,
+    field_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    row = db.get(FieldSprayMix, link_id)
+    if row and row.field_id == field_id:
+        db.delete(row)
+        log_activity(db, user.get("username"), "field_spray_delete", f"#{link_id}")
+        db.commit()
+    return RedirectResponse(f"/fields/{field_id}/operations?deleted=1", status_code=303)
+
+
+@router.post("/fields/{field_id}/hybrids/{link_id}/delete")
+def field_hybrid_delete(
+    request: Request,
+    field_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    row = db.get(FieldHybrid, link_id)
+    if row and row.field_id == field_id:
+        db.delete(row)
+        log_activity(db, user.get("username"), "field_hybrid_delete", f"#{link_id}")
+        db.commit()
+    return RedirectResponse(f"/fields/{field_id}/operations?deleted=1", status_code=303)
+
+
+def _field_bill_partners(db: Session, field: Field) -> list[dict]:
+    """All non-Me partners who can be billed on this field."""
+    mode = (field.ownership_mode or "").strip()
+    shares = list(field.shares or [])
+    if not shares:
+        shares = list(
+            db.scalars(
+                select(FieldShare)
+                .where(FieldShare.field_id == field.id)
+                .options(joinedload(FieldShare.party))
+            ).unique()
+        )
+    out: list[dict] = []
+    if mode == "custom_work":
+        party = field.party or (db.get(Party, field.party_id) if field.party_id else None)
+        if party:
+            out.append({"party": party, "pct": 100.0, "label": party.name})
+        return out
+
+    for s in shares:
+        if s.is_me:
+            continue
+        party = s.party or (db.get(Party, s.party_id) if s.party_id else None)
+        pct = float(s.share_pct or 0)
+        if pct <= 0:
+            continue
+        if party:
+            out.append({"party": party, "pct": pct, "label": party.name})
+        else:
+            out.append({"party": None, "pct": pct, "label": s.display_name, "needs_party": True})
+
+    if not out and (field.party_id or field.party):
+        party = field.party or db.get(Party, field.party_id)
+        pct = max(0.0, 100.0 - float(field.my_share_pct or 50))
+        if party and pct > 0:
+            out.append({"party": party, "pct": pct, "label": party.name})
+    return out
+
+
+def _field_bill_partner(db: Session, field: Field) -> tuple[Party | None, float, str | None]:
+    """
+    Default partner to invoice and their %.
+    on_shares → largest non-Me share (not Me).
+    custom_work → 100% to the field party.
+    """
+    mode = (field.ownership_mode or "").strip()
+    if mode == "operated_by_me":
+        return None, 0.0, "This field is operated by you — there’s no partner to invoice."
+
+    partners = _field_bill_partners(db, field)
+    if not partners:
+        return None, 0.0, "Set share partners on this field before invoicing."
+    # Prefer largest share with a real party
+    usable = [p for p in partners if p.get("party")]
+    if not usable:
+        return None, partners[0]["pct"], f"Add “{partners[0]['label']}” as a party so they can be invoiced."
+    best = max(usable, key=lambda p: float(p["pct"]))
+    return best["party"], float(best["pct"]), None
+
+
+def _field_acres(field: Field) -> float:
+    return float(getattr(field, "acres_mine", 0) or getattr(field, "acres_total", 0) or 0)
+
+
+def _field_billable_items(db: Session, field: Field, partner_pct: float) -> list[dict]:
+    """
+    Billable ledger lines for a field invoice: planting/seed, sprays, inputs, ops.
+    Costs match the field ledger; partner share is their % of each line.
+    """
+    acres = _field_acres(field)
+    share_frac = float(partner_pct or 0) / 100.0
+    items: list[dict] = []
+
+    hybrid_links = list(db.scalars(select(FieldHybrid).where(FieldHybrid.field_id == field.id)))
+    for link in hybrid_links:
+        hybrid = db.get(Hybrid, link.hybrid_id)
+        amt, detail = hybrid_link_cost(link, hybrid, acres)
+        title = (hybrid.name if hybrid else f"Hybrid #{link.hybrid_id}") or "Seed"
+        if hybrid and hybrid.brand:
+            title = f"{title} ({hybrid.brand})"
+        cost = float(amt) if amt is not None else None
+        share = round(cost * share_frac, 2) if cost is not None else None
+        items.append(
+            {
+                "kind": "hybrid",
+                "id": link.id,
+                "input_name": "hybrid_id",
+                "date": link.applied_date,
+                "group": "Planting / seed",
+                "type_label": "Seed",
+                "title": title,
+                "detail": detail or "",
+                "cost": cost,
+                "share": share,
+                "invoice_id": link.invoice_id,
+                "selectable": bool(cost and cost > 0 and not link.invoice_id),
+                "default_checked": bool(cost and cost > 0 and not link.invoice_id),
+            }
+        )
+
+    spray_links = list(db.scalars(select(FieldSprayMix).where(FieldSprayMix.field_id == field.id)))
+    for link in spray_links:
+        mix = db.get(SprayMix, link.spray_mix_id)
+        cpa = getattr(mix, "cost_per_acre", None) if mix else None
+        try:
+            cpa_f = float(cpa) if cpa is not None else None
+        except (TypeError, ValueError):
+            cpa_f = None
+        cost = round(cpa_f * acres, 2) if cpa_f is not None and acres else None
+        share = round(cost * share_frac, 2) if cost is not None else None
+        timing = link.timing_label or (mix.timing if mix else None)
+        detail_bits = []
+        if timing:
+            detail_bits.append(str(timing))
+        if cpa_f is not None and acres:
+            detail_bits.append(f"${cpa_f:.2f}/ac × {acres:g} ac")
+        items.append(
+            {
+                "kind": "spray",
+                "id": link.id,
+                "input_name": "spray_id",
+                "date": link.applied_date,
+                "group": "Sprays",
+                "type_label": "Spray",
+                "title": (mix.name if mix else f"Spray #{link.spray_mix_id}"),
+                "detail": " · ".join(detail_bits),
+                "cost": cost,
+                "share": share,
+                "invoice_id": link.invoice_id,
+                "selectable": bool(cost and cost > 0 and not link.invoice_id),
+                "default_checked": bool(cost and cost > 0 and not link.invoice_id),
+            }
+        )
+
+    assigns = list(db.scalars(select(FieldAssignment).where(FieldAssignment.field_id == field.id)))
+    for a in assigns:
+        prod = db.get(InputProduct, a.product_id)
+        qty = float(a.quantity or 0)
+        unit = float(a.unit_cost or 0)
+        cost = round(qty * unit, 2)
+        share = round(cost * share_frac, 2) if cost > 0 else None
+        unit_label = (prod.unit if prod else "") or "units"
+        items.append(
+            {
+                "kind": "assign",
+                "id": a.id,
+                "input_name": "assign_id",
+                "date": a.assign_date,
+                "group": "Inputs",
+                "type_label": "Input",
+                "title": (prod.name if prod else f"Product #{a.product_id}"),
+                "detail": f"{qty:g} {unit_label} @ ${unit:.4g}",
+                "cost": cost if cost > 0 else None,
+                "share": share,
+                "invoice_id": a.invoice_id,
+                "selectable": bool(cost > 0 and not a.invoice_id),
+                "default_checked": bool(cost > 0 and not a.invoice_id),
+            }
+        )
+
+    ops = list(
+        db.scalars(
+            select(FieldOperation)
+            .where(FieldOperation.field_id == field.id)
+            .order_by(FieldOperation.op_date.desc(), FieldOperation.id.desc())
+        )
+    )
+    for op in ops:
+        cost = float(op.cost or 0)
+        operator_paid = is_operator_paid_op(op) or (
+            (field.ownership_mode or "").strip() == "on_shares" and not op.billable
+        )
+        # Share fields: machinery ops are 100% operator — do not bill landlord
+        if operator_paid and (field.ownership_mode or "").strip() == "on_shares":
+            share = None
+            selectable = False
+            default_checked = False
+            detail = (op.description or "") + (" · operator-only (not billed)" if op.description else "operator-only (not billed)")
+        else:
+            share = round(cost * share_frac, 2) if cost > 0 else None
+            selectable = bool(cost > 0 and not op.invoice_id)
+            default_checked = bool(
+                cost > 0
+                and not op.invoice_id
+                and (op.billable or (field.ownership_mode or "") == "custom_work")
+            )
+            detail = op.description or ""
+        items.append(
+            {
+                "kind": "op",
+                "id": op.id,
+                "input_name": "op_id",
+                "date": op.op_date,
+                "group": "Operations",
+                "type_label": op.op_type or "Op",
+                "title": op.op_type or "Operation",
+                "detail": detail,
+                "cost": cost if cost > 0 else None,
+                "share": share,
+                "invoice_id": op.invoice_id,
+                "selectable": selectable and not operator_paid,
+                "default_checked": default_checked,
+            }
+        )
+
+    # Stable display: group order, then date desc
+    group_order = {"Planting / seed": 0, "Sprays": 1, "Inputs": 2, "Operations": 3}
+    items.sort(
+        key=lambda it: (
+            group_order.get(it["group"], 9),
+            -(it["date"].toordinal() if it.get("date") else 0),
+            it["id"],
+        )
+    )
+    return items
+
+
+@router.get("/fields/{field_id}/invoice", response_class=HTMLResponse)
+def field_invoice_page(request: Request, field_id: int, db: Session = Depends(get_db)):
+    user = _need(request, "fields")
+    if isinstance(user, RedirectResponse):
+        return user
+    field = db.scalar(
+        select(Field)
+        .where(Field.id == field_id)
+        .options(
+            joinedload(Field.party),
+            joinedload(Field.shares).joinedload(FieldShare.party),
+        )
+    )
     if not field:
         return RedirectResponse("/fields", status_code=303)
-    year = _year(db)
-    year_id = year.id if year else field.crop_year_id
-    hybrids = list(
-        db.scalars(select(Hybrid).where(Hybrid.crop_year_id == year_id).order_by(Hybrid.name))
+
+    partners = _field_bill_partners(db, field)
+    party, partner_pct, err = _field_bill_partner(db, field)
+    # Optional preselect from query
+    pre_pid = request.query_params.get("party_id")
+    if pre_pid and pre_pid.isdigit():
+        for p in partners:
+            if p.get("party") and p["party"].id == int(pre_pid):
+                party = p["party"]
+                partner_pct = float(p["pct"])
+                err = None
+                break
+
+    items = _field_billable_items(db, field, partner_pct or 0) if partner_pct else []
+    groups: dict[str, list] = {}
+    for it in items:
+        groups.setdefault(it["group"], []).append(it)
+    selectable = sum(1 for it in items if it.get("selectable"))
+    already = sum(1 for it in items if it.get("invoice_id"))
+    open_share = round(
+        sum(float(it["share"] or 0) for it in items if it.get("selectable") and it.get("share")),
+        2,
     )
-    if field.crop and field.crop not in ("None", ""):
-        cropped = [h for h in hybrids if (h.crop or "").lower() == field.crop.lower()]
-        if cropped:
-            hybrids = cropped
-    sprays = list(
-        db.scalars(
-            select(SprayMix).where(SprayMix.crop_year_id == year_id).order_by(SprayMix.name)
-        )
-    )
-    fert_products = list(
-        db.scalars(
-            select(InputProduct)
-            .where(InputProduct.category.in_(("fertilizer", "other", "chemical")))
-            .order_by(InputProduct.name)
-        )
-    )
-    default_acres = field.acres_mine or field.acres_total or 0
-    preselect_kind = request.query_params.get("kind", "")
+
     return templates.TemplateResponse(
-        "field_add_operation.html",
+        "field_invoice.html",
         {
             "request": request,
             "user": user,
             "active": "fields",
             "farm_name": _farm(db),
             "field": field,
-            "op_types": OP_WIZARD_TYPES,
-            "hybrids": hybrids,
-            "sprays": sprays,
-            "fert_products": fert_products,
+            "party": party,
+            "partner_pct": partner_pct,
+            "partners": partners,
+            "bill_error": err,
+            "items": items,
+            "groups": groups,
+            "selectable_count": selectable,
+            "already_count": already,
+            "open_share_total": open_share,
+            "field_acres": _field_acres(field),
             "today": date.today().isoformat(),
-            "default_acres": default_acres,
-            "preselect_kind": preselect_kind,
+            "saved": request.query_params.get("saved"),
         },
     )
 
 
-@router.post("/fields/{field_id}/add-operation")
-async def field_add_operation(request: Request, field_id: int, db: Session = Depends(get_db)):
-    user = _need_edit_fields(request)
+@router.post("/fields/{field_id}/invoice")
+async def field_invoice_create(
+    request: Request,
+    field_id: int,
+    invoice_date: str = Form(""),
+    due_date: str = Form(""),
+    notes: str = Form(""),
+    bill_party_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need(request, "fields")
     if isinstance(user, RedirectResponse):
         return user
-    field = db.get(Field, field_id)
+    field = db.scalar(
+        select(Field)
+        .where(Field.id == field_id)
+        .options(
+            joinedload(Field.party),
+            joinedload(Field.shares).joinedload(FieldShare.party),
+        )
+    )
     if not field:
         return RedirectResponse("/fields", status_code=303)
 
+    partners = _field_bill_partners(db, field)
+    party, partner_pct, err = _field_bill_partner(db, field)
+    if bill_party_id.strip().isdigit():
+        pid = int(bill_party_id)
+        for p in partners:
+            if p.get("party") and p["party"].id == pid:
+                party = p["party"]
+                partner_pct = float(p["pct"])
+                err = None
+                break
+
+    if err or not party or partner_pct <= 0:
+        return RedirectResponse(
+            f"/fields/{field_id}/invoice?error=partner",
+            status_code=303,
+        )
+
     form = await request.form()
+    op_ids = {int(x) for x in form.getlist("op_id") if str(x).isdigit()}
+    hybrid_ids = {int(x) for x in form.getlist("hybrid_id") if str(x).isdigit()}
+    spray_ids = {int(x) for x in form.getlist("spray_id") if str(x).isdigit()}
+    assign_ids = {int(x) for x in form.getlist("assign_id") if str(x).isdigit()}
+    # Custom extra lines
+    custom_names = [str(x) for x in form.getlist("custom_name")]
+    custom_qtys = [str(x) for x in form.getlist("custom_qty")]
+    custom_rates = [str(x) for x in form.getlist("custom_rate")]
 
-    def g(key: str, default: str = "") -> str:
-        v = form.get(key)
-        if v is None:
-            return default
-        return str(v)
+    share_frac = float(partner_pct) / 100.0
+    acres = _field_acres(field)
+    lines: list[dict] = []
+    mark_ops: list[FieldOperation] = []
+    mark_hybrids: list[FieldHybrid] = []
+    mark_sprays: list[FieldSprayMix] = []
+    mark_assigns: list[FieldAssignment] = []
 
-    op_kind = g("op_kind").strip()
-    op_date = g("op_date")
-    description = g("description").strip()
-    cost_raw = g("cost").strip()
-    billable = g("billable")
-    operator = g("operator").strip()
-    acres = _f(g("acres"), field.acres_mine or field.acres_total or 0) or 0
-    wizard_url = f"/fields/{field_id}/add-operation"
-    foc_url = f"/fields/{field_id}"
-    confirm_duplicate = g("confirm_duplicate")
+    for oid in op_ids:
+        op = db.get(FieldOperation, oid)
+        if not op or op.field_id != field_id or op.invoice_id:
+            continue
+        # Machinery catalog / operator-paid ops stay on your P&L — never invoice landlord
+        if is_operator_paid_op(op):
+            continue
+        amt = round(float(op.cost or 0) * share_frac, 2)
+        if amt <= 0:
+            continue
+        mark_ops.append(op)
+        desc = f"{op.op_date} · {op.op_type}"
+        if op.description:
+            desc += f" — {op.description}"
+        desc += f" ({partner_pct:g}% share)"
+        lines.append(
+            {
+                "description": desc[:255],
+                "quantity": 1.0,
+                "rate": amt,
+                "op": op,
+                "log_op": False,
+            }
+        )
 
-    if op_kind not in _OP_KIND_LABELS and op_kind != "custom":
-        return redirect_flash(request, wizard_url, "Choose an operation type.", "warn")
-    # --- hybrid units gate: warn if cost_per_unit set but no way to calculate $ ---
+    for hid in hybrid_ids:
+        link = db.get(FieldHybrid, hid)
+        if not link or link.field_id != field_id or link.invoice_id:
+            continue
+        hybrid = db.get(Hybrid, link.hybrid_id)
+        cost, detail = hybrid_link_cost(link, hybrid, acres)
+        if cost is None or float(cost) <= 0:
+            continue
+        amt = round(float(cost) * share_frac, 2)
+        if amt <= 0:
+            continue
+        mark_hybrids.append(link)
+        title = (hybrid.name if hybrid else "Seed") or "Seed"
+        if hybrid and hybrid.brand:
+            title = f"{title} ({hybrid.brand})"
+        desc = f"Planting · {title}"
+        if detail:
+            desc += f" — {detail}"
+        desc += f" ({partner_pct:g}% share)"
+        lines.append(
+            {
+                "description": desc[:255],
+                "quantity": 1.0,
+                "rate": amt,
+                "op": None,
+                "log_op": False,
+            }
+        )
 
-    when = _d(op_date)
-    if not when:
-        return redirect_flash(request, wizard_url, "Date is required.", "warn")
+    for sid in spray_ids:
+        link = db.get(FieldSprayMix, sid)
+        if not link or link.field_id != field_id or link.invoice_id:
+            continue
+        mix = db.get(SprayMix, link.spray_mix_id)
+        cpa = getattr(mix, "cost_per_acre", None) if mix else None
+        try:
+            cpa_f = float(cpa) if cpa is not None else None
+        except (TypeError, ValueError):
+            cpa_f = None
+        if cpa_f is None or acres <= 0:
+            continue
+        cost = round(cpa_f * acres, 2)
+        amt = round(cost * share_frac, 2)
+        if amt <= 0:
+            continue
+        mark_sprays.append(link)
+        title = mix.name if mix else "Spray"
+        timing = link.timing_label or (mix.timing if mix else None)
+        desc = f"Spray · {title}"
+        if timing:
+            desc += f" — {timing}"
+        desc += f" · ${cpa_f:.2f}/ac ({partner_pct:g}% share)"
+        lines.append(
+            {
+                "description": desc[:255],
+                "quantity": 1.0,
+                "rate": amt,
+                "op": None,
+                "log_op": False,
+            }
+        )
 
-    custom_type = g("custom_type").strip()
-    if op_kind == "custom":
-        if not custom_type:
-            return redirect_flash(request, wizard_url, "Custom type name is required.", "warn")
-        op_type_label = custom_type
-    else:
-        op_type_label = _OP_KIND_LABELS[op_kind]
+    for aid in assign_ids:
+        row = db.get(FieldAssignment, aid)
+        if not row or row.field_id != field_id or row.invoice_id:
+            continue
+        cost = round(float(row.quantity or 0) * float(row.unit_cost or 0), 2)
+        amt = round(cost * share_frac, 2)
+        if amt <= 0:
+            continue
+        mark_assigns.append(row)
+        prod = db.get(InputProduct, row.product_id)
+        pname = prod.name if prod else f"Product #{row.product_id}"
+        desc = f"Input · {pname} ({partner_pct:g}% share)"
+        lines.append(
+            {
+                "description": desc[:255],
+                "quantity": 1.0,
+                "rate": amt,
+                "op": None,
+                "log_op": False,
+            }
+        )
 
-    desc_parts: list[str] = []
-    if description:
-        desc_parts.append(description)
-    if operator:
-        desc_parts.append(f"Operator: {operator}")
-    if acres and acres != (field.acres_mine or field.acres_total or 0):
-        desc_parts.append(f"Treated {acres:g} ac")
+    for name, qty_s, rate_s in zip(custom_names, custom_qtys, custom_rates):
+        name = (name or "").strip()
+        if not name:
+            continue
+        qty = _f(qty_s) or 1.0
+        rate = _f(rate_s) or 0.0
+        if qty <= 0:
+            continue
+        lines.append(
+            {
+                "description": name[:255],
+                "quantity": qty,
+                "rate": rate,
+                "op": None,
+                "log_op": True,
+            }
+        )
 
-    # Application / custom-hire only. Product $ lives on hybrid / mix / inventory assign
-    # so the field ledger does not double-count (Granular-style split).
-    hire_cost = _f(cost_raw, None) if cost_raw else 0.0
-    if hire_cost is None:
-        hire_cost = 0.0
+    if not lines:
+        return RedirectResponse(
+            f"/fields/{field_id}/invoice?error=empty",
+            status_code=303,
+        )
 
-    plant_lines: list[tuple[Hybrid, str, float | None]] = []
-    mix: SprayMix | None = None
-    timing = ""
-    weather_temp = ""
-    weather_wind = ""
-    product: InputProduct | None = None
-    qty = 0.0
-    pname = ""
-
-    if op_kind == "planting":
-        plant_ids = [str(v) for v in form.getlist("plant_hybrid_id")]
-        plant_rates = [str(v) for v in form.getlist("plant_rate")]
-        plant_units = [str(v) for v in form.getlist("plant_units")]
-        # Backward-compat single fields from older form / confirm pages
-        if not plant_ids and g("hybrid_id").strip():
-            plant_ids = [g("hybrid_id").strip()]
-            plant_rates = [g("hybrid_rate").strip()]
-            plant_units = [g("hybrid_units").strip()]
-        for i, raw_id in enumerate(plant_ids):
-            raw_id = (raw_id or "").strip()
-            if not raw_id:
-                continue
-            try:
-                hid = int(raw_id)
-            except ValueError:
-                continue
-            hybrid = db.get(Hybrid, hid) if hid else None
-            if not hybrid:
-                continue
-            rate = (plant_rates[i] if i < len(plant_rates) else "").strip()
-            units_raw = (plant_units[i] if i < len(plant_units) else "").strip()
-            units = _f(units_raw, None) if units_raw else None
-            plant_lines.append((hybrid, rate, units))
-            label = f"{hybrid.brand} {hybrid.name}".strip() if hybrid.brand else hybrid.name
-            bit = label
-            if rate:
-                bit += f" @ {rate}"
-            if units is not None:
-                ul = hybrid.unit_label or "units"
-                bit += f" · {units:g} {ul}"
-            desc_parts.append(bit)
-        if not plant_lines:
-            # Allow planting with notes only
-            pass
-
-    elif op_kind == "spraying":
-        mix_raw = g("spray_mix_id").strip()
-        timing = g("timing_label").strip()
-        weather_temp = g("weather_temp").strip()
-        weather_wind = g("weather_wind").strip()
-        if mix_raw:
-            try:
-                mid = int(mix_raw)
-            except ValueError:
-                mid = 0
-            mix = db.get(SprayMix, mid) if mid else None
-            if mix:
-                bit = f"Mix: {mix.name}"
-                if timing:
-                    bit += f" ({timing})"
-                desc_parts.append(bit)
-        weather_bits = []
-        if weather_temp:
-            weather_bits.append(f"{weather_temp}°F")
-        if weather_wind:
-            weather_bits.append(f"wind {weather_wind}")
-        if weather_bits:
-            desc_parts.append("Weather: " + ", ".join(weather_bits))
-
-    elif op_kind in ("dry_fertilizer", "sidedress", "lime"):
-        suffix = {"dry_fertilizer": "", "sidedress": "_sd", "lime": "_lime"}[op_kind]
-        prod_raw = g(f"product_id{suffix}").strip()
-        qty_raw = g(f"quantity{suffix}").strip()
-        pname = g(f"product_name{suffix}").strip()
-        qty = _f(qty_raw, 0) or 0
-        if prod_raw and qty > 0:
-            try:
-                pid = int(prod_raw)
-            except ValueError:
-                pid = 0
-            product = db.get(InputProduct, pid) if pid else None
-            if product:
-                unit = product.unit or ""
-                desc_parts.append(f"{product.name}: {qty:g} {unit}".strip())
-        if pname:
-            desc_parts.append(pname)
-
-    elif op_kind == "harvest":
-        yld = g("yield_bu").strip()
-        moisture = g("moisture").strip()
-        dest = g("destination").strip()
-        if yld:
-            desc_parts.append(f"Yield {yld} bu/ac")
-        if moisture:
-            desc_parts.append(f"Moisture {moisture}%")
-        if dest:
-            desc_parts.append(f"Dest: {dest}")
-
-    full_desc = " · ".join(desc_parts) if desc_parts else None
-
-    hits: list[str] = []
-    hits.extend(find_operation_dups(db, field_id, when, op_type_label, full_desc))
-    for hybrid, _rate, _units in plant_lines:
-        hits.extend(find_hybrid_assign_dups(db, [field_id], hybrid.id, when))
-    if mix:
-        hits.extend(find_spray_assign_dups(db, [field_id], [(mix.id, when)]))
-    if product and qty > 0:
-        hits.extend(find_assignment_dups(db, field_id, product.id, when))
-
-    form_pairs = [(k, str(v)) for k, v in form.multi_items() if k != "confirm_duplicate"]
-    block = confirm_if_duplicates(
-        request,
-        hits=hits,
-        confirm_duplicate=confirm_duplicate,
-        action=wizard_url,
-        cancel_url=wizard_url,
-        heading="Possible duplicate field operation",
-        form_pairs=form_pairs,
-        user=user,
-        farm_name=_farm(db),
-        active="fields",
-        lede="This looks similar to something already on the field. Review before saving again.",
+    total = round(sum(float(L["quantity"]) * float(L["rate"]) for L in lines), 2)
+    inv = Invoice(
+        party_id=party.id,
+        field_id=field.id,
+        invoice_date=_d(invoice_date) or date.today(),
+        due_date=_d(due_date),
+        status="unpaid",
+        notes=(notes.strip() or None)
+        or f"{field.name} · {party.name} billed at {partner_pct:g}%",
+        total=total,
     )
-    if block:
-        return block
+    db.add(inv)
+    db.flush()
 
-    if op_kind == "harvest":
-        yld = g("yield_bu").strip()
-        update_ey = g("update_expected_yield").strip()
-        yf = _f(yld, None) if yld else None
-        if update_ey == "1" and yf is not None:
-            field.expected_yield = yf
-
-    # Hybrid units gate: if hybrid has cost_per_unit but no units_applied and no cost_per_acre,
-    # the ledger will show $0 — warn and redirect back unless user confirmed.
-    if op_kind == "planting" and not confirm_duplicate:
-        missing_gate = []
-        for h, _rate, u in plant_lines:
-            if h.cost_per_unit and u is None and not h.cost_per_acre:
-                lbl = f"{h.brand} {h.name}".strip() if h.brand else h.name
-                missing_gate.append(lbl)
-        if missing_gate:
-            return redirect_flash(
-                request,
-                wizard_url,
-                f"Hybrid(s) {', '.join(missing_gate)} have $/unit cost but no units entered "
-                "and no $/ac fallback — enter units (bags/units applied) so seed cost is captured. "
-                "Or set $/ac on the hybrid in the library.",
-                "warn",
+    invoiced_labels: list[str] = []
+    for L in lines:
+        op_row = L["op"]
+        if L["log_op"]:
+            # Log custom invoice item as a field operation so the ledger shows it
+            op_row = FieldOperation(
+                field_id=field.id,
+                op_date=inv.invoice_date,
+                op_type="invoice item",
+                description=L["description"],
+                cost=round(float(L["quantity"]) * float(L["rate"]), 2),
+                billable=1,
+                invoice_id=inv.id,
             )
-
-    for hybrid, rate, units in plant_lines:
-        db.add(
-            FieldHybrid(
-                field_id=field_id,
-                hybrid_id=hybrid.id,
-                rate=rate or None,
-                units_applied=units,
-                treated_acres=acres if acres else None,
-                applied_date=when,
-            )
+            db.add(op_row)
+            db.flush()
+        line = InvoiceLine(
+            invoice_id=inv.id,
+            description=L["description"],
+            quantity=float(L["quantity"]),
+            rate=float(L["rate"]),
+            field_id=field.id,
+            field_operation_id=op_row.id if op_row else None,
         )
-    if mix:
-        db.add(
-            FieldSprayMix(
-                field_id=field_id,
-                spray_mix_id=mix.id,
-                timing_label=timing or None,
-                applied_date=when,
-                treated_acres=acres if acres else None,
-                weather_temp=weather_temp or None,
-                weather_wind=weather_wind or None,
-            )
-        )
-        # Deplete inventory for each product line in the spray mix
-        if acres and acres > 0:
-            mix_lines = list(
-                db.scalars(
-                    select(SprayMixLine).where(SprayMixLine.spray_mix_id == mix.id)
-                )
-            )
-            for ml in mix_lines:
-                rate_val = float(ml.rate or 0)
-                if rate_val <= 0:
-                    continue
-                # Resolve product: prefer product_id, then name match
-                inv_prod: InputProduct | None = None
-                if ml.product_id:
-                    inv_prod = db.get(InputProduct, ml.product_id)
-                if inv_prod is None and ml.product_name:
-                    inv_prod = db.scalar(
-                        select(InputProduct).where(InputProduct.name == ml.product_name)
-                    )
-                if inv_prod is None:
-                    continue
-                # Rate is per-acre — convert into inventory unit when possible.
-                # Cost stays on mix.cost_per_acre (avoid double-counting in ledger).
-                depleted_qty = deplete_qty_from_rate(
-                    rate_val,
-                    acres,
-                    rate_unit=getattr(ml, "rate_unit", None),
-                    inventory_unit=getattr(inv_prod, "unit", None),
-                )
-                if depleted_qty <= 0:
-                    continue
-                inv_prod.on_hand = max(0.0, (inv_prod.on_hand or 0) - depleted_qty)
-                db.add(
-                    FieldAssignment(
-                        product_id=inv_prod.id,
-                        field_id=field_id,
-                        assign_date=when,
-                        quantity=depleted_qty,
-                        unit_cost=0.0,
-                        notes=f"Auto-depleted from spray mix: {mix.name} (inventory only; $ on mix CPA)",
-                    )
-                )
+        db.add(line)
+        if op_row and not L["log_op"]:
+            op_row.invoice_id = inv.id
+            op_row.billable = 1
+            invoiced_labels.append(f"{op_row.op_date} {op_row.op_type}")
+        elif L["log_op"]:
+            invoiced_labels.append(L["description"])
 
-    if product and qty > 0:
-        product.on_hand = max(0, (product.on_hand or 0) - qty)
-        db.add(
-            FieldAssignment(
-                product_id=product.id,
-                field_id=field_id,
-                assign_date=when,
-                quantity=qty,
-                unit_cost=product.avg_unit_cost or 0,
-            )
-        )
+    for link in mark_hybrids:
+        link.invoice_id = inv.id
+        hybrid = db.get(Hybrid, link.hybrid_id)
+        invoiced_labels.append(f"Seed {hybrid.name if hybrid else link.id}")
+    for link in mark_sprays:
+        link.invoice_id = inv.id
+        mix = db.get(SprayMix, link.spray_mix_id)
+        invoiced_labels.append(f"Spray {mix.name if mix else link.id}")
+    for row in mark_assigns:
+        row.invoice_id = inv.id
+        prod = db.get(InputProduct, row.product_id)
+        invoiced_labels.append(f"Input {prod.name if prod else row.id}")
 
-    db.add(
-        FieldOperation(
-            field_id=field_id,
-            op_date=when,
-            op_type=op_type_label,
-            description=full_desc,
-            cost=float(hire_cost or 0),
-            billable=1 if billable else 0,
-        )
-    )
     log_activity(
-        db, user.get("username"), "field_add_operation", f"{field.name}: {op_type_label}"
+        db,
+        user.get("username"),
+        "field_invoice",
+        f"#{inv.id} {field.name} → {party.name} ${total:.2f}",
     )
-    # Auto-complete open work orders / plans that match this op kind
-    completed_wo = 0
-    open_plans = list(
-        db.scalars(
-            select(FieldPlan).where(
-                FieldPlan.field_id == field_id,
-                FieldPlan.status != "done",
-            )
-        )
-    )
-    kind_aliases = {
-        "planting": {"planting", "plant"},
-        "spraying": {"spraying", "spray"},
-        "dry_fertilizer": {"dry_fertilizer", "fertilizer", "fert"},
-        "sidedress": {"sidedress"},
-        "lime": {"lime"},
-        "harvest": {"harvest"},
-    }
-    match_keys = kind_aliases.get(op_kind, {op_kind}) if op_kind != "custom" else set()
-    for p in open_plans:
-        keys = {(p.op_kind or "").lower(), (p.plan_type or "").lower()} - {""}
-        if keys & match_keys:
-            p.status = "done"
-            p.completed_date = when
-            completed_wo += 1
     db.commit()
-    msg = f"Saved {op_type_label} on {field.name} ({when.isoformat()})."
-    if completed_wo:
-        msg += f" Closed {completed_wo} matching work order{'s' if completed_wo != 1 else ''}."
-    return redirect_flash(
-        request,
-        foc_url,
-        msg,
-    )
+    return RedirectResponse(f"/invoices/{inv.id}?created=1", status_code=303)
 
 
 @router.post("/fields/{field_id}/soil")
@@ -1082,14 +1322,8 @@ def field_soil(
 
 
 @router.post("/fields/{field_id}/plan-done")
-def field_plan_done(
-    request: Request,
-    field_id: int,
-    plan_id: int = Form(...),
-    next: str = Form(""),
-    db: Session = Depends(get_db),
-):
-    user = _need_edit_fields(request)
+def field_plan_done(request: Request, field_id: int, plan_id: int = Form(...), db: Session = Depends(get_db)):
+    user = _need(request, "fields")
     if isinstance(user, RedirectResponse):
         return user
     plan = db.get(FieldPlan, plan_id)
@@ -1097,337 +1331,7 @@ def field_plan_done(
         plan.status = "done"
         plan.completed_date = date.today()
         db.commit()
-    dest = (next or "").strip()
-    if dest.startswith("/") and not dest.startswith("//"):
-        return RedirectResponse(dest, status_code=303)
     return RedirectResponse(f"/fields/{field_id}", status_code=303)
-
-
-# ---------- Void endpoints ----------
-@router.post("/fields/{field_id}/void/op/{op_id}")
-def void_op(request: Request, field_id: int, op_id: int, db: Session = Depends(get_db)):
-    user = _need_edit_fields(request)
-    if isinstance(user, RedirectResponse):
-        return user
-    op = db.get(FieldOperation, op_id)
-    if op and op.field_id == field_id and not op.voided:
-        op.voided = 1
-        log_activity(db, user.get("username"), "void_op", f"op#{op_id} on field#{field_id}")
-        db.commit()
-    return redirect_flash(request, f"/fields/{field_id}", "Operation voided.", "warn")
-
-
-@router.post("/fields/{field_id}/void/assign/{assign_id}")
-def void_assign(request: Request, field_id: int, assign_id: int, db: Session = Depends(get_db)):
-    user = _need_edit_fields(request)
-    if isinstance(user, RedirectResponse):
-        return user
-    a = db.get(FieldAssignment, assign_id)
-    if a and a.field_id == field_id and not a.voided:
-        a.voided = 1
-        # Restore on_hand
-        prod = db.get(InputProduct, a.product_id)
-        if prod:
-            prod.on_hand = (prod.on_hand or 0) + float(a.quantity or 0)
-        log_activity(db, user.get("username"), "void_assign", f"assign#{assign_id} on field#{field_id}")
-        db.commit()
-    return redirect_flash(request, f"/fields/{field_id}", "Input assignment voided — inventory restored.", "warn")
-
-
-@router.post("/fields/{field_id}/void/spray/{link_id}")
-def void_spray(request: Request, field_id: int, link_id: int, db: Session = Depends(get_db)):
-    user = _need_edit_fields(request)
-    if isinstance(user, RedirectResponse):
-        return user
-    link = db.get(FieldSprayMix, link_id)
-    if link and link.field_id == field_id and not link.voided:
-        link.voided = 1
-        mix = db.get(SprayMix, link.spray_mix_id)
-        mix_name = mix.name if mix else ""
-        # Cascade: void inventory-only auto-assigns from this spray and restore on_hand
-        auto_assigns = list(
-            db.scalars(
-                select(FieldAssignment).where(
-                    FieldAssignment.field_id == field_id,
-                    FieldAssignment.voided == 0,
-                    FieldAssignment.notes.isnot(None),
-                )
-            )
-        )
-        for a in auto_assigns:
-            note = a.notes or ""
-            if "Auto-depleted from spray mix" not in note:
-                continue
-            if mix_name and mix_name not in note:
-                continue
-            if link.applied_date and a.assign_date and a.assign_date != link.applied_date:
-                continue
-            a.voided = 1
-            prod = db.get(InputProduct, a.product_id)
-            if prod:
-                prod.on_hand = (prod.on_hand or 0) + float(a.quantity or 0)
-        log_activity(db, user.get("username"), "void_spray", f"spray_link#{link_id} on field#{field_id}")
-        db.commit()
-    return redirect_flash(request, f"/fields/{field_id}", "Spray application voided (inventory restored).", "warn")
-
-
-@router.post("/fields/{field_id}/void/hybrid/{link_id}")
-def void_hybrid(request: Request, field_id: int, link_id: int, db: Session = Depends(get_db)):
-    user = _need_edit_fields(request)
-    if isinstance(user, RedirectResponse):
-        return user
-    link = db.get(FieldHybrid, link_id)
-    if link and link.field_id == field_id and not link.voided:
-        link.voided = 1
-        log_activity(db, user.get("username"), "void_hybrid", f"hybrid_link#{link_id} on field#{field_id}")
-        db.commit()
-    return redirect_flash(request, f"/fields/{field_id}", "Hybrid planting record voided.", "warn")
-
-
-# ---------- Work orders ----------
-@router.get("/work-orders", response_class=HTMLResponse)
-def work_orders_list(request: Request, db: Session = Depends(get_db)):
-    user = _need(request, "fields")
-    if isinstance(user, RedirectResponse):
-        return user
-    year = _year(db)
-    plans: list[FieldPlan] = []
-    fields_by_id: dict[int, Field] = {}
-    if year:
-        plans = list(
-            db.scalars(
-                select(FieldPlan)
-                .where(
-                    FieldPlan.crop_year_id == year.id,
-                    FieldPlan.status != "done",
-                )
-                .order_by(FieldPlan.priority.desc(), FieldPlan.target_date.asc(), FieldPlan.id.asc())
-            )
-        )
-        fids = {p.field_id for p in plans}
-        if fids:
-            for f in db.scalars(select(Field).where(Field.id.in_(fids))):
-                fields_by_id[f.id] = f
-    year_fields: list[Field] = []
-    if year:
-        year_fields = list(
-            db.scalars(select(Field).where(Field.crop_year_id == year.id).order_by(Field.name))
-        )
-    return templates.TemplateResponse(
-        "work_orders.html",
-        {
-            "request": request,
-            "user": user,
-            "active": "work_orders",
-            "farm_name": _farm(db),
-            "year": year,
-            "plans": plans,
-            "fields_by_id": fields_by_id,
-            "year_fields": year_fields,
-            "today": date.today().isoformat(),
-            "can_edit_fields": perms.can_edit_fields(user.get("role")),
-        },
-    )
-
-
-@router.post("/work-orders/create")
-def work_orders_create(
-    request: Request,
-    field_id: str = Form(...),
-    title: str = Form(...),
-    plan_type: str = Form("work_order"),
-    op_kind: str = Form(""),
-    assigned_to: str = Form(""),
-    priority: str = Form("normal"),
-    target_date: str = Form(""),
-    details: str = Form(""),
-    estimated_cost_per_acre: str = Form(""),
-    db: Session = Depends(get_db),
-):
-    user = _need_edit_fields(request)
-    if isinstance(user, RedirectResponse):
-        return user
-    year = _year(db)
-    if not year or not field_id.isdigit():
-        return redirect_flash(request, "/work-orders", "Invalid field or year.", "warn")
-    fid = int(field_id)
-    field = db.get(Field, fid)
-    if not field:
-        return redirect_flash(request, "/work-orders", "Field not found.", "warn")
-    if not title.strip():
-        return redirect_flash(request, "/work-orders", "Title is required.", "warn")
-    kind = (op_kind.strip() or "").lower()
-    ptype = (plan_type.strip() or "work_order").lower()
-    plan_to_kind = {
-        "spray": "spraying",
-        "spraying": "spraying",
-        "planting": "planting",
-        "plant": "planting",
-        "fertilizer": "dry_fertilizer",
-        "dry_fertilizer": "dry_fertilizer",
-        "sidedress": "sidedress",
-        "lime": "lime",
-        "harvest": "harvest",
-    }
-    if not kind:
-        kind = plan_to_kind.get(ptype)
-    else:
-        kind = plan_to_kind.get(kind, kind)
-    plan = FieldPlan(
-        field_id=fid,
-        crop_year_id=year.id,
-        plan_type=(plan_type.strip() or "work_order"),
-        op_kind=kind,
-        title=title.strip(),
-        assigned_to=assigned_to.strip() or None,
-        priority=(priority.strip() or "normal"),
-        target_date=_d(target_date),
-        details=details.strip() or None,
-        estimated_cost_per_acre=_f(estimated_cost_per_acre, None) if estimated_cost_per_acre.strip() else None,
-        status="planned",
-    )
-    db.add(plan)
-    log_activity(db, user.get("username"), "work_order_create", f"{field.name}: {plan.title}")
-    db.commit()
-    return redirect_flash(request, "/work-orders", f"Work order created for {field.name}.")
-
-
-# ---------- Landlord statement ----------
-@router.get("/fields/{field_id}/landlord-statement", response_class=HTMLResponse)
-def field_landlord_statement(request: Request, field_id: int, db: Session = Depends(get_db)):
-    user = _need(request, "fields")
-    if isinstance(user, RedirectResponse):
-        return user
-    field = db.scalar(
-        select(Field)
-        .where(Field.id == field_id)
-        .options(
-            joinedload(Field.party),
-            joinedload(Field.shares).joinedload(FieldShare.party),
-            joinedload(Field.crop_year),
-        )
-    )
-    if not field:
-        return RedirectResponse("/fields", status_code=303)
-
-    ops = list(db.scalars(select(FieldOperation).where(FieldOperation.field_id == field_id)))
-    assigns = list(db.scalars(select(FieldAssignment).where(FieldAssignment.field_id == field_id)))
-    hybrid_links = list(db.scalars(select(FieldHybrid).where(FieldHybrid.field_id == field_id)))
-    hybrids = [(h, db.get(Hybrid, h.hybrid_id)) for h in hybrid_links]
-    spray_links = list(db.scalars(select(FieldSprayMix).where(FieldSprayMix.field_id == field_id)))
-    sprays = [(s, db.get(SprayMix, s.spray_mix_id)) for s in spray_links]
-    plans = list(db.scalars(select(FieldPlan).where(FieldPlan.field_id == field_id)))
-
-    product_ids = [a.product_id for a in assigns if a.product_id]
-    products_by_id: dict[int, InputProduct] = {}
-    if product_ids:
-        for p in db.scalars(select(InputProduct).where(InputProduct.id.in_(product_ids))):
-            products_by_id[p.id] = p
-
-    settings = db.scalar(select(AppSettings).limit(1))
-    board = cme_quotes.board_from_settings(settings)
-    contracts: list[GrainContract] = []
-    if field.crop_year_id:
-        contracts = list(
-            db.scalars(
-                select(GrainContract).where(
-                    GrainContract.crop_year_id == field.crop_year_id,
-                    GrainContract.crop == field.crop,
-                )
-            )
-        )
-
-    ins_prem, budget_cop_ac = _field_insurance_budget(field, db, settings)
-    ledger = build_field_ledger(
-        field,
-        ops=ops,
-        assigns=assigns,
-        products_by_id=products_by_id,
-        spray_links=sprays,
-        hybrid_links=hybrids,
-        plans=plans,
-        soils=[],
-        settings=settings,
-        board=board,
-        contracts=contracts,
-        insurance_premium=ins_prem,
-        budget_cop_ac=budget_cop_ac,
-    )
-
-    shares = list(field.shares or [])
-    if not shares and (field.my_share_pct is not None or field.ownership_mode == "on_shares"):
-        shares = [
-            FieldShare(
-                field_id=field.id,
-                partner_name="Me",
-                share_pct=field.my_share_pct if field.my_share_pct is not None else 100.0,
-                is_me=1,
-                sort_order=0,
-            )
-        ]
-        if field.party_id:
-            other = max(0.0, 100.0 - float(field.my_share_pct or 0))
-            shares.append(
-                FieldShare(
-                    field_id=field.id,
-                    party_id=field.party_id,
-                    partner_name=field.party.name if field.party else "Partner",
-                    share_pct=other,
-                    is_me=0,
-                    sort_order=1,
-                )
-            )
-
-    # Crop-share / landlord entitlement snapshot
-    my_pct = 100.0
-    landlord_rows = []
-    for s in shares:
-        pct = float(s.share_pct or 0)
-        if getattr(s, "is_me", 0):
-            my_pct = pct
-            continue
-        landlord_rows.append(s)
-    landlord_pct = max(0.0, sum(float(s.share_pct or 0) for s in landlord_rows))
-    total_ac = float(field.acres_total or field.acres_mine or 0)
-    ey = float(field.expected_yield or 0) if field.expected_yield is not None else None
-    total_bu = round(total_ac * ey, 1) if ey is not None and total_ac else None
-    landlord_bu = round(total_bu * landlord_pct / 100.0, 1) if total_bu is not None and landlord_pct else None
-    my_bu = round(total_bu * my_pct / 100.0, 1) if total_bu is not None else None
-    mark = (ledger.get("marks") or {}).get("futures") or (ledger.get("marks") or {}).get("contracted")
-    landlord_grain_value = round(landlord_bu * float(mark), 2) if landlord_bu is not None and mark else None
-    # Cash rent owed to landlords (full field rent when cash lease; 0 on pure crop share)
-    rent_pa = float(field.rent_per_acre or 0)
-    cash_rent_total = round(total_ac * rent_pa, 2) if rent_pa and total_ac else 0.0
-    # Typical crop-share: landlord does not pay operator inputs — show operator COP as note only
-    crop_share = {
-        "my_pct": my_pct,
-        "landlord_pct": landlord_pct,
-        "total_ac": total_ac,
-        "total_bu": total_bu,
-        "my_bu": my_bu,
-        "landlord_bu": landlord_bu,
-        "mark": mark,
-        "landlord_grain_value": landlord_grain_value,
-        "cash_rent_total": cash_rent_total,
-        "is_crop_share": (field.lease_type or "").lower() in ("crop_share", "crop share")
-        or (field.ownership_mode or "").lower() == "on_shares",
-        "landlord_rows": landlord_rows,
-    }
-
-    return templates.TemplateResponse(
-        "field_landlord_statement.html",
-        {
-            "request": request,
-            "user": user,
-            "active": "fields",
-            "farm_name": _farm(db),
-            "field": field,
-            "shares": shares,
-            "ledger": ledger,
-            "crop_share": crop_share,
-            "today": date.today().isoformat(),
-        },
-    )
 
 
 # ---------- Settlements ----------
@@ -1565,7 +1469,7 @@ def settlement_autofill_rent(request: Request, settlement_id: int, db: Session =
     )
     for f in fields:
         amt = f.rent_my_share if f.ownership_mode != "custom_work" else (f.acres_total or 0) * (f.rent_per_acre or 0)
-        # For landlord Cash Rent/Property Taxes: rent owed is acres * rent (use total acres typically)
+        # For landlord cash rent: rent owed is acres * rent (use total acres typically)
         amt = round((f.acres_total or 0) * (f.rent_per_acre or 0), 2)
         if amt <= 0:
             continue
@@ -1634,11 +1538,22 @@ def trucking_rate(
     user = _need(request, "trucking")
     if isinstance(user, RedirectResponse):
         return user
+    from app import lookups as lu
+
+    dest = destination.strip()
+    trucker = hauler.strip() or None
+    rate = _f(rate_per_bu, None) if rate_per_bu.strip() else None
+    if dest:
+        lu.ensure(db, lu.DESTINATION, dest)
+    if trucker:
+        lu.ensure(db, lu.HAULER, trucker)
+    if rate is not None:
+        lu.ensure_freight(db, rate)
     db.add(
         TruckingRate(
-            destination=destination.strip(),
-            hauler=hauler.strip() or None,
-            rate_per_bu=_f(rate_per_bu, None) if rate_per_bu.strip() else None,
+            destination=dest,
+            hauler=trucker,
+            rate_per_bu=rate,
             rate_per_load=_f(rate_per_load, None) if rate_per_load.strip() else None,
             miles=_f(miles, None) if miles.strip() else None,
             notes=notes.strip() or None,
@@ -1664,12 +1579,22 @@ def trucking_load(
     user = _need(request, "trucking")
     if isinstance(user, RedirectResponse):
         return user
+    from app import lookups as lu
+
+    dest = destination.strip()
+    trucker = hauler.strip() or None
+    if dest:
+        lu.ensure(db, lu.DESTINATION, dest)
+    if trucker:
+        lu.ensure(db, lu.HAULER, trucker)
+    if crop:
+        lu.ensure(db, lu.CROP, crop)
     db.add(
         TruckLoad(
             load_date=_d(load_date) or date.today(),
             crop=crop,
-            destination=destination.strip(),
-            hauler=hauler.strip() or None,
+            destination=dest,
+            hauler=trucker,
             bushels=_f(bushels) or 0,
             rate_paid=_f(rate_paid, None) if rate_paid.strip() else None,
             ticket_number=ticket_number.strip() or None,
@@ -1858,12 +1783,9 @@ def _f(value: str, default: float | None = 0.0) -> float | None:
     if not value:
         return default
     try:
-        out = float(value)
+        return float(value)
     except ValueError:
         return default
-    if out != out or out in (float("inf"), float("-inf")):  # NaN / ±
-        return default
-    return out
 
 
 def _d(value: str) -> date | None:

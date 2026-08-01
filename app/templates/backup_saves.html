@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Saved backups — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Desktop → General files → Farm Ops Backups</p>
+    <h1>Saved backups</h1>
+    <p class="muted">Keeps the 5 most recent saves. Use Restore to put one back into the app.</p>
+  </div>
+  <form method="post" action="/backup/save">
+    <input type="hidden" name="next" value="/backup/saves">
+    <button type="submit" class="btn primary">Save now</button>
+  </form>
+</section>
+
+{% if saves %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Save file</th>
+        <th>Size</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in saves %}
+      <tr>
+        <td><strong>{{ s.name }}</strong></td>
+        <td>{{ "{:,.0f}".format(s.stat().st_size / 1024) }} KB</td>
+        <td>
+          <form method="post" action="/backup/restore" class="inline-form"
+                onsubmit="return confirm('Restore this save? Your current data will be replaced. A safety copy is kept in the app data folder.');">
+            <input type="hidden" name="filename" value="{{ s.name }}">
+            <button type="submit" class="btn">Restore</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="panel muted">No saves yet. Click <strong>Save</strong> in the top bar.</p>
+{% endif %}
+
+<p class="muted" style="margin-top:1rem">Folder: <code>{{ backup_dir }}</code></p>
+{% endblock %}

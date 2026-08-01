@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_chip %}
+{% block title %}Budget — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-banner bud-banner tone-{{ rollup.tone }}">
+  <div class="page-banner-copy">
+    <p class="eyebrow">Season spend · {% if year %}{{ year.year }}{% else %}no year{% endif %}</p>
+    <div class="page-banner-title-row">
+      <h1>Budget board</h1>
+      <a class="btn primary" href="/budget/sheet">Edit sheet</a>
+      <a class="btn ghost" href="/budget/defaults">Defaults hub</a>
+    </div>
+    <p class="lede">Plan what each field can spend, watch remaining dollars, and see profit turn <strong class="bud-ink-profit">green</strong> or loss turn <strong class="bud-ink-loss">red</strong>.</p>
+  </div>
+</section>
+
+{% if not year %}
+<p class="empty">Set an active crop year in <a href="/settings">Settings</a> to start budgeting.</p>
+{% else %}
+
+<section class="bud-heroes tone-{{ rollup.tone }}">
+  <a class="bud-hero" href="/budget/fields">
+    <span class="bud-hero-label">Projected profit</span>
+    <strong class="bud-hero-value">{% if rollup.profit is not none %}${{ "{:,.0f}".format(rollup.profit) }}{% else %}—{% endif %}</strong>
+    <em>{% if rollup.tone == 'profit' %}Looking good{% elif rollup.tone == 'loss' %}In the red{% elif rollup.tone == 'tight' %}Thin margin{% else %}Add plans &amp; prices{% endif %}</em>
+  </a>
+  <a class="bud-hero" href="/budget/sheet">
+    <span class="bud-hero-label">Budget remaining</span>
+    <strong class="bud-hero-value">${{ "{:,.0f}".format(rollup.remaining) }}</strong>
+    <em>Plan ${{ "{:,.0f}".format(rollup.planned) }} · spent ${{ "{:,.0f}".format(rollup.actual) }}{% if rollup.used_pct is not none %} · {{ rollup.used_pct }}% used{% endif %}</em>
+  </a>
+  <a class="bud-hero" href="/budget/fields?tone=loss">
+    <span class="bud-hero-label">Fields in the red</span>
+    <strong class="bud-hero-value">{{ rollup.loss_n }}</strong>
+    <em>{{ rollup.profit_n }} green · {{ rollup.with_plan }}/{{ rollup.field_count }} have a plan</em>
+  </a>
+  <a class="bud-hero" href="/budget/fields">
+    <span class="bud-hero-label">Expected revenue</span>
+    <strong class="bud-hero-value">${{ "{:,.0f}".format(rollup.revenue) }}</strong>
+    <em>My share × board/settings price (override per field)</em>
+  </a>
+</section>
+
+{% if rollup.over_plan_n or rollup.over_affordable_n %}
+<p class="banner-warn">
+  {% if rollup.over_plan_n %}{{ rollup.over_plan_n }} field{% if rollup.over_plan_n != 1 %}s{% endif %} over planned spend.{% endif %}
+  {% if rollup.over_affordable_n %} {{ rollup.over_affordable_n }} over affordable max.{% endif %}
+  <a href="/budget/fields">Review fields →</a>
+</p>
+{% endif %}
+
+<section class="bud-work-grid">
+  <a class="bud-work-card" href="/budget/fields">
+    <span class="bud-work-eyebrow">Desk</span>
+    <strong>Field budgets</strong>
+    <p>Color cards — green profit, red loss. Drill into any field.</p>
+  </a>
+  <a class="bud-work-card" href="/budget/sheet">
+    <span class="bud-work-eyebrow">Sheet</span>
+    <strong>Budget spreadsheet</strong>
+    <p>Edit every field’s categories in one grid (autosave).</p>
+  </a>
+  <a class="bud-work-card" href="/budget/defaults">
+    <span class="bud-work-eyebrow">Templates</span>
+    <strong>Defaults hub</strong>
+    <p>Edit corn/soy starters, pick fields, apply or overwrite.</p>
+  </a>
+  <a class="bud-work-card" href="/budget/what-if">
+    <span class="bud-work-eyebrow">Decide</span>
+    <strong>What-if spend</strong>
+    <p>Is extra fertilizer or seed worth the yield?</p>
+  </a>
+  <a class="bud-work-card" href="/budget/money">
+    <span class="bud-work-eyebrow">Cash</span>
+    <strong>Money</strong>
+    <p>Settle, invoices, balance sheet, equipment.</p>
+  </a>
+  <a class="bud-work-card" href="/risk">
+    <span class="bud-work-eyebrow">Price</span>
+    <strong>Marketing board</strong>
+    <p>Futures &amp; price assumptions feed affordable spend.</p>
+  </a>
+</section>
+
+<section class="bud-preview">
+  <div class="mkt-board-head">
+    <div>
+      <p class="eyebrow">Quick look</p>
+      <h2>Fields needing attention</h2>
+    </div>
+    <a class="btn ghost" href="/budget/fields">All fields</a>
+  </div>
+  <div class="bud-card-grid">
+    {% set ns = namespace(n=0) %}
+    {% for c in cards %}
+      {% if ns.n < 8 and (c.tone in ['loss', 'tight'] or not c.has_budget or c.over_plan) %}
+      {% set ns.n = ns.n + 1 %}
+      <a class="bud-field-card tone-{{ c.tone }}" href="/budget/fields/{{ c.field_id }}">
+        <div class="bud-field-card-top">
+          <span class="crop-badge {{ crop_tone(c.crop) }}">{{ c.crop }}</span>
+          <span class="bud-tone-pill tone-{{ c.tone }}">{% if c.tone == 'profit' %}Profit{% elif c.tone == 'loss' %}Loss{% elif c.tone == 'tight' %}Tight{% else %}Plan{% endif %}</span>
+        </div>
+        <strong class="bud-field-name">{{ c.name }}</strong>
+        <div class="bud-field-metrics">
+          <span>Plan <b>${{ "{:,.0f}".format(c.planned_total) }}</b></span>
+          <span>Left <b>${{ "{:,.0f}".format(c.remaining) }}</b></span>
+          <span>P/L <b>{% if c.projected_profit is not none %}${{ "{:,.0f}".format(c.projected_profit) }}{% else %}—{% endif %}</b></span>
+        </div>
+        <div class="bud-bar" aria-hidden="true">
+          {% set w = c.used_pct if c.used_pct is not none else 0 %}
+          <span class="bud-bar-fill" style="width:{{ w if w < 100 else 100 }}%"></span>
+        </div>
+      </a>
+      {% endif %}
+    {% endfor %}
+    {% if ns.n == 0 %}
+      <p class="muted">No red/tight fields — open the <a href="/budget/fields">field desk</a> or build plans on the <a href="/budget/sheet">sheet</a>.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+{# Shared Main operations strip — pass: ops_title, ops_lede, ops_actions; optional ops_lists_href #}
+<section class="hub-ops" aria-label="Main operations">
+  <div class="hub-ops-head">
+    <div class="hub-ops-title-row">
+      <h1 class="hub-ops-title">{{ ops_title }}</h1>
+      {% if ops_lists_href %}
+      <a class="hub-ops-settings" href="{{ ops_lists_href }}" title="Edit dropdown lists for this section">
+        <span class="hub-ops-settings-icon" aria-hidden="true">⚙</span>
+        <span>Lists</span>
+      </a>
+      {% endif %}
+    </div>
+    {% if ops_lede %}<p class="hub-ops-lede">{{ ops_lede }}</p>{% endif %}
+  </div>
+  <div class="hub-ops-actions">
+    {% for a in ops_actions %}
+    <a class="hub-ops-btn{% if a.get('primary') %} is-primary{% endif %}" href="{{ a.href }}">{{ a.label }}</a>
+    {% endfor %}
+  </div>
+</section>

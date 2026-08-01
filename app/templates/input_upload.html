@@ -34,6 +34,10 @@
     <li>
       <a href="/inputs/upload/{{ b.id }}"><strong>{{ b.filename }}</strong></a>
       <span class="muted">{{ b.notes or b.status }} · {{ b.created_at }}</span>
+      <form method="post" action="/inputs/upload/{{ b.id }}/discard" style="display:inline"
+            onsubmit="return confirm('Discard import “{{ b.filename }}”?');">
+        <button type="submit" class="linkish danger">Discard</button>
+      </form>
     </li>
     {% endfor %}
   </ul>

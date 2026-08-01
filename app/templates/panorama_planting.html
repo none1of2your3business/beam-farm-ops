@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Planting import — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Panorama · Seasonal Inputs</p>
+    <h1>Review planting data</h1>
+    <p class="lede">
+      Hybrid name, acres, units{% if payload.has_client_column %}, client{% endif %}{% if payload.has_field_column %}, and field{% endif %}.
+      {% if not payload.has_field_column %}
+      This file is <strong>hybrid totals</strong> (no Client/Field columns) — map each row to a field below if you want per-field units, or import as farm totals.
+      {% endif %}
+    </p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/panorama">Back</a>
+    <a class="btn" href="/panorama/planted">Planted summary</a>
+  </div>
+</section>
+
+{% if message %}<p class="banner-ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="banner-warn">{{ error }}</p>{% endif %}
+
+<section class="stat-grid compact">
+  <div class="stat"><span class="stat-label">Hybrids</span><span class="stat-value">{{ summary.hybrid_count }}</span></div>
+  <div class="stat"><span class="stat-label">Rows</span><span class="stat-value">{{ summary.row_count }}</span></div>
+  <div class="stat"><span class="stat-label">Acres</span><span class="stat-value">{{ "{:,.1f}".format(summary.total_acres or 0) }}</span></div>
+  <div class="stat"><span class="stat-label">Units</span><span class="stat-value">{{ "{:,.2f}".format(summary.total_units or 0) }}</span></div>
+</section>
+
+{% if payload.column_map %}
+<p class="muted">Mapped columns:
+  {% for k, v in payload.column_map.items() %}<code>{{ k }}</code>←{{ v }}{% if not loop.last %} · {% endif %}{% endfor %}
+</p>
+{% endif %}
+
+{% if rows %}
+<form method="post" action="/panorama/planting/{{ batch.id }}/save" id="planting-review">
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table">
+      <thead>
+        <tr>
+          <th>Use</th>
+          <th>Hybrid</th>
+          <th>Crop</th>
+          <th>Acres</th>
+          <th>Units</th>
+          <th>Pop /ac</th>
+          <th>Client</th>
+          <th>Field (report)</th>
+          <th>Map to field</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>
+            <input type="hidden" name="row_idx" value="{{ loop.index0 }}">
+            <input type="checkbox" name="include" value="{{ loop.index0 }}" {% if row.include %}checked{% endif %}>
+          </td>
+          <td><input name="hybrid_name" value="{{ row.hybrid_name }}" class="sheet-notes" required>
+            {% if row.hybrid_match == 'new' %}<span class="muted" style="font-size:0.75rem">new</span>{% endif %}
+          </td>
+          <td>
+            <select name="crop">
+              <option value="Corn" {% if row.crop == 'Corn' %}selected{% endif %}>Corn</option>
+              <option value="Soybeans" {% if row.crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+              {% if row.crop not in ['Corn','Soybeans'] %}
+              <option value="{{ row.crop }}" selected>{{ row.crop }}</option>
+              {% endif %}
+            </select>
+          </td>
+          <td><input name="acres" type="number" step="0.01" value="{{ row.acres if row.acres is not none else '' }}" class="sheet-num"></td>
+          <td><input name="units" type="number" step="0.001" value="{{ row.units if row.units is not none else '' }}" class="sheet-num"></td>
+          <td><input name="population" type="number" step="1" value="{{ row.population if row.population is not none else '' }}" class="sheet-num"></td>
+          <td><input name="client_name" value="{{ row.client_name or '' }}" class="sheet-notes" placeholder="—"></td>
+          <td><input name="field_name" value="{{ row.field_name or '' }}" class="sheet-notes" placeholder="—"></td>
+          <td>
+            <select name="field_id">
+              <option value="">— farm total —</option>
+              {% for f in fields %}
+              <option value="{{ f.id }}" {% if row.field_id == f.id %}selected{% endif %}>{{ f.name }}</option>
+              {% endfor %}
+            </select>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="sheet-save-bar form-actions">
+    <button class="btn" type="submit">Save review</button>
+    <button class="btn primary" type="submit" formaction="/panorama/planting/{{ batch.id }}/commit" formmethod="post"
+            onclick="return confirm('Import selected rows into hybrids + planting records?')">Import selected</button>
+  </div>
+</form>
+{% else %}
+<p class="empty">No hybrid rows found in this file.</p>
+{% endif %}
+{% endblock %}

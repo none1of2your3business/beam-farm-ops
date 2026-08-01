@@ -1,0 +1,716 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Scale Tickets — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head scale-ticket-head">
+  <div>
+    <p class="eyebrow">Grain · Scale Tickets</p>
+    <h1>Scale ticket</h1>
+    <p class="lede">Bin or field → elevator. Shared bins split the full ticket by ownership %; only the selected owner’s share hits the contract.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/bins/ticket">Other moves</a>
+    <a class="btn ghost" href="/bins">Bins</a>
+  </div>
+</section>
+
+{% if request.query_params.get('error') == 'ticket_source' %}
+<p class="banner-warn">Pick a bin or field, enter ticket net bu, and choose ownership.</p>
+{% endif %}
+{% if request.query_params.get('error') == 'ticket_mismatch' %}
+<p class="banner-warn">Source bushels must match the ticket (or your ownership share of it).</p>
+{% endif %}
+{% if request.query_params.get('error') == 'contract_overflow' %}
+<p class="banner-warn">This load fills the contract and has leftover bu — choose another contract or spot the remainder with futures &amp; basis.</p>
+{% endif %}
+{% if request.query_params.get('error') == 'spot_price' %}
+<p class="banner-warn">Enter a futures price to spot the leftover bushels.</p>
+{% endif %}
+{% if request.query_params.get('saved') %}
+<p class="banner-ok">Scale ticket saved.</p>
+{% endif %}
+{% if request.query_params.get('deleted') %}
+<p class="banner-ok">Ticket / move deleted. Inventory and contract delivery were reversed.</p>
+{% endif %}
+{% if request.query_params.get('share_added') %}
+<p class="banner-ok">Owner “{{ request.query_params.get('share_added') }}” added.</p>
+{% endif %}
+{% if request.query_params.get('hauler_added') %}
+<p class="banner-ok">Trucking company “{{ request.query_params.get('hauler_added') }}” added.</p>
+{% endif %}
+{% if request.query_params.get('destination_added') %}
+<p class="banner-ok">Destination “{{ request.query_params.get('destination_added') }}” added.</p>
+{% endif %}
+{% if request.query_params.get('freight_added') %}
+<p class="banner-ok">Freight rate ${{ request.query_params.get('freight_added') }}/bu added.</p>
+{% endif %}
+
+<form method="post" action="/bins/ticket" class="panel scale-ticket-form" id="scale-ticket">
+  <div class="scale-source-toggle" role="radiogroup" aria-label="Ticket source">
+    <label class="scale-source-opt">
+      <input type="radio" name="source_mode" value="bin" checked>
+      <span>From bin</span>
+    </label>
+    <label class="scale-source-opt">
+      <input type="radio" name="source_mode" value="field">
+      <span>From field</span>
+    </label>
+  </div>
+
+  <div class="scale-ticket-grid">
+    <label class="scale-bin-only">Bin
+      <select name="alloc_bin_id" id="scale-bin" class="alloc-bin-select" data-add-new="/bins/new">
+        <option value="">— select —</option>
+        {% for b in bins %}<option value="{{ b.id }}">{{ b.name }} ({{ b.crop }})</option>{% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <input type="hidden" name="alloc_bu" id="scale-alloc-bu" value="">
+
+    <label class="scale-field-only" hidden>Field
+      <select name="field_id" id="scale-field" data-add-new="/fields/new">
+        <option value="">— select —</option>
+        {% for f in fields %}<option value="{{ f.id }}">{{ f.name }} ({{ f.crop }})</option>{% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <input type="hidden" name="field_bu" id="scale-field-bu" value="">
+
+    <label>Ownership
+      <select name="owner_name" id="owner-share" required
+              data-add-new="/risk/contracts/new/with-party?next=/bins/ticket/scale">
+        <option value="">— select —</option>
+        {% for o in ownership_parties %}
+        <option value="{{ o.name }}"
+                {% if o.is_me %}selected data-me="1"{% endif %}
+                {% if o.party_id %}data-party-id="{{ o.party_id }}"{% endif %}>
+          {{ o.name }}{% if o.party_type %} ({{ o.party_type }}){% endif %}
+        </option>
+        {% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <label>Contract bu (auto)
+      <input type="number" name="owner_bu" id="owner-bu" step="0.1" min="0" placeholder="your share of ticket">
+    </label>
+    <input type="hidden" name="owner_share_pct" id="owner-share-pct" value="">
+
+    <label>Crop
+      <select name="crop" id="ticket-crop">
+        {% for c in lookup_lists.get('crop', ['Corn', 'Soybeans']) %}
+        {% if c != 'None' %}<option value="{{ c }}">{{ c }}</option>{% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <label>Date<input type="date" name="move_date" value="{{ today }}"></label>
+    <label>Ticket #<input name="ticket_number" placeholder="scale #"></label>
+    <label>Net bu (ticket)<input name="net_bu" id="ticket-net" type="number" step="0.1" min="0" placeholder="required"></label>
+    <label>Wet bu<input name="wet_bu" id="ticket-wet" type="number" step="0.1" min="0" placeholder="opt"></label>
+    <label>Moisture %<input name="moisture" id="ticket-moist" type="number" step="0.1" min="0" placeholder="opt"></label>
+
+    <label>Contract
+      <select name="contract_id" id="scale-contract" data-add-new="/risk/contracts">
+        <option value="">— none —</option>
+        {% for c in contracts %}
+        <option value="{{ c.id }}" data-crop="{{ c.crop }}"
+                data-left="{{ '%.1f'|format(c.bushels - c.delivered_bu) }}">
+          #{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}{% if c.with_party_id %} · {{ c.with_label }}{% endif %}
+          ({{ "{:,.0f}".format(c.bushels - c.delivered_bu) }} left)
+        </option>
+        {% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <label>Trucking
+      <select name="hauler" data-add-new="/bins/ticket/new/hauler">
+        <option value="">—</option>
+        {% for h in ticket_haulers %}<option value="{{ h }}" {% if request.query_params.get('hauler_added') == h %}selected{% endif %}>{{ h }}</option>{% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <label>Destination
+      <select name="destination" data-add-new="/bins/ticket/new/destination">
+        <option value="">—</option>
+        {% for d in ticket_destinations %}<option value="{{ d }}" {% if request.query_params.get('destination_added') == d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+    <label>Freight $/bu
+      <select name="freight_per_bu" data-add-new="/bins/ticket/new/freight">
+        <option value="">—</option>
+        {% for r in ticket_freight_rates %}
+        <option value="{{ r }}" {% if request.query_params.get('freight_added') and request.query_params.get('freight_added')|float == r %}selected{% endif %}>${{ "%.4f"|format(r) }}</option>
+        {% endfor %}
+        <option value="__add_new__">Add New…</option>
+      </select>
+    </label>
+
+    <label class="scale-notes">Notes
+      <input type="text" name="notes" placeholder="optional">
+    </label>
+  </div>
+
+  <div class="scale-overflow panel" id="scale-overflow" hidden>
+    <p class="scale-overflow-head" id="scale-overflow-msg">
+      This load fills the contract. Choose where the leftover bushels go.
+    </p>
+    <div class="scale-overflow-modes" role="radiogroup" aria-label="Leftover bushels">
+      <label class="scale-overflow-opt">
+        <input type="radio" name="overflow_mode" value="contract" id="overflow-mode-contract">
+        <span>Another contract</span>
+      </label>
+      <label class="scale-overflow-opt">
+        <input type="radio" name="overflow_mode" value="spot" id="overflow-mode-spot">
+        <span>Spot (futures + basis)</span>
+      </label>
+    </div>
+    <div class="scale-overflow-grid" id="overflow-contract-wrap" hidden>
+      <label>Apply leftover to
+        <select name="overflow_contract_id" id="overflow-contract">
+          <option value="">— select —</option>
+          {% for c in contracts %}
+          <option value="{{ c.id }}" data-crop="{{ c.crop }}"
+                  data-left="{{ '%.1f'|format(c.bushels - c.delivered_bu) }}">
+            #{{ c.id }} {{ c.crop }} {{ c.buyer or '' }}{% if c.with_party_id %} · {{ c.with_label }}{% endif %}
+            ({{ "{:,.0f}".format(c.bushels - c.delivered_bu) }} left)
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="scale-overflow-grid" id="overflow-spot-wrap" hidden>
+      <label>Futures $/bu
+        <input type="number" name="spot_futures" id="spot-futures" step="0.0001" min="0" placeholder="e.g. 4.5500">
+      </label>
+      <label>Basis $/bu
+        <input type="number" name="spot_basis" id="spot-basis" step="0.0001" placeholder="e.g. -0.25">
+      </label>
+      <label>Cash equiv
+        <input type="text" id="spot-cash" readonly placeholder="futures + basis" class="sheet-calc">
+      </label>
+    </div>
+    <p class="muted scale-overflow-hint" id="scale-overflow-hint"></p>
+  </div>
+
+  <p class="scale-ticket-summary muted" id="scale-summary">Enter ticket net bu — ownership % fills your bushels for inventory &amp; contracts.</p>
+
+  <div class="form-actions scale-ticket-actions">
+    <button class="btn primary" type="submit">Save scale ticket</button>
+  </div>
+</form>
+
+<details class="scale-recent" open>
+  <summary>Recent tickets / moves</summary>
+  {% if moves %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Crop</th><th>Type</th><th>Bin</th><th>Field</th><th>Bu</th><th>Owner</th><th>Ticket</th><th></th></tr></thead>
+      <tbody>
+      {% for m in moves[:25] %}
+      <tr class="crop-row {{ crop_tone(m.crop) }}">
+        <td>{{ m.move_date }}</td>
+        <td>{{ crop_badge(m.crop, short=true) }}</td>
+        <td>{{ m.move_type }}</td>
+        <td>{% if m.bin_id %}{{ bin_name.get(m.bin_id, m.bin_id) }}{% else %}—{% endif %}</td>
+        <td>{% if m.field_id %}{{ field_name.get(m.field_id, m.field_id) }}{% else %}—{% endif %}</td>
+        <td>{{ m.net_bu }}</td>
+        <td>{{ m.owner_name }}</td>
+        <td>{{ m.ticket_number or '—' }}</td>
+        <td>
+          <form method="post" action="/bins/moves/{{ m.id }}/delete" style="display:inline"
+                onsubmit="return confirm('Delete this {{ m.move_type }} ({{ m.net_bu }} bu{% if m.ticket_number %}, ticket {{ m.ticket_number }}{% endif %})?\n\nBin inventory and contract delivery will be reversed.');">
+            <input type="hidden" name="next" value="/bins/ticket/scale">
+            <button type="submit" class="linkish danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No recent moves.</p>
+  {% endif %}
+</details>
+
+<script id="bin-owners-data" type="application/json">{{ bin_owners|tojson }}</script>
+<script id="bin-crop-data" type="application/json">{{ bin_crops|tojson }}</script>
+<script id="bin-with-party-data" type="application/json">{{ bin_with_party|tojson }}</script>
+<script id="field-shares-data" type="application/json">{{ field_shares|tojson }}</script>
+<script id="field-crop-data" type="application/json">{{ field_crops|tojson }}</script>
+<script id="ownership-parties-data" type="application/json">{{ ownership_parties|tojson }}</script>
+
+<script>
+(function () {
+  var form = document.getElementById("scale-ticket");
+  if (!form) return;
+
+  var binOwners = JSON.parse(document.getElementById("bin-owners-data").textContent || "{}");
+  var binCrops = JSON.parse(document.getElementById("bin-crop-data").textContent || "{}");
+  var binWithParty = JSON.parse(document.getElementById("bin-with-party-data").textContent || "{}");
+  var fieldShares = JSON.parse(document.getElementById("field-shares-data").textContent || "{}");
+  var fieldCrops = JSON.parse(document.getElementById("field-crop-data").textContent || "{}");
+  var ownershipParties = JSON.parse(document.getElementById("ownership-parties-data").textContent || "[]");
+
+  var binSel = document.getElementById("scale-bin");
+  var fieldSel = document.getElementById("scale-field");
+  var ownerSel = document.getElementById("owner-share");
+  var ownerBu = document.getElementById("owner-bu");
+  var ownerPct = document.getElementById("owner-share-pct");
+  var allocBu = document.getElementById("scale-alloc-bu");
+  var fieldBu = document.getElementById("scale-field-bu");
+  var netEl = document.getElementById("ticket-net");
+  var cropSel = document.getElementById("ticket-crop");
+  var summary = document.getElementById("scale-summary");
+  var lockOwnerBu = false;
+
+  function mode() {
+    var el = form.querySelector('input[name="source_mode"]:checked');
+    return el ? el.value : "bin";
+  }
+
+  function baseMoist() {
+    var c = (cropSel && cropSel.value) || "Corn";
+    return /soy/i.test(c) ? 13 : 15;
+  }
+
+  function syncNetFromWet() {
+    var wetEl = document.getElementById("ticket-wet");
+    var moistEl = document.getElementById("ticket-moist");
+    if (!wetEl || !netEl) return;
+    var wet = parseFloat(wetEl.value || "");
+    if (!isFinite(wet) || wet <= 0) return;
+    var moist = parseFloat(moistEl && moistEl.value ? moistEl.value : "");
+    if (!isFinite(moist)) {
+      netEl.value = String(Math.round(wet * 10) / 10);
+      return;
+    }
+    var std = baseMoist();
+    var net = wet * (100 - moist) / (100 - std);
+    if (isFinite(net) && net > 0) netEl.value = String(Math.round(net * 10) / 10);
+  }
+
+  function ticketNet() {
+    var n = parseFloat(netEl.value || "");
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function handleAddNew(sel) {
+    if (!sel || sel.value !== "__add_new__") return false;
+    var base = sel.getAttribute("data-add-new");
+    if (!base) return false;
+    window.location.href = base;
+    return true;
+  }
+
+  function matchShare(party, share) {
+    if (!party || !share) return false;
+    if (party.is_me && share.is_me) return true;
+    if (party.party_id && share.party_id && Number(party.party_id) === Number(share.party_id)) return true;
+    var a = (party.name || "").trim().toLowerCase();
+    var b = (share.name || "").trim().toLowerCase();
+    return a && b && a === b;
+  }
+
+  function pctMapFromShares(shares) {
+    var byKey = {};
+    (shares || []).forEach(function (s) {
+      if (!s) return;
+      var pct = s.share_pct != null ? Number(s.share_pct) : null;
+      if (!(isFinite(pct) && pct > 0)) return;
+      if (s.is_me) byKey.me = pct;
+      if (s.party_id != null) byKey["p:" + s.party_id] = pct;
+      if (s.name) byKey["n:" + String(s.name).trim().toLowerCase()] = pct;
+    });
+    return byKey;
+  }
+
+  function pctForParty(party, byKey) {
+    if (!party || !byKey) return null;
+    if (party.is_me && byKey.me != null) return byKey.me;
+    if (party.party_id != null && byKey["p:" + party.party_id] != null) return byKey["p:" + party.party_id];
+    var n = (party.name || "").trim().toLowerCase();
+    if (n && byKey["n:" + n] != null) return byKey["n:" + n];
+    return null;
+  }
+
+  /** Always Me + parties list; overlay share % from field (or bin) so they match field partners. */
+  function fillOwnersFromParties(shareRows, opts) {
+    opts = opts || {};
+    var prev = ownerSel.value;
+    var byKey = pctMapFromShares(shareRows);
+    var onlyWithPct = !!opts.onlyWithPct;
+    var defaultMe100 = opts.defaultMe100 !== false;
+
+    ownerSel.innerHTML = "";
+    var blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "— select —";
+    ownerSel.appendChild(blank);
+
+    var shown = 0;
+    ownershipParties.forEach(function (party) {
+      var pct = pctForParty(party, byKey);
+      if (pct == null && party.is_me && defaultMe100 && !(shareRows && shareRows.length)) {
+        pct = 100;
+      }
+      if (onlyWithPct && pct == null && !party.is_me) return;
+
+      var opt = document.createElement("option");
+      opt.value = party.name;
+      var label = party.name;
+      if (party.party_type) label += " (" + party.party_type + ")";
+      if (pct != null) {
+        label += " · " + pct + "%";
+        opt.setAttribute("data-pct", String(pct));
+      }
+      if (party.is_me) opt.setAttribute("data-me", "1");
+      if (party.party_id != null) opt.setAttribute("data-party-id", String(party.party_id));
+      opt.textContent = label;
+      ownerSel.appendChild(opt);
+      shown += 1;
+    });
+
+    // Any field/bin share partner not already in the parties list
+    (shareRows || []).forEach(function (s) {
+      if (!s || !s.name) return;
+      var already = ownershipParties.some(function (p) { return matchShare(p, s); });
+      if (already) return;
+      var pct = s.share_pct != null ? Number(s.share_pct) : null;
+      var opt = document.createElement("option");
+      opt.value = s.name;
+      opt.textContent = (isFinite(pct) && pct > 0) ? (s.name + " · " + pct + "%") : s.name;
+      if (isFinite(pct) && pct > 0) opt.setAttribute("data-pct", String(pct));
+      if (s.is_me) opt.setAttribute("data-me", "1");
+      if (s.party_id != null) opt.setAttribute("data-party-id", String(s.party_id));
+      ownerSel.appendChild(opt);
+      shown += 1;
+    });
+
+    var add = document.createElement("option");
+    add.value = "__add_new__";
+    add.textContent = "Add New…";
+    ownerSel.appendChild(add);
+
+    var prefer = Array.from(ownerSel.options).find(function (o) {
+      return o.getAttribute("data-me") === "1";
+    });
+    if (prev && Array.from(ownerSel.options).some(function (o) { return o.value === prev; })) {
+      ownerSel.value = prev;
+    } else if (prefer) {
+      ownerSel.value = prefer.value;
+    } else if (shown) {
+      ownerSel.selectedIndex = 1;
+    }
+  }
+
+  function syncSourceUI() {
+    var isBin = mode() === "bin";
+    form.querySelectorAll(".scale-bin-only").forEach(function (el) { el.hidden = !isBin; });
+    form.querySelectorAll(".scale-field-only").forEach(function (el) { el.hidden = isBin; });
+
+    if (isBin) {
+      if (fieldSel) fieldSel.value = "";
+      var bid = binSel && binSel.value;
+      var shares = (bid && binOwners[bid]) ? binOwners[bid].slice() : [];
+      // If bin is farmed-with a party and no share % rows, treat as Me + that party (no invented %).
+      var wp = bid && binWithParty[bid];
+      if (wp && wp.name && !shares.some(function (s) {
+        return (s.name || "").toLowerCase() === String(wp.name).toLowerCase();
+      })) {
+        // keep parties list; bin share_pct overlay only when set on bin owners
+      }
+      fillOwnersFromParties(shares, { onlyWithPct: false, defaultMe100: true });
+      if (bid && binCrops[bid] && cropSel) cropSel.value = binCrops[bid];
+    } else {
+      if (binSel) binSel.value = "";
+      var fid = fieldSel && fieldSel.value;
+      var shares = (fid && fieldShares[fid]) ? fieldShares[fid] : [];
+      // Field selected: parties list with that field's share % (same as field form partners).
+      fillOwnersFromParties(shares, { onlyWithPct: false, defaultMe100: !fid });
+      if (fid && fieldCrops[fid] && cropSel) cropSel.value = fieldCrops[fid];
+    }
+    recalcOwnerBu();
+  }
+
+  function selectedPct() {
+    var opt = ownerSel.options[ownerSel.selectedIndex];
+    if (!opt) return null;
+    var p = parseFloat(opt.getAttribute("data-pct") || "");
+    return isFinite(p) && p > 0 ? p : null;
+  }
+
+  function binOwnerEntries() {
+    var bid = binSel && binSel.value;
+    if (!bid || !binOwners[bid]) return [];
+    return binOwners[bid];
+  }
+
+  function isSharedBin() {
+    if (mode() !== "bin") return false;
+    var owners = binOwnerEntries();
+    if (owners.length > 1) return true;
+    return owners.some(function (o) {
+      return o.share_pct != null && Number(o.share_pct) > 0 && Number(o.share_pct) < 99.5;
+    });
+  }
+
+  function recalcOwnerBu() {
+    if (lockOwnerBu) return;
+    var net = ticketNet();
+    var pct = selectedPct();
+    ownerPct.value = pct != null ? String(pct) : "";
+    var bu = 0;
+    if (net > 0) {
+      bu = pct != null ? Math.round(net * pct / 100 * 10) / 10 : net;
+      ownerBu.value = String(bu);
+    } else if (!ownerBu.value) {
+      ownerBu.value = "";
+    }
+    // Shared bins: leave alloc_bu blank so the server splits the full ticket across owners
+    if (allocBu) {
+      if (mode() === "bin" && isSharedBin()) allocBu.value = "";
+      else allocBu.value = mode() === "bin" ? (ownerBu.value || "") : "";
+    }
+    if (fieldBu) fieldBu.value = mode() === "field" ? (ownerBu.value || "") : "";
+
+    if (summary) {
+      if (!net) {
+        summary.textContent = "Shared bins: full ticket leaves the bin by ownership %; only the selected owner’s share hits the contract.";
+      } else if (mode() === "bin" && isSharedBin() && pct != null) {
+        var parts = binOwnerEntries().map(function (o) {
+          var p = o.share_pct != null ? Number(o.share_pct) : null;
+          var a = (p != null) ? Math.round(net * p / 100 * 10) / 10 : null;
+          return o.name + (a != null ? (" " + a.toLocaleString()) : "");
+        });
+        summary.textContent = "Ticket " + net.toLocaleString() + " bu leaves bin (" + parts.join(" / ") +
+          "). Contract gets " + (ownerSel.value || "owner") + " " + bu.toLocaleString() + " bu.";
+      } else if (pct != null && pct < 99.5) {
+        summary.textContent = "Ticket " + net.toLocaleString() + " bu · " + (ownerSel.value || "owner") +
+          " " + pct + "% = " + bu.toLocaleString() + " bu to inventory & contracts.";
+      } else if (pct != null) {
+        summary.textContent = "Ticket " + net.toLocaleString() + " bu · full amount to " + (ownerSel.value || "owner") + ".";
+      } else {
+        summary.textContent = "Ticket " + net.toLocaleString() + " bu · " + (ownerSel.value || "owner") +
+          " — full ticket applied.";
+      }
+    }
+    if (typeof syncOverflowUI === "function") syncOverflowUI();
+  }
+
+  form.querySelectorAll('input[name="source_mode"]').forEach(function (r) {
+    r.addEventListener("change", syncSourceUI);
+  });
+  if (binSel) binSel.addEventListener("change", function () {
+    if (handleAddNew(binSel)) return;
+    syncSourceUI();
+  });
+  if (fieldSel) fieldSel.addEventListener("change", function () {
+    if (handleAddNew(fieldSel)) return;
+    syncSourceUI();
+  });
+  ownerSel.addEventListener("change", function () {
+    if (handleAddNew(ownerSel)) return;
+    recalcOwnerBu();
+  });
+  ownerBu.addEventListener("input", function () {
+    lockOwnerBu = true;
+    if (allocBu) {
+      if (mode() === "bin" && isSharedBin()) allocBu.value = "";
+      else allocBu.value = mode() === "bin" ? ownerBu.value : "";
+    }
+    if (fieldBu) fieldBu.value = mode() === "field" ? ownerBu.value : "";
+  });
+  ownerBu.addEventListener("blur", function () { lockOwnerBu = false; });
+  ["ticket-wet", "ticket-moist"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("input", function () {
+      lockOwnerBu = false;
+      syncNetFromWet();
+      recalcOwnerBu();
+    });
+  });
+  if (netEl) netEl.addEventListener("input", function () {
+    lockOwnerBu = false;
+    recalcOwnerBu();
+  });
+  if (cropSel) cropSel.addEventListener("change", function () {
+    lockOwnerBu = false;
+    syncNetFromWet();
+    recalcOwnerBu();
+  });
+
+  form.querySelectorAll("select[data-add-new]").forEach(function (sel) {
+    if (sel === binSel || sel === fieldSel || sel === ownerSel) return;
+    sel.addEventListener("change", function () { handleAddNew(sel); });
+  });
+
+  function syncOverflowUI() {
+    if (!overflowBox) return;
+    var left = contractLeft(contractSel);
+    var apply = ownerApplyBu();
+    var primaryId = contractSel && contractSel.value;
+    var overflow = primaryId && left != null && apply > left + 0.05 ? Math.round((apply - left) * 10) / 10 : 0;
+    var fill = primaryId && left != null ? Math.min(apply, left) : 0;
+
+    if (!(overflow > 0)) {
+      overflowBox.hidden = true;
+      form.querySelectorAll('input[name="overflow_mode"]').forEach(function (r) { r.checked = false; });
+      if (overflowContractSel) overflowContractSel.value = "";
+      if (overflowContractWrap) overflowContractWrap.hidden = true;
+      if (overflowSpotWrap) overflowSpotWrap.hidden = true;
+      if (submitBtn) submitBtn.disabled = false;
+      return;
+    }
+
+    overflowBox.hidden = false;
+    if (overflowMsg) {
+      overflowMsg.textContent =
+        "Contract takes " + fill.toLocaleString() + " bu (fills it). Leftover " +
+        overflow.toLocaleString() + " bu — send to another contract or spot.";
+    }
+
+    // Hide primary contract from overflow list
+    if (overflowContractSel) {
+      Array.from(overflowContractSel.options).forEach(function (o) {
+        if (!o.value) return;
+        o.hidden = o.value === primaryId;
+        if (o.value === primaryId && overflowContractSel.value === primaryId) {
+          overflowContractSel.value = "";
+        }
+      });
+    }
+
+    var modeEl = form.querySelector('input[name="overflow_mode"]:checked');
+    var mode = modeEl ? modeEl.value : "";
+    if (overflowContractWrap) overflowContractWrap.hidden = mode !== "contract";
+    if (overflowSpotWrap) overflowSpotWrap.hidden = mode !== "spot";
+    syncSpotCash();
+
+    if (overflowHint) {
+      if (mode === "contract") {
+        var oLeft = contractLeft(overflowContractSel);
+        overflowHint.textContent = oLeft != null
+          ? ("Second contract has " + oLeft.toLocaleString() + " bu left.")
+          : "Pick the contract for the leftover bushels.";
+      } else if (mode === "spot") {
+        overflowHint.textContent = "Creates a cash/spot sale for " + overflow.toLocaleString() +
+          " bu using futures + basis (cash = futures + basis).";
+      } else {
+        overflowHint.textContent = "Choose how to handle the leftover before saving.";
+      }
+    }
+
+    var ready = false;
+    if (mode === "contract" && overflowContractSel && overflowContractSel.value) ready = true;
+    if (mode === "spot" && spotFutures && String(spotFutures.value || "").trim()) ready = true;
+    if (submitBtn) submitBtn.disabled = !ready;
+  }
+
+  var contractSel = document.getElementById("scale-contract");
+  var overflowBox = document.getElementById("scale-overflow");
+  var overflowMsg = document.getElementById("scale-overflow-msg");
+  var overflowHint = document.getElementById("scale-overflow-hint");
+  var overflowContractWrap = document.getElementById("overflow-contract-wrap");
+  var overflowSpotWrap = document.getElementById("overflow-spot-wrap");
+  var overflowContractSel = document.getElementById("overflow-contract");
+  var spotFutures = document.getElementById("spot-futures");
+  var spotBasis = document.getElementById("spot-basis");
+  var spotCash = document.getElementById("spot-cash");
+  var submitBtn = form.querySelector('button[type="submit"]');
+
+  function contractLeft(sel) {
+    if (!sel || !sel.value) return null;
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt) return null;
+    var left = parseFloat(opt.getAttribute("data-left") || "");
+    return isFinite(left) ? left : null;
+  }
+
+  function ownerApplyBu() {
+    var v = parseFloat(ownerBu && ownerBu.value ? ownerBu.value : "");
+    if (isFinite(v) && v > 0) return v;
+    return ticketNet();
+  }
+
+  function syncSpotCash() {
+    if (!spotCash) return;
+    var f = parseFloat(spotFutures && spotFutures.value ? spotFutures.value : "");
+    var b = parseFloat(spotBasis && spotBasis.value ? spotBasis.value : "");
+    if (!isFinite(f)) {
+      spotCash.value = "";
+      return;
+    }
+    if (!isFinite(b)) b = 0;
+    spotCash.value = "$" + (f + b).toFixed(4);
+  }
+
+  if (contractSel) {
+    contractSel.addEventListener("change", function () {
+      if (handleAddNew(contractSel)) return;
+      syncOverflowUI();
+    });
+  }
+  form.querySelectorAll('input[name="overflow_mode"]').forEach(function (r) {
+    r.addEventListener("change", syncOverflowUI);
+  });
+  if (overflowContractSel) overflowContractSel.addEventListener("change", syncOverflowUI);
+  if (spotFutures) spotFutures.addEventListener("input", syncSpotCash);
+  if (spotBasis) spotBasis.addEventListener("input", syncSpotCash);
+
+  form.addEventListener("submit", function (e) {
+    syncOverflowUI();
+    if (overflowBox && !overflowBox.hidden) {
+      var modeEl = form.querySelector('input[name="overflow_mode"]:checked');
+      if (!modeEl) {
+        e.preventDefault();
+        alert("This load fills the contract. Choose another contract or spot the leftover bushels.");
+        return;
+      }
+      if (modeEl.value === "contract" && overflowContractSel && !overflowContractSel.value) {
+        e.preventDefault();
+        alert("Pick the second contract for the leftover bushels.");
+        return;
+      }
+      if (modeEl.value === "spot" && spotFutures && !String(spotFutures.value || "").trim()) {
+        e.preventDefault();
+        alert("Enter a futures price to spot the leftover bushels.");
+        return;
+      }
+    }
+    if (overflowBox && overflowBox.hidden) {
+      form.querySelectorAll('input[name="overflow_mode"]').forEach(function (r) { r.checked = false; });
+      if (overflowContractSel) overflowContractSel.value = "";
+      if (spotFutures) spotFutures.value = "";
+      if (spotBasis) spotBasis.value = "";
+    }
+  });
+
+  var params = new URLSearchParams(window.location.search);
+  if (params.get("bin_id") && binSel) {
+    binSel.value = params.get("bin_id");
+    var binRadio = form.querySelector('input[name="source_mode"][value="bin"]');
+    if (binRadio) binRadio.checked = true;
+  }
+  if (params.get("with_party_added") && params.get("with_party_added").match(/^\d+$/)) {
+    // Party just added — pick by id after rebuild
+  }
+
+  syncSourceUI();
+  if (params.get("share_added")) {
+    ownerSel.value = params.get("share_added");
+    recalcOwnerBu();
+  }
+  if (params.get("with_party_added") && params.get("with_party_added").match(/^\d+$/)) {
+    var pid = params.get("with_party_added");
+    var match = Array.from(ownerSel.options).find(function (o) {
+      return o.getAttribute("data-party-id") === pid;
+    });
+    if (match) {
+      ownerSel.value = match.value;
+      recalcOwnerBu();
+    }
+  }
+})();
+</script>
+{% endblock %}

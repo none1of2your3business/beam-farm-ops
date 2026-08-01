@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone %}
+{% block title %}Budget fields — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head sheet-head">
+  <div>
+    <p class="eyebrow">Budget · desk</p>
+    <h1>Field budgets</h1>
+    <p class="lede">Green = projected profit. Red = projected loss. Bars show plan used vs remaining.</p>
+  </div>
+  <div class="form-actions fields-toolbar">
+    <div class="view-switch" role="tablist" aria-label="Budget view">
+      <a class="view-switch-btn active" href="/budget/fields">Desk</a>
+      <a class="view-switch-btn" href="/budget/sheet">Sheet</a>
+    </div>
+    <a class="btn primary" href="/budget/categories">Defaults</a>
+  </div>
+</section>
+
+<form method="get" action="/budget/fields" class="filters">
+  <label>Crop
+    <select name="crop" onchange="this.form.submit()">
+      <option value="all" {% if filter_crop == 'all' %}selected{% endif %}>All</option>
+      <option value="Corn" {% if filter_crop == 'Corn' %}selected{% endif %}>Corn</option>
+      <option value="Soybeans" {% if filter_crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+      <option value="None" {% if filter_crop == 'None' %}selected{% endif %}>None</option>
+    </select>
+  </label>
+  <label>Color
+    <select name="tone" onchange="this.form.submit()">
+      <option value="all" {% if filter_tone == 'all' %}selected{% endif %}>All</option>
+      <option value="profit" {% if filter_tone == 'profit' %}selected{% endif %}>Green · profit</option>
+      <option value="tight" {% if filter_tone == 'tight' %}selected{% endif %}>Amber · tight</option>
+      <option value="loss" {% if filter_tone == 'loss' %}selected{% endif %}>Red · loss</option>
+      <option value="neutral" {% if filter_tone == 'neutral' %}selected{% endif %}>Need plan</option>
+    </select>
+  </label>
+</form>
+
+{% if cards %}
+<div class="bud-card-grid">
+  {% for c in cards %}
+  <a class="bud-field-card tone-{{ c.tone }}" href="/budget/fields/{{ c.field_id }}">
+    <div class="bud-field-card-top">
+      <span class="crop-badge {{ crop_tone(c.crop) }}">{{ c.crop }}</span>
+      <span class="bud-tone-pill tone-{{ c.tone }}">
+        {% if c.tone == 'profit' %}Profit{% elif c.tone == 'loss' %}Loss{% elif c.tone == 'tight' %}Tight{% else %}Plan me{% endif %}
+      </span>
+    </div>
+    <strong class="bud-field-name">{{ c.name }}</strong>
+    <p class="bud-field-sub muted">{{ "{:,.1f}".format(c.acres) }} ac · price {% if c.price is not none %}${{ "%.2f"|format(c.price) }}{% else %}—{% endif %} <span class="muted">({{ c.price_source }})</span></p>
+    <div class="bud-field-metrics">
+      <span>Plan <b>${{ "{:,.0f}".format(c.planned_total) }}</b></span>
+      <span>Spent <b>${{ "{:,.0f}".format(c.actual_total) }}</b></span>
+      <span>Left <b>${{ "{:,.0f}".format(c.remaining) }}</b></span>
+    </div>
+    <div class="bud-field-metrics">
+      <span>Affordable <b>{% if c.affordable_max is not none %}${{ "{:,.0f}".format(c.affordable_max) }}{% else %}—{% endif %}</b></span>
+      <span>P/L <b class="bud-ink-{{ c.tone }}">{% if c.projected_profit is not none %}${{ "{:,.0f}".format(c.projected_profit) }}{% else %}—{% endif %}</b></span>
+    </div>
+    <div class="bud-bar {% if c.over_plan %}is-over{% endif %}" aria-hidden="true">
+      {% set w = c.used_pct if c.used_pct is not none else 0 %}
+      <span class="bud-bar-fill" style="width:{{ w if w < 100 else 100 }}%"></span>
+    </div>
+    {% if c.over_plan %}<p class="bud-flag loss">Over plan</p>{% endif %}
+    {% if c.over_affordable %}<p class="bud-flag loss">Over affordable</p>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">No fields match. <a href="/fields/new">Add a field</a> or clear filters.</p>
+{% endif %}
+{% endblock %}

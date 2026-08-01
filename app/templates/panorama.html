@@ -56,10 +56,20 @@
 </form>
 
 <form method="post" action="/panorama/upload" enctype="multipart/form-data" class="form-grid panel">
-  <h2 class="full" style="margin:0;font-family:var(--display)">Use today without partner keys — upload files</h2>
-  <p class="muted full">Export from 20|20 / Panorama and upload here. Files go to <code>data/panorama_uploads/</code>.</p>
+  <h2 class="full" style="margin:0;font-family:var(--display)">Planting data — Seasonal Inputs CSV</h2>
+  <p class="muted full">Export <strong>Seasonal Inputs</strong> from Panorama (Hybrid Totals). We pull hybrid name, acres, units, and Client/Field when those columns are in the file. Opens a review screen before import.</p>
+  <label class="full">Upload Seasonal Inputs CSV<input type="file" name="file" accept=".csv,.txt,text/csv" required></label>
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Upload &amp; review planting</button>
+    <a class="btn" href="/panorama/planted">View planted hybrids</a>
+  </div>
+</form>
+
+<form method="post" action="/panorama/upload" enctype="multipart/form-data" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Other 20|20 / Panorama files</h2>
+  <p class="muted full">Non-planting files are stored in <code>data/panorama_uploads/</code> for later.</p>
   <label class="full">Upload file<input type="file" name="file" required></label>
-  <div class="form-actions full"><button class="btn primary" type="submit">Store file</button></div>
+  <div class="form-actions full"><button class="btn" type="submit">Store file</button></div>
 </form>
 
 <section class="section-block"><h2>Sync log</h2>

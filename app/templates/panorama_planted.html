@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Planted hybrids — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Panorama · As-planted</p>
+    <h1>Planted hybrids{% if year %} · {{ year.year }}{% endif %}</h1>
+    <p class="lede">Hybrid name, acres, units, client, and field from Seasonal Inputs imports.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/panorama">Upload more</a>
+    <a class="btn" href="/library">Hybrid library</a>
+  </div>
+</section>
+
+{% if message %}<p class="banner-ok">{{ message }}</p>{% endif %}
+
+<section class="stat-grid compact">
+  <div class="stat"><span class="stat-label">Rows</span><span class="stat-value">{{ rows|length }}</span></div>
+  <div class="stat"><span class="stat-label">Acres</span><span class="stat-value">{{ "{:,.1f}".format(total_acres or 0) }}</span></div>
+  <div class="stat"><span class="stat-label">Units</span><span class="stat-value">{{ "{:,.2f}".format(total_units or 0) }}</span></div>
+</section>
+
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Crop</th>
+        <th>Hybrid</th>
+        <th>Client</th>
+        <th>Field</th>
+        <th>Acres</th>
+        <th>Units</th>
+        <th>Population</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.crop }}</td>
+        <td><strong>{{ r.hybrid_name }}</strong></td>
+        <td>{{ r.client_name or '—' }}</td>
+        <td>
+          {% if r.field_id and field_name.get(r.field_id) %}
+            <a href="/fields/{{ r.field_id }}">{{ field_name[r.field_id] }}</a>
+          {% elif r.field_name %}
+            {{ r.field_name }}
+          {% else %}
+            <span class="muted">farm total</span>
+          {% endif %}
+        </td>
+        <td>{% if r.acres is not none %}{{ "{:,.2f}".format(r.acres) }}{% else %}—{% endif %}</td>
+        <td>{% if r.units is not none %}{{ "{:,.3f}".format(r.units) }}{% else %}—{% endif %}</td>
+        <td>{% if r.population is not none %}{{ "{:,.0f}".format(r.population) }}{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No planting rows yet. Upload a Panorama Seasonal Inputs CSV on <a href="/panorama">Panorama</a>.</p>
+{% endif %}
+{% endblock %}

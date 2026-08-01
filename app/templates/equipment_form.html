@@ -9,7 +9,7 @@
   <a class="btn ghost" href="/equipment">Back</a>
 </section>
 
-<form method="post" action="/equipment/save" class="form-grid">
+<form method="post" action="/equipment/save" class="form-grid" data-autosave>
   {% if eq %}<input type="hidden" name="equip_id" value="{{ eq.id }}">{% endif %}
 
   <label class="full">Name
@@ -17,16 +17,23 @@
   </label>
   <label>Category
     <select name="category">
-      {% for c in categories %}
+      {% set cats = lookup_lists.get('equip_category') or categories %}
+      {% for c in cats %}
       <option value="{{ c }}" {% if eq and eq.category == c %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
     </select>
   </label>
   <label>Status
     <select name="status">
+      {% if lookup_lists.get('equip_status') %}
+      {% for opt in lookup_lists.equip_status %}
+      <option value="{{ opt.value }}" {% if eq and eq.status == opt.value %}selected{% elif not eq and opt.value == 'active' %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
       {% for s in ['active','sold','traded','retired'] %}
       <option value="{{ s }}" {% if eq and eq.status == s %}selected{% elif not eq and s == 'active' %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
+      {% endif %}
     </select>
   </label>
   <label>Make<input type="text" name="make" value="{{ eq.make if eq and eq.make else '' }}"></label>
@@ -36,9 +43,15 @@
 
   <label>Ownership / finance
     <select name="finance_status">
+      {% if lookup_lists.get('finance_type') %}
+      {% for opt in lookup_lists.finance_type %}
+      <option value="{{ opt.value }}" {% if eq and eq.finance_status == opt.value %}selected{% elif not eq and opt.value == 'owned' %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+      {% else %}
       {% for key, label in finance_labels.items() %}
       <option value="{{ key }}" {% if eq and eq.finance_status == key %}selected{% elif not eq and key == 'owned' %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
+      {% endif %}
     </select>
   </label>
   <label>Hours / acres meter

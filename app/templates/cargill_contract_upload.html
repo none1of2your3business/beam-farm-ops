@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}{% if payload.import_source == 'cgb' %}CG&B{% else %}Cargill{% endif %} contracts import — {{ farm_name }}{% endblock %}
+{% block content %}
+{% set step = payload.step or 'map' %}
+{% set headers = (payload.active_sheet.headers if payload.active_sheet else []) or [] %}
+{% set cmap = payload.column_map or {} %}
+{% set proposals = payload.proposals or [] %}
+{% set source_label = 'CG&B Schedules' if payload.import_source == 'cgb' else 'Cargill contract' %}
+
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{{ source_label }} import · {% if step == 'map' %}1 · Columns{% elif step == 'rows' %}2 · Review{% else %}3 · Done{% endif %}</p>
+    <h1>{{ payload.original_filename or batch.filename }}</h1>
+    <p class="lede muted">Line up columns, then confirm which contracts to import. Duplicates are skipped automatically.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn ghost" href="/upload">Master Upload</a>
+    {% if step != 'done' %}
+    <form method="post" action="/upload/contracts/{{ batch.id }}/discard" onsubmit="return confirm('Discard this import?');">
+      <button class="btn" type="submit">Discard</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+{% if message %}<p class="panel" style="border-color:var(--accent)">{{ message }}</p>{% endif %}
+
+{% if step == 'map' %}
+<form method="post" action="/upload/contracts/{{ batch.id }}/map" class="form-grid panel">
+  <h2 class="full" style="margin:0;font-family:var(--display)">Match columns</h2>
+  <p class="full muted">
+    {% if payload.import_source == 'cgb' %}
+    Guessed from your CG&B Schedules headers (Purchase Contract, Remaining, Hedge Month, Destination, etc.). Change any that look wrong before continuing.
+    {% else %}
+    We guessed from your Cargill headers. Change any that look wrong before continuing.
+    {% endif %}
+  </p>
+
+  {% if payload.sheets and payload.sheets|length > 1 %}
+  <label>Sheet
+    <select name="sheet_index" onchange="this.form.sheet_only.value='1'; this.form.submit()">
+      {% for s in payload.sheets %}
+      <option value="{{ loop.index0 }}" {% if payload.sheet_index == loop.index0 %}selected{% endif %}>
+        {{ s.name }} ({{ s.row_count }} rows)
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  <input type="hidden" name="sheet_only" value="0">
+  {% endif %}
+
+  {% for key, label, required in field_defs %}
+  <label {% if required %}class="full"{% endif %}>{{ label }}{% if required %} *{% endif %}
+    <select name="map_{{ key }}">
+      <option value="">— ignore —</option>
+      {% for h in headers %}
+      <option value="{{ loop.index0 }}" {% if cmap.get(key) == loop.index0 %}selected{% endif %}>{{ h }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+
+  {% if payload.import_source != 'cgb' %}
+  <label class="full" style="display:flex;align-items:center;gap:0.5rem">
+    <input type="checkbox" name="include_only_contract_rows" value="1"
+      {% if payload.include_only_contract_rows %}checked{% endif %}>
+    Only import rows where Row Type is <strong>Contract</strong> (skip Adjustments)
+  </label>
+  {% else %}
+  <input type="hidden" name="include_only_contract_rows" value="0">
+  <p class="full muted">CG&B Schedules files import each purchase-contract row (Beans → Soybeans, Hedge Month → futures month).</p>
+  {% endif %}
+
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Next · review contracts</button>
+  </div>
+</form>
+
+{% if headers %}
+<section class="section-block">
+  <h2>Header preview</h2>
+  <p class="muted">First data row sample</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>{% for h in headers[:12] %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% if payload.active_sheet.rows %}
+        <tr>
+          {% for cell in payload.active_sheet.rows[0][:12] %}
+          <td>{{ cell if cell is not none else '' }}</td>
+          {% endfor %}
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+{% if step == 'rows' %}
+<form method="post" action="/upload/contracts/{{ batch.id }}/commit" class="panel" id="cargill-review-form">
+  <h2 style="margin-top:0;font-family:var(--display)">Review before import</h2>
+  <p class="muted">
+    Uncheck any row to skip it. Set <strong>Share partner</strong> on each contract (same as manual entry).
+    Duplicates stay unchecked and will not create a second contract.
+  </p>
+  <p class="muted">Share partner (person you farm with) means you use that contract on that person’s farms. They do <strong>not</strong> own a share of the contract.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Import</th>
+          <th>Contract #</th>
+          <th>Crop</th>
+          <th>Type</th>
+          <th>Bu</th>
+          <th>Futures</th>
+          <th>Net</th>
+          <th>Buyer</th>
+          <th>Share partner</th>
+          <th>Flag</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in proposals %}
+        <tr {% if p.dup_in_db or p.dup_in_file %}style="opacity:0.65"{% endif %}>
+          <td>
+            <input type="checkbox" name="include_{{ loop.index0 }}" value="1"
+              {% if p.include and not p.dup_in_db and not p.dup_in_file %}checked{% endif %}
+              {% if p.dup_in_db or p.dup_in_file %}disabled{% endif %}>
+            {% if p.dup_in_db or p.dup_in_file %}
+            <input type="hidden" name="include_{{ loop.index0 }}" value="0">
+            {% endif %}
+          </td>
+          <td><strong>{{ p.contract_number }}</strong></td>
+          <td>{{ p.crop }}</td>
+          <td>{{ p.contract_type_raw or p.contract_type }}</td>
+          <td>{{ "{:,.0f}".format(p.bushels or 0) }}</td>
+          <td>{% if p.futures_price is not none %}{{ "%.4f"|format(p.futures_price) }}{% else %}—{% endif %}</td>
+          <td>{% if p.cash_price is not none %}{{ "%.4f"|format(p.cash_price) }}{% else %}—{% endif %}</td>
+          <td>{{ p.buyer }}</td>
+          <td>
+            <select name="with_party_{{ loop.index0 }}" data-add-new-row="{{ loop.index0 }}"
+              {% if p.dup_in_db or p.dup_in_file %}disabled{% endif %}>
+              <option value="" {% if not p.with_party_id %}selected{% endif %}>Me (my farms)</option>
+              {% for party in parties %}
+              <option value="{{ party.id }}" {% if p.with_party_id == party.id %}selected{% endif %}>
+                {{ party.name }}{% if party.party_type %} ({{ party.party_type }}){% endif %}
+              </option>
+              {% endfor %}
+              <option value="__add_new__">Add New…</option>
+            </select>
+          </td>
+          <td>
+            {% if p.dup_in_db %}<span class="muted">Already in app</span>
+            {% elif p.dup_in_file %}<span class="muted">Dup in file</span>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <input type="hidden" name="add_party_row" id="add-party-row" value="">
+  <div class="form-actions" style="margin-top:1rem">
+    <button class="btn ghost" type="submit" formaction="/upload/contracts/{{ batch.id }}/back">Back to columns</button>
+    <button class="btn primary" type="submit">Import checked contracts</button>
+  </div>
+</form>
+<script>
+(function () {
+  const form = document.getElementById('cargill-review-form');
+  if (!form) return;
+  form.querySelectorAll('select[data-add-new-row]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      if (sel.value !== '__add_new__') return;
+      const row = sel.getAttribute('data-add-new-row') || '';
+      document.getElementById('add-party-row').value = row;
+      form.action = '/upload/contracts/{{ batch.id }}/save-and-add-party';
+      form.submit();
+    });
+  });
+})();
+</script>
+{% endif %}
+
+{% if step == 'done' %}
+<section class="panel">
+  <h2 style="margin-top:0;font-family:var(--display)">Import complete</h2>
+  {% set s = payload.commit_summary or {} %}
+  <ul class="simple-list">
+    <li><span>Created <strong>{{ s.created or 0 }}</strong> contracts</span></li>
+    <li><span>Skipped duplicates <strong>{{ s.skipped_duplicates or 0 }}</strong></span></li>
+    <li><span>Left unchecked <strong>{{ s.skipped_unchecked or 0 }}</strong></span></li>
+  </ul>
+  <div class="form-actions">
+    <a class="btn primary" href="/risk/contracts">Open contracts</a>
+    <a class="btn ghost" href="/upload">Import another file</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

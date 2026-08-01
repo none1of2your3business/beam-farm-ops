@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge %}
+{% block title %}Merge hybrids — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Inputs · Cleanup</p>
+    <h1>Merge duplicate hybrids</h1>
+    <p class="lede">Pick the hybrid to keep. Checked duplicates are merged into it — field assigns and planting rows move over, blank costs/brand fill from the duplicates, then extras are deleted.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/inputs/hybrids/sheet">Hybrid sheet</a>
+    <a class="btn" href="/inputs">Catalog</a>
+  </div>
+</section>
+
+{% if message %}<p class="banner-ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="banner-warn">{{ error }}</p>{% endif %}
+
+{% if not year %}
+<p class="banner-warn">No active crop year.</p>
+{% else %}
+
+<form method="get" action="/inputs/hybrids/merge" class="filters">
+  <label>Crop
+    <select name="crop" onchange="this.form.submit()">
+      <option value="all" {% if filter_crop == 'all' %}selected{% endif %}>All</option>
+      <option value="Corn" {% if filter_crop == 'Corn' %}selected{% endif %}>Corn</option>
+      <option value="Soybeans" {% if filter_crop == 'Soybeans' %}selected{% endif %}>Soybeans</option>
+    </select>
+  </label>
+</form>
+
+{% if groups %}
+<section class="section-block">
+  <h2>Suggested duplicates</h2>
+  <p class="muted">Same crop + same name (ignoring spaces/case). Review each group, choose Keep, then Merge.</p>
+
+  {% for g in groups %}
+  <form method="post" action="/inputs/hybrids/merge" class="panel {{ crop_tone(g.crop) }}" style="margin-bottom:0.85rem">
+    <div class="page-head" style="margin-bottom:0.5rem">
+      <div>
+        <h3 style="margin:0;font-family:var(--display)">{{ g.label }} {{ crop_badge(g.crop, short=true) }}</h3>
+        <p class="muted" style="margin:0.2rem 0 0">{{ g.rows|length }} copies</p>
+      </div>
+      <button class="btn primary" type="submit" onclick="return confirm('Merge selected into the Keep hybrid? This cannot be undone.')">Merge group</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Keep</th>
+            <th>Merge</th>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Brand</th>
+            <th>$/unit</th>
+            <th>$/ac</th>
+            <th>Fields</th>
+            <th>Plantings</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in g.rows %}
+          {% set h = row.hybrid %}
+          <tr>
+            <td><input type="radio" name="keep_id" value="{{ h.id }}" {% if loop.first %}checked{% endif %} required></td>
+            <td><input type="checkbox" name="merge_ids" value="{{ h.id }}" {% if not loop.first %}checked{% endif %}></td>
+            <td class="muted">#{{ h.id }}</td>
+            <td><strong>{{ h.name }}</strong></td>
+            <td>{{ h.brand or '—' }}</td>
+            <td>{% if h.cost_per_unit is not none %}${{ "{:,.2f}".format(h.cost_per_unit) }}{% else %}—{% endif %}</td>
+            <td>{% if h.cost_per_acre is not none %}${{ "{:,.2f}".format(h.cost_per_acre) }}{% else %}—{% endif %}</td>
+            <td>{{ row.fields }}</td>
+            <td>{{ row.plantings }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin:0.5rem 0 0;font-size:0.82rem">First row is suggested Keep. Check any other rows to fold into it. Uncheck a row to leave it alone.</p>
+  </form>
+  {% endfor %}
+</section>
+{% else %}
+<p class="panel muted">No automatic duplicate groups found for this crop filter. Use custom merge below if names differ slightly (e.g. <code>2111</code> vs <code>2111aa</code>).</p>
+{% endif %}
+
+<section class="section-block">
+  <h2>Custom merge</h2>
+  <p class="muted">Select two or more hybrids (any names). Choose which one to keep.</p>
+  {% if singles|length >= 2 %}
+  <form method="post" action="/inputs/hybrids/merge" class="panel" id="custom-merge-form">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Keep</th>
+            <th>Include</th>
+            <th>Crop</th>
+            <th>Name</th>
+            <th>Brand</th>
+            <th>$/unit</th>
+            <th>ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in singles %}
+          <tr>
+            <td><input type="radio" name="keep_id" value="{{ h.id }}" class="custom-keep"></td>
+            <td><input type="checkbox" name="merge_ids" value="{{ h.id }}" class="custom-include"></td>
+            <td>{{ crop_badge(h.crop, short=true) }}</td>
+            <td><strong>{{ h.name }}</strong></td>
+            <td>{{ h.brand or '—' }}</td>
+            <td>{% if h.cost_per_unit is not none %}${{ "{:,.2f}".format(h.cost_per_unit) }}{% else %}—{% endif %}</td>
+            <td class="muted">#{{ h.id }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="form-actions" style="margin-top:0.75rem">
+      <button class="btn primary" type="submit"
+              onclick="return confirm('Merge included hybrids into Keep? This cannot be undone.')">Merge selected</button>
+    </div>
+  </form>
+  <script>
+  (function () {
+    var form = document.getElementById("custom-merge-form");
+    if (!form) return;
+    form.addEventListener("submit", function (e) {
+      var keep = form.querySelector(".custom-keep:checked");
+      var inc = form.querySelectorAll(".custom-include:checked");
+      if (!keep) { e.preventDefault(); alert("Choose which hybrid to Keep."); return; }
+      var others = 0;
+      inc.forEach(function (cb) { if (cb.value !== keep.value) others++; });
+      if (others < 1) { e.preventDefault(); alert("Check at least one other hybrid to merge in."); }
+    });
+  })();
+  </script>
+  {% else %}
+  <p class="muted">Need at least two hybrids to merge.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

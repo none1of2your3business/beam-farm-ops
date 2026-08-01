@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Add owner / share — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Scale ticket · Add New</p>
+    <h1>Add owner / share</h1>
+    <p class="lede">Create an owner on a bin with their share %. They will appear in the Owner/share list on the scale ticket.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/bins/ticket/scale">Back to scale ticket</a>
+  </div>
+</section>
+
+{% if request.query_params.get('error') == 'bin' %}
+<p class="banner-warn">Pick a bin and enter an owner name.</p>
+{% endif %}
+
+<form method="post" action="/bins/share/add" class="form-grid panel">
+  <label>Bin
+    <select name="bin_id" required>
+      <option value="">— select —</option>
+      {% for b in bins %}
+      <option value="{{ b.id }}" {% if prefill_bin_id and prefill_bin_id == b.id %}selected{% endif %}>{{ b.name }} ({{ b.crop }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Owner name<input name="owner_name" required autofocus placeholder="e.g. Landlord, Partner Co."></label>
+  <label>Share %<input name="share_pct" type="number" step="0.1" min="0" max="100" placeholder="e.g. 50"></label>
+  <p class="full muted" style="margin:0">Share % is ownership interest on that bin (0–100). Bushels start at 0 until you move grain to this owner.</p>
+  {% if prefill_bin_id and bin_owners.get(prefill_bin_id|string) %}
+  <div class="full">
+    <h3 style="margin:0 0 0.4rem;font-family:var(--display)">Current owners on this bin</h3>
+    <ul class="simple-list">
+      {% for s in bin_owners[prefill_bin_id|string] %}
+      <li><span>{{ s.name }}{% if s.share_pct is not none %} · {{ s.share_pct }}%{% endif %}</span><strong>{{ "{:,.0f}".format(s.bushels) }} bu</strong></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <div class="form-actions full">
+    <button class="btn primary" type="submit">Save owner</button>
+    <a class="btn" href="/bins/ticket/scale">Cancel</a>
+  </div>
+</form>
+{% endblock %}

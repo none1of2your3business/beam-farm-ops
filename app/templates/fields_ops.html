@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% from "_crop.html" import crop_tone, crop_badge, crop_chip %}
+{% block title %}Field Operations — {{ farm_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Fields · machinery rates</p>
+    <h1>Field Operations</h1>
+    <p class="lede muted" style="margin:0.35rem 0 0">
+      Edit $/acre rates, then assign an operation to one field or many.
+      On share fields you pay 100% of these costs (landlord 0) — they count in your P&amp;L.
+    </p>
+  </div>
+  <div class="form-actions">
+    <a class="btn" href="/fields">Field list</a>
+    <a class="btn ghost" href="/fields/sheet">Spreadsheet</a>
+  </div>
+</section>
+
+{% if saved_rates %}
+<p class="banner-ok">Operation rates saved.</p>
+{% endif %}
+{% if assigned %}
+<p class="banner-ok">Assigned to {{ assigned }} field{% if assigned != '1' %}s{% endif %}.</p>
+{% endif %}
+{% if error == 'no_fields' %}
+<p class="banner-warn">Select at least one field.</p>
+{% endif %}
+{% if error == 'bad_op' %}
+<p class="banner-warn">Pick a valid operation.</p>
+{% endif %}
+
+<section class="panel fo-rates-panel">
+  <form method="post" action="/fields/ops/rates" class="fo-rates-form">
+    <div class="fo-section-head">
+      <div>
+        <h2 style="margin:0;font-family:var(--display)">Operation rates</h2>
+        <p class="muted" style="margin:0.25rem 0 0">$/acre applied to full field acres when you assign.</p>
+      </div>
+      <button class="btn primary" type="submit">Save rates</button>
+    </div>
+    <div class="table-wrap">
+      <table class="fo-rates-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Operation name</th>
+            <th>$/acre</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in op_rates %}
+          <tr>
+            <td><strong>{{ r.number }}</strong></td>
+            <td>
+              <input type="hidden" name="rate_key" value="{{ r.key }}">
+              <input name="rate_label" value="{{ r.label }}" required>
+            </td>
+            <td>
+              <input name="rate_per_ac" type="number" step="0.01" min="0" value="{{ r.rate_per_ac }}" class="sheet-num" required>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+</section>
+
+<section class="panel fo-assign-panel">
+  <form method="post" action="/fields/ops/assign" id="fo-assign-form">
+    <div class="fo-section-head">
+      <div>
+        <h2 style="margin:0;font-family:var(--display)">Assign to fields</h2>
+        <p class="muted" style="margin:0.25rem 0 0">Posts the selected operation to each checked field’s ledger.</p>
+      </div>
+      <button class="btn primary" type="submit"
+              onclick="return confirm('Assign this operation to the selected fields?');">Assign</button>
+    </div>
+
+    <div class="form-grid fo-assign-meta">
+      <label>Operation
+        <select name="op_rate_key" id="fo-op" required>
+          {% for r in op_rates %}
+          <option value="{{ r.key }}" data-rate="{{ r.rate_per_ac }}">
+            {{ r.number }} · {{ r.label }} — ${{ r.rate_per_ac|int if r.rate_per_ac == r.rate_per_ac|int else r.rate_per_ac }}/ac
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Date<input type="date" name="op_date" value="{{ today }}"></label>
+      <label class="full">Notes (optional)<input type="text" name="notes" placeholder="optional note on each field"></label>
+    </div>
+
+    <div class="fo-field-toolbar">
+      <div class="fo-crop-filters" role="group" aria-label="Filter fields">
+        <button type="button" class="btn fo-filter is-active" data-crop="all">All</button>
+        <button type="button" class="btn fo-filter" data-crop="corn">Corn</button>
+        <button type="button" class="btn fo-filter" data-crop="soy">Soy</button>
+      </div>
+      <div class="fo-select-actions">
+        <button type="button" class="btn ghost" id="fo-select-visible">Select visible</button>
+        <button type="button" class="btn ghost" id="fo-clear">Clear</button>
+      </div>
+    </div>
+
+    {% if fields %}
+    <ul class="fo-field-list" id="fo-field-list">
+      {% for f in fields %}
+      <li class="fo-field-row {{ crop_tone(f.crop) }}" data-crop="{{ (f.crop or '')|lower }}">
+        <label>
+          <input type="checkbox" name="field_id" value="{{ f.id }}" class="fo-field-check"
+                 data-acres="{{ f.acres_total or 0 }}">
+          <span class="fo-field-name">
+            <strong>{{ f.name }}</strong>
+            {{ crop_badge(f.crop, short=true) }}
+            {% if f.ownership_mode == 'on_shares' %}<span class="muted">shares</span>{% endif %}
+          </span>
+          <span class="fo-field-meta muted">{{ "{:,.1f}".format(f.acres_total or 0) }} ac</span>
+          <span class="fo-field-est muted" data-est>—</span>
+        </label>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="muted" id="fo-preview" style="margin:0.75rem 0 0">Select fields to preview total cost.</p>
+    {% else %}
+    <p class="muted">No fields in the active crop year. <a href="/fields/new">Add a field</a>.</p>
+    {% endif %}
+  </form>
+</section>
+
+<style>
+.fo-section-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+  margin-bottom: 0.85rem; flex-wrap: wrap;
+}
+.fo-rates-table input[type="text"],
+.fo-rates-table input[name="rate_label"] { width: 100%; min-width: 12rem; }
+.fo-rates-table input[name="rate_per_ac"] { width: 6.5rem; }
+.fo-assign-meta { margin-bottom: 0.85rem; }
+.fo-field-toolbar {
+  display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;
+  margin-bottom: 0.65rem; align-items: center;
+}
+.fo-crop-filters, .fo-select-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.fo-filter.is-active { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.fo-field-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; max-height: 28rem; overflow: auto; }
+.fo-field-row label {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 0.65rem;
+  align-items: center; padding: 0.5rem 0.65rem; border: 1px solid rgba(27,94,32,0.14);
+  border-radius: 6px; background: #fff; margin: 0; cursor: pointer;
+}
+.fo-field-row.is-hidden { display: none; }
+.fo-field-name { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; }
+.fo-field-est { font-variant-numeric: tabular-nums; min-width: 4.5rem; text-align: right; }
+@media (max-width: 640px) {
+  .fo-field-row label { grid-template-columns: auto minmax(0, 1fr); }
+  .fo-field-meta, .fo-field-est { grid-column: 2; }
+}
+</style>
+<script>
+(function () {
+  var list = document.getElementById("fo-field-list");
+  var opSel = document.getElementById("fo-op");
+  var preview = document.getElementById("fo-preview");
+  if (!list || !opSel) return;
+
+  function rate() {
+    var opt = opSel.options[opSel.selectedIndex];
+    return parseFloat(opt.getAttribute("data-rate") || "0") || 0;
+  }
+
+  function recalc() {
+    var r = rate();
+    var total = 0, n = 0;
+    list.querySelectorAll(".fo-field-row").forEach(function (row) {
+      if (row.classList.contains("is-hidden")) return;
+      var cb = row.querySelector(".fo-field-check");
+      var est = row.querySelector("[data-est]");
+      var acres = parseFloat((cb && cb.getAttribute("data-acres")) || "0") || 0;
+      var amt = r * acres;
+      if (est) est.textContent = cb && cb.checked ? ("$" + Math.round(amt).toLocaleString()) : "—";
+      if (cb && cb.checked) { total += amt; n += 1; }
+    });
+    if (preview) {
+      preview.textContent = n
+        ? (n + " field" + (n === 1 ? "" : "s") + " · ≈ $" + Math.round(total).toLocaleString() + " total")
+        : "Select fields to preview total cost.";
+    }
+  }
+
+  document.querySelectorAll(".fo-filter").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".fo-filter").forEach(function (b) { b.classList.remove("is-active"); });
+      btn.classList.add("is-active");
+      var crop = (btn.getAttribute("data-crop") || "all").toLowerCase();
+      list.querySelectorAll(".fo-field-row").forEach(function (row) {
+        var c = (row.getAttribute("data-crop") || "").toLowerCase();
+        var show = crop === "all" || c.indexOf(crop) === 0 || (crop === "soy" && c.indexOf("soy") === 0);
+        row.classList.toggle("is-hidden", !show);
+      });
+      recalc();
+    });
+  });
+
+  var selVis = document.getElementById("fo-select-visible");
+  var clearBtn = document.getElementById("fo-clear");
+  if (selVis) selVis.addEventListener("click", function () {
+    list.querySelectorAll(".fo-field-row:not(.is-hidden) .fo-field-check").forEach(function (cb) { cb.checked = true; });
+    recalc();
+  });
+  if (clearBtn) clearBtn.addEventListener("click", function () {
+    list.querySelectorAll(".fo-field-check").forEach(function (cb) { cb.checked = false; });
+    recalc();
+  });
+
+  list.addEventListener("change", recalc);
+  opSel.addEventListener("change", recalc);
+  recalc();
+})();
+</script>
+{% endblock %}
