@@ -1,4 +1,4 @@
-/* Hold or sell — net basis chart + cash sale chart + simple actual basis entry. */
+/* Grain Marketing Decisions — net basis chart + cash sale chart + simple actual basis entry. */
 (function () {
   const DATA = window.HOLD_SELL_DATA;
   if (!DATA) {
@@ -698,6 +698,188 @@
     }
   }
 
+  function downloadBlob(blob, filename) {
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function worksheetPayload() {
+    readCarryForm();
+    return {
+      version: 1,
+      tool: "Grain Marketing Decisions",
+      savedAt: new Date().toISOString(),
+      crop: state.crop,
+      visible: state.visible,
+      trucking: state.trucking,
+      grain: state.grain,
+      actual: state.actual,
+      carry: state.carry,
+      strip: state.strip,
+      history: state.history,
+      quoteAsOf: state.quoteAsOf,
+    };
+  }
+
+  function saveWorksheetFile() {
+    const payload = worksheetPayload();
+    const stamp = new Date().toISOString().slice(0, 10);
+    const name = "grain-marketing-decisions-" + cropKey() + "-" + stamp + ".json";
+    downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), name);
+    setStatus("Worksheet saved as " + name);
+  }
+
+  function applyWorksheet(data) {
+    if (!data || typeof data !== "object") throw new Error("Not a worksheet file.");
+    if (data.crop) state.crop = data.crop;
+    if (data.visible) state.visible = { ...state.visible, ...data.visible };
+    if (data.trucking && typeof data.trucking === "object") {
+      LOC_IDS.forEach((id) => {
+        const v = num(data.trucking[id]);
+        if (v != null) state.trucking[id] = v;
+      });
+    }
+    if (data.grain) state.grain = data.grain;
+    if (data.actual) state.actual = data.actual;
+    if (data.carry) {
+      state.carry = {
+        corn: { ...state.carry.corn, ...((data.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((data.carry || {}).soybeans || {}) },
+      };
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
+    }
+    if (data.strip) state.strip = data.strip;
+    if (data.history) state.history = data.history;
+    if (data.quoteAsOf) state.quoteAsOf = data.quoteAsOf;
+    save();
+    refresh({ reread: false, forms: true });
+  }
+
+  function loadWorksheetFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result || ""));
+        applyWorksheet(data);
+        setStatus("Loaded " + (file.name || "worksheet") + ".");
+      } catch (e) {
+        setStatus("Could not load that file. Use a saved worksheet JSON.", true);
+      }
+    };
+    reader.onerror = () => setStatus("Could not read that file.", true);
+    reader.readAsText(file);
+  }
+
+  function esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function buildPrintSummaryHtml() {
+    readCarryForm();
+    const c = carry();
+    const front = frontRow();
+    const points = timeline();
+    const locs = availableLocs();
+    const active = activeLocs();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    const stamp = new Date().toLocaleString();
+
+    const kv =
+      `<div class="kv">
+        <div><span>Interest APR</span><b>${esc(c.apr)}%</b></div>
+        <div><span>Storage $/bu/mo</span><b>${esc(money(num(c.storage) || 0, 4))}</b></div>
+        <div><span>Handling $/bu</span><b>${esc(money(num(c.handling) || 0, 4))}</b></div>
+        <div><span>Shrink %/mo</span><b>${esc(c.shrinkPct)}</b></div>
+        <div><span>Extra moisture pts</span><b>${esc(c.extraPts)}</b></div>
+        <div><span>Shrink factor</span><b>${esc(c.shrinkFactor)}</b></div>
+        <div><span>Interest mark</span><b>${esc(c.markMode)}</b></div>
+        <div><span>Front futures</span><b>${esc(front ? front.label + " " + money(nowFut, 4) : "—")}</b></div>
+      </div>`;
+
+    const truckRows = locs.map((id) =>
+      `<tr><td>${esc(id)}</td><td>${esc(money(truckingFor(id), 4))}</td><td>${state.visible[id] !== false ? "On chart" : "Hidden"}</td></tr>`
+    ).join("");
+
+    // Summary windows: Now + roughly monthly samples through horizon
+    const sample = [];
+    points.forEach((p, i) => {
+      if (p.isNow || i % Math.max(1, Math.floor(points.length / 12)) === 0 || i === points.length - 1) {
+        if (!sample.find((s) => s.key === p.key)) sample.push(p);
+      }
+    });
+
+    let head = "<tr><th>Window</th>";
+    active.forEach((loc) => { head += `<th colspan="2">${esc(loc)}</th>`; });
+    head += "</tr><tr><th></th>";
+    active.forEach(() => { head += "<th>Net basis ¢</th><th>Cash $/bu</th>"; });
+    head += "</tr>";
+
+    let body = "";
+    sample.forEach((p) => {
+      body += `<tr><td>${esc(p.label)}</td>`;
+      active.forEach((loc) => {
+        const row = buildPoint(loc, p, nowFut);
+        body += `<td>${esc(row.netBasis != null ? cents(row.netBasis, 1) : "—")}</td>`;
+        body += `<td>${esc(row.cash != null ? money(row.cash, 2) : "—")}</td>`;
+      });
+      body += "</tr>";
+    });
+
+    let basisImg = "";
+    let cashImg = "";
+    try { if (basisChart) basisImg = basisChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+    try { if (cashChart) cashImg = cashChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+
+    return `
+      <h1>Grain Marketing Decisions</h1>
+      <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
+      <h2>Cost of carry</h2>
+      ${kv}
+      <h2>Locations &amp; trucking</h2>
+      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>Charts</th></tr></thead><tbody>${truckRows}</tbody></table>
+      <h2>Net basis &amp; cash sale snapshot</h2>
+      <table><thead>${head}</thead><tbody>${body}</tbody></table>
+      <div class="grid-print">
+        <div>
+          <h2>Net basis after costs</h2>
+          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+        <div>
+          <h2>Cash sale (futures + basis)</h2>
+          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+      </div>
+      <p class="meta">Informational only. Net basis = used basis − location trucking − interest − storage − shrink. Actual basis overrides historical only where entered.</p>
+    `;
+  }
+
+  function printPdfSummary() {
+    const root = document.getElementById("printRoot");
+    if (!root) return;
+    root.innerHTML = buildPrintSummaryHtml();
+    root.setAttribute("aria-hidden", "false");
+    setStatus("Print dialog: choose “Save as PDF” for a PDF summary.");
+    const cleanup = () => {
+      root.innerHTML = "";
+      root.setAttribute("aria-hidden", "true");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => window.print(), 50);
+  }
+
   document.getElementById("cropSeg").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -706,6 +888,14 @@
     refresh({ reread: false, forms: true });
   });
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
+  document.getElementById("btnSave").addEventListener("click", saveWorksheetFile);
+  document.getElementById("btnLoad").addEventListener("click", () => document.getElementById("fileLoad").click());
+  document.getElementById("fileLoad").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    loadWorksheetFile(f);
+    e.target.value = "";
+  });
+  document.getElementById("btnPdf").addEventListener("click", printPdfSummary);
   ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
     const el = document.getElementById(id);
     el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
