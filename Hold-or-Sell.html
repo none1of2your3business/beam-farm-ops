@@ -163,14 +163,27 @@
     #printRoot { display: block !important; color: #111; }
     #printRoot h1 { font-size: 1.6rem; margin: 0 0 4px; }
     #printRoot .meta { color: #444; margin: 0 0 14px; font-size: 0.9rem; }
-    #printRoot h2 { font-size: 1.05rem; margin: 16px 0 6px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    #printRoot h2 { font-size: 1.1rem; margin: 18px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    #printRoot h2.lead { font-size: 1.25rem; margin-top: 8px; border-bottom-color: #0d6b38; }
+    #printRoot h3 { font-size: 0.95rem; margin: 12px 0 6px; }
+    #printRoot .lead-note { font-size: 0.9rem; color: #333; margin: 0 0 10px; line-height: 1.45; }
     #printRoot table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 10px; }
     #printRoot th, #printRoot td { border: 1px solid #ccc; padding: 4px 6px; text-align: right; }
     #printRoot th:first-child, #printRoot td:first-child { text-align: left; }
-    #printRoot img.chart { width: 100%; max-height: 280px; object-fit: contain; margin: 6px 0 12px; }
+    #printRoot img.chart { width: 100%; max-height: 260px; object-fit: contain; margin: 6px 0 12px; }
     #printRoot .grid-print { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    #printRoot .winner-print {
+      border: 2px solid #0d6b38; border-radius: 8px; padding: 12px 14px; background: #f3faf5;
+      break-inside: avoid;
+    }
+    #printRoot .winner-lab { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: #355; font-weight: 700; }
+    #printRoot .winner-val { font-size: 1.7rem; font-weight: 700; margin: 4px 0; letter-spacing: -0.02em; }
+    #printRoot .winner-meta { font-size: 1rem; margin-bottom: 4px; }
+    #printRoot .winner-sub { font-size: 0.82rem; color: #444; }
     #printRoot .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 0.85rem; }
     #printRoot .kv div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted #ddd; padding: 2px 0; }
+    #printRoot .explain { font-size: 0.9rem; line-height: 1.5; }
+    #printRoot .explain p { margin: 0 0 10px; }
     .no-print { display: none !important; }
   }
   @media (max-width: 980px) {
@@ -1201,40 +1214,99 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
 
     const bestBasis = findBest("netBasis");
     const bestCash = findBest("cash");
+
+    function winnerBlock(title, best, fmt, why) {
+      if (!best) {
+        return `<div class="winner-print">
+          <div class="winner-lab">${esc(title)}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+        </div>`;
+      }
+      return `<div class="winner-print">
+        <div class="winner-lab">${esc(title)}</div>
+        <div class="winner-val">${esc(fmt(best.value))}</div>
+        <div class="winner-meta"><strong>${esc(best.loc)}</strong> at <strong>${esc(best.label)}</strong></div>
+        <div class="winner-sub">${esc(why)}</div>
+      </div>`;
+    }
+
     const winnersHtml = `
-      <h2>Best results</h2>
+      <h2 class="lead">The winners</h2>
+      <p class="lead-note">These are the strongest outcomes across every checked elevator and every move window on the charts. Start here — then use the charts and numbers below to see why they won.</p>
+      <div class="grid-print winners-print">
+        ${winnerBlock(
+          "Best net basis",
+          bestBasis,
+          (v) => cents(v, 1),
+          "Highest basis left after trucking and hold costs."
+        )}
+        ${winnerBlock(
+          "Best cash sale",
+          bestCash,
+          (v) => money(v, 2) + "/bu",
+          "Highest all-in cash price after futures, basis, trucking, and hold costs."
+        )}
+      </div>`;
+
+    const chartsHtml = `
+      <h2>Charts</h2>
       <div class="grid-print">
         <div>
-          <strong>Best net basis</strong><br/>
-          ${bestBasis ? `${esc(cents(bestBasis.value, 1))} · ${esc(bestBasis.loc)} · ${esc(bestBasis.label)}` : "—"}
+          <h3>Net basis after costs (¢/bu)</h3>
+          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
         </div>
         <div>
-          <strong>Best cash sale</strong><br/>
-          ${bestCash ? `${esc(money(bestCash.value, 2))}/bu · ${esc(bestCash.loc)} · ${esc(bestCash.label)}` : "—"}
+          <h3>Cash sale — futures + basis ($/bu)</h3>
+          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
         </div>
+      </div>`;
+
+    const metricsHtml = `
+      <h2>Metrics used</h2>
+      <h3>Cost of carry</h3>
+      ${kv}
+      <h3>Trucking by location</h3>
+      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>On charts</th></tr></thead><tbody>${truckRows}</tbody></table>
+      <h3>Sample windows</h3>
+      <table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+    const explainHtml = `
+      <h2>How this is calculated (plain English)</h2>
+      <div class="explain">
+        <p><strong>Why the winners are at the top.</strong>
+        Marketing comes down to two questions: (1) where is basis strongest after your real costs, and
+        (2) where do you take home the most cash if you sell futures and basis together.
+        The winners answer those first so you do not have to dig through every line on the charts.</p>
+
+        <p><strong>Basis used.</strong>
+        For each location and each time window we use your <em>actual</em> basis if you typed one.
+        If that cell is blank, we use seasonal historical basis for that elevator and crop.</p>
+
+        <p><strong>Net basis after costs (¢/bu).</strong>
+        Start with used basis, then subtract haul cost (trucking for that elevator) and the cost of holding grain
+        (interest, storage, shrink, and handling when the sale is later than today).
+        A higher net basis means more of the posted basis is still yours after costs.</p>
+
+        <p><strong>Cash sale ($/bu).</strong>
+        Take the CME futures price for that window, add used basis, then subtract the same trucking and hold costs.
+        That is the all-in cash number if you sell both the futures and the basis at that location and time.</p>
+
+        <p><strong>How a winner is picked.</strong>
+        We look only at locations you checked on the charts. For every move window we compute net basis and cash sale.
+        Best net basis = the single highest net-basis reading. Best cash sale = the single highest cash reading.
+        They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
+
+        <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
       </div>`;
 
     return `
       <h1>Grain Marketing Decisions</h1>
       <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
       ${winnersHtml}
-      <h2>Cost of carry</h2>
-      ${kv}
-      <h2>Locations &amp; trucking</h2>
-      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>Charts</th></tr></thead><tbody>${truckRows}</tbody></table>
-      <h2>Net basis &amp; cash sale snapshot</h2>
-      <table><thead>${head}</thead><tbody>${body}</tbody></table>
-      <div class="grid-print">
-        <div>
-          <h2>Net basis after costs</h2>
-          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
-        </div>
-        <div>
-          <h2>Cash sale (futures + basis)</h2>
-          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
-        </div>
-      </div>
-      <p class="meta">Informational only. Net basis = used basis − location trucking − interest − storage − shrink. Actual basis overrides historical only where entered.</p>
+      ${chartsHtml}
+      ${metricsHtml}
+      ${explainHtml}
     `;
   }
 

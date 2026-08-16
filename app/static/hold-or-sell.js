@@ -900,40 +900,99 @@
 
     const bestBasis = findBest("netBasis");
     const bestCash = findBest("cash");
+
+    function winnerBlock(title, best, fmt, why) {
+      if (!best) {
+        return `<div class="winner-print">
+          <div class="winner-lab">${esc(title)}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+        </div>`;
+      }
+      return `<div class="winner-print">
+        <div class="winner-lab">${esc(title)}</div>
+        <div class="winner-val">${esc(fmt(best.value))}</div>
+        <div class="winner-meta"><strong>${esc(best.loc)}</strong> at <strong>${esc(best.label)}</strong></div>
+        <div class="winner-sub">${esc(why)}</div>
+      </div>`;
+    }
+
     const winnersHtml = `
-      <h2>Best results</h2>
+      <h2 class="lead">The winners</h2>
+      <p class="lead-note">These are the strongest outcomes across every checked elevator and every move window on the charts. Start here — then use the charts and numbers below to see why they won.</p>
+      <div class="grid-print winners-print">
+        ${winnerBlock(
+          "Best net basis",
+          bestBasis,
+          (v) => cents(v, 1),
+          "Highest basis left after trucking and hold costs."
+        )}
+        ${winnerBlock(
+          "Best cash sale",
+          bestCash,
+          (v) => money(v, 2) + "/bu",
+          "Highest all-in cash price after futures, basis, trucking, and hold costs."
+        )}
+      </div>`;
+
+    const chartsHtml = `
+      <h2>Charts</h2>
       <div class="grid-print">
         <div>
-          <strong>Best net basis</strong><br/>
-          ${bestBasis ? `${esc(cents(bestBasis.value, 1))} · ${esc(bestBasis.loc)} · ${esc(bestBasis.label)}` : "—"}
+          <h3>Net basis after costs (¢/bu)</h3>
+          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
         </div>
         <div>
-          <strong>Best cash sale</strong><br/>
-          ${bestCash ? `${esc(money(bestCash.value, 2))}/bu · ${esc(bestCash.loc)} · ${esc(bestCash.label)}` : "—"}
+          <h3>Cash sale — futures + basis ($/bu)</h3>
+          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
         </div>
+      </div>`;
+
+    const metricsHtml = `
+      <h2>Metrics used</h2>
+      <h3>Cost of carry</h3>
+      ${kv}
+      <h3>Trucking by location</h3>
+      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>On charts</th></tr></thead><tbody>${truckRows}</tbody></table>
+      <h3>Sample windows</h3>
+      <table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+    const explainHtml = `
+      <h2>How this is calculated (plain English)</h2>
+      <div class="explain">
+        <p><strong>Why the winners are at the top.</strong>
+        Marketing comes down to two questions: (1) where is basis strongest after your real costs, and
+        (2) where do you take home the most cash if you sell futures and basis together.
+        The winners answer those first so you do not have to dig through every line on the charts.</p>
+
+        <p><strong>Basis used.</strong>
+        For each location and each time window we use your <em>actual</em> basis if you typed one.
+        If that cell is blank, we use seasonal historical basis for that elevator and crop.</p>
+
+        <p><strong>Net basis after costs (¢/bu).</strong>
+        Start with used basis, then subtract haul cost (trucking for that elevator) and the cost of holding grain
+        (interest, storage, shrink, and handling when the sale is later than today).
+        A higher net basis means more of the posted basis is still yours after costs.</p>
+
+        <p><strong>Cash sale ($/bu).</strong>
+        Take the CME futures price for that window, add used basis, then subtract the same trucking and hold costs.
+        That is the all-in cash number if you sell both the futures and the basis at that location and time.</p>
+
+        <p><strong>How a winner is picked.</strong>
+        We look only at locations you checked on the charts. For every move window we compute net basis and cash sale.
+        Best net basis = the single highest net-basis reading. Best cash sale = the single highest cash reading.
+        They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
+
+        <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
       </div>`;
 
     return `
       <h1>Grain Marketing Decisions</h1>
       <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
       ${winnersHtml}
-      <h2>Cost of carry</h2>
-      ${kv}
-      <h2>Locations &amp; trucking</h2>
-      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>Charts</th></tr></thead><tbody>${truckRows}</tbody></table>
-      <h2>Net basis &amp; cash sale snapshot</h2>
-      <table><thead>${head}</thead><tbody>${body}</tbody></table>
-      <div class="grid-print">
-        <div>
-          <h2>Net basis after costs</h2>
-          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
-        </div>
-        <div>
-          <h2>Cash sale (futures + basis)</h2>
-          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
-        </div>
-      </div>
-      <p class="meta">Informational only. Net basis = used basis − location trucking − interest − storage − shrink. Actual basis overrides historical only where entered.</p>
+      ${chartsHtml}
+      ${metricsHtml}
+      ${explainHtml}
     `;
   }
 
