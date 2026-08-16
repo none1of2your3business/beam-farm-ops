@@ -1,4 +1,4 @@
-/* Hold or sell desk — corn/soy, CME strip, carry, local basis. */
+/* Hold or sell desk — crop + multi-location net after carry/trucking/basis. */
 (function () {
   const DATA = window.HOLD_SELL_DATA;
   if (!DATA) {
@@ -6,21 +6,27 @@
     return;
   }
 
-  const LS = "beam.holdSell.v1";
+  const LS = "beam.holdSell.v2";
   const DAYS_MO = 30.4375;
   const HORIZON_MO = 18;
-  if (/(?:\?|&)embed=1/.test(location.search)) document.body.classList.add("embed");
+  const LOC_COLORS = {
+    Kellogg: "#0d6b38",
+    Dayton: "#c9920e",
+    Bloomingburg: "#2f4b8a",
+    Sidney: "#c23a12",
+  };
 
   const state = {
     crop: "corn",
-    location: "Kellogg",
+    visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
+    tableLoc: "Kellogg",
     basisMode: "seasonal",
     grain: {},
     actual: {},
-    actualNow: "",
+    actualNow: {},
     carry: {
-      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
-      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
+      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
     },
     strip: DATA.strip,
     history: DATA.history,
@@ -32,12 +38,16 @@
     if (saved && typeof saved === "object") {
       Object.assign(state, {
         crop: saved.crop || state.crop,
-        location: saved.location || state.location,
+        visible: { ...state.visible, ...(saved.visible || {}) },
+        tableLoc: saved.tableLoc || state.tableLoc,
         basisMode: saved.basisMode || state.basisMode,
         grain: saved.grain || {},
         actual: saved.actual || {},
-        actualNow: saved.actualNow || "",
-        carry: { ...state.carry, ...(saved.carry || {}) },
+        actualNow: saved.actualNow || (typeof saved.actualNow === "string" ? {} : {}),
+        carry: {
+          corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
+          soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
+        },
       });
       if (saved.strip) state.strip = saved.strip;
       if (saved.history) state.history = saved.history;
@@ -47,20 +57,36 @@
 
   let histChart;
   let netChart;
+  let stackChart;
 
   function save() {
-    const { crop, location, basisMode, grain, actual, actualNow, carry, strip, history, quoteAsOf } = state;
-    try {
-      localStorage.setItem(LS, JSON.stringify({ crop, location, basisMode, grain, actual, actualNow, carry, strip, history, quoteAsOf }));
-    } catch (e) { /* ignore */ }
+    const payload = {
+      crop: state.crop, visible: state.visible, tableLoc: state.tableLoc, basisMode: state.basisMode,
+      grain: state.grain, actual: state.actual, actualNow: state.actualNow, carry: state.carry,
+      strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
+    };
+    try { localStorage.setItem(LS, JSON.stringify(payload)); } catch (e) { /* ignore */ }
   }
 
   function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
   function cropLabel() { return cropKey() === "soybeans" ? "Soybeans" : "Corn"; }
   function stripCrop() { return cropLabel(); }
   function carry() { return state.carry[cropKey()]; }
-  function locBlock() { return DATA.locations[state.location] || DATA.locations.Kellogg; }
-  function cropBlock() { return locBlock()[cropKey()]; }
+
+  function availableLocs() {
+    return Object.keys(DATA.locations).filter((id) => {
+      const c = DATA.locations[id][cropKey()];
+      return c && c.available && !c.hidden;
+    });
+  }
+
+  function activeLocs() {
+    return availableLocs().filter((id) => state.visible[id] !== false);
+  }
+
+  function cropBlock(loc) {
+    return (DATA.locations[loc] || {})[cropKey()];
+  }
 
   function num(v) {
     const n = parseFloat(String(v ?? "").replace(",", ""));
@@ -80,9 +106,7 @@
   function ymd(d) {
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
-  function addMonths(d, n) {
-    return new Date(d.getFullYear(), d.getMonth() + n, d.getDate());
-  }
+  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, d.getDate()); }
   function weekU(d) {
     const jan1 = new Date(d.getFullYear(), 0, 1);
     const days = Math.floor((d - jan1) / 86400000);
@@ -114,16 +138,18 @@
     }
     return rows[rows.length - 1] || null;
   }
-  function histBasis(d) {
-    const block = cropBlock();
-    if (!block) return null;
+
+  function histBasis(loc, d) {
+    const block = cropBlock(loc);
+    if (!block || !block.available) return null;
     const wRow = block.weekly && block.weekly[String(weekU(d))];
     if (wRow && wRow.avg != null && wRow.n >= 2) return wRow.avg;
     const mRow = block.monthly && block.monthly[String(d.getMonth() + 1)];
     return mRow && mRow.avg != null ? mRow.avg : null;
   }
-  function postedBasis(d) {
-    const curve = ((cropBlock() || {}).latestCurve) || [];
+
+  function postedBasis(loc, d) {
+    const curve = ((cropBlock(loc) || {}).latestCurve) || [];
     let best = null;
     let bestDelta = 1e9;
     for (const c of curve) {
@@ -137,25 +163,34 @@
     }
     return (best != null && bestDelta <= 20 * 86400000) ? best : null;
   }
-  function actualKey(periodKey) { return cropKey() + "|" + state.location + "|" + periodKey; }
-  function basisFor(d, periodKey, isNow) {
-    const typed = isNow ? num(state.actualNow) : num(state.actual[actualKey(periodKey)]);
+
+  function actualKey(loc, periodKey) {
+    return cropKey() + "|" + loc + "|" + periodKey;
+  }
+
+  /** Actual basis replaces historical for that window only; blank reverts to hist/posted. */
+  function basisFor(loc, d, periodKey, isNow) {
+    const typed = isNow
+      ? num(state.actualNow[cropKey() + "|" + loc])
+      : num(state.actual[actualKey(loc, periodKey)]);
     if (typed != null) return { value: typed, source: "actual" };
     if (state.basisMode === "posted") {
-      const p = postedBasis(d);
+      const p = postedBasis(loc, d);
       if (p != null) return { value: p, source: "posted" };
     }
-    const h = histBasis(d);
+    const h = histBasis(loc, d);
     if (h != null) return { value: h, source: "seasonal" };
-    const p = postedBasis(d);
+    const p = postedBasis(loc, d);
     if (p != null) return { value: p, source: "posted" };
     return { value: null, source: "none" };
   }
+
   function markPrice(fut, basisCents) {
     if (fut == null) return null;
     if (carry().markMode === "futures") return fut;
     return fut + (basisCents || 0) / 100;
   }
+
   function carryParts(fut, basisCents, days) {
     const c = carry();
     const mark = markPrice(fut, basisCents) || 0;
@@ -168,14 +203,20 @@
     const factor = (num(c.shrinkFactor) || 0) / 100;
     const moisture = days > 0 ? extraPts * factor * mark : 0;
     const inout = days > 0 ? (num(c.handling) || 0) : 0;
+    const trucking = days > 0 ? (num(c.trucking) || 0) : 0;
     const monthlyRate = (mark * (num(c.apr) || 0) / 100 / 12) + (num(c.storage) || 0) + ((num(c.shrinkPct) || 0) / 100 * mark);
-    return { mark, interest, storage, handlingShrink, moisture, inout, monthlyRate, total: interest + storage + handlingShrink + moisture + inout };
+    return {
+      mark, interest, storage, handlingShrink, moisture, inout, trucking, monthlyRate,
+      total: interest + storage + handlingShrink + moisture + inout + trucking,
+    };
   }
+
   function defaultGrain(qIndex) {
     if (qIndex === 0) return "weekly";
     if (qIndex === 1) return "bimonthly";
     return "monthly";
   }
+
   function periodDates(start, end, grain) {
     const out = [];
     if (grain === "weekly") {
@@ -204,6 +245,7 @@
     }
     return out;
   }
+
   function quarters() {
     const start = today();
     const end = addMonths(start, HORIZON_MO);
@@ -219,18 +261,24 @@
     }
     return list;
   }
-  function buildRows() {
+
+  function ensureTableLoc() {
+    const avail = availableLocs();
+    if (!avail.includes(state.tableLoc)) state.tableLoc = avail[0] || "Kellogg";
+  }
+
+  function buildRowsForLoc(loc) {
     const qs = quarters();
     const now = today();
     const front = frontRow();
-    const nowBasis = basisFor(now, "now", true);
+    const nowBasis = basisFor(loc, now, "now", true);
     const nowFut = front && front.price != null ? Number(front.price) : null;
     const nowCash = nowFut != null && nowBasis.value != null ? nowFut + nowBasis.value / 100 : nowFut;
     const rows = [{
       isNow: true, quarter: quarterInfo(now), date: now, key: "now",
       label: "Now · " + fmtDate(now), contract: front, futures: nowFut,
-      hist: histBasis(now), posted: postedBasis(now), actual: num(state.actualNow),
-      basis: nowBasis, futCarry: 0, basisCarry: 0, days: 0, cost: 0, cash: nowCash, net: 0,
+      hist: histBasis(loc, now), posted: postedBasis(loc, now),
+      basis: nowBasis, futCarry: 0, basisCarry: 0, days: 0, cost: 0, truck: 0, cash: nowCash, net: 0,
     }];
     qs.forEach((q, qi) => {
       const grain = state.grain[q.key] || defaultGrain(qi);
@@ -239,7 +287,7 @@
         const key = ymd(d);
         const contract = contractForDate(d);
         const fut = contract && contract.price != null ? Number(contract.price) : null;
-        const b = basisFor(d, key, false);
+        const b = basisFor(loc, d, key, false);
         const cash = fut != null && b.value != null ? fut + b.value / 100 : fut;
         const days = Math.max(0, Math.round((d - now) / 86400000));
         const parts = carryParts(nowFut, nowBasis.value, days);
@@ -249,80 +297,84 @@
         rows.push({
           isNow: false, quarter: q, date: d, key,
           label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-          contract, futures: fut, hist: histBasis(d), posted: postedBasis(d),
-          actual: num(state.actual[actualKey(key)]), basis: b, futCarry, basisCarry,
-          days, cost: parts.total * 100, cash, net,
+          contract, futures: fut, hist: histBasis(loc, d), posted: postedBasis(loc, d),
+          basis: b, futCarry, basisCarry, days,
+          cost: parts.total * 100, truck: parts.trucking * 100, cash, net,
         });
       });
     });
     return { rows, nowCash, nowFut, nowBasis };
   }
-  function bestRow(rows) {
-    let best = rows[0];
-    for (const r of rows) {
-      if (r.net == null) continue;
-      if (best.net == null || r.net > best.net) best = r;
-    }
-    return best;
-  }
+
   function setStatus(msg, err) {
     const el = document.getElementById("status");
     el.textContent = msg || "";
     el.className = "status" + (err ? " err" : "");
   }
-  function renderLocs() {
-    const sel = document.getElementById("location");
-    sel.innerHTML = Object.keys(DATA.locations).map((id) => {
-      const c = DATA.locations[id][cropKey()];
-      const tag = !c.available ? " — limited" : c.thin ? " — thin" : "";
-      return `<option value="${id}">${id}${tag}</option>`;
-    }).join("");
-    sel.value = state.location;
-  }
-  function renderLocNote() {
-    const el = document.getElementById("locNote");
-    const c = cropBlock();
-    const notes = [];
-    if (state.location === "Dayton" && cropKey() === "soybeans") {
-      notes.push("Cargill Dayton bid sheets in this history are corn-only. Enter actual soybean basis below, or pick Kellogg / Bloomingburg / Sidney.");
-    } else if (state.location === "Sidney" && cropKey() === "corn") {
-      notes.push("Sidney corn history is sparse. Seasonal figures blend available Cargill Sidney / Sidney North bids — type actual basis when you have a posted number.");
-    } else if (c && !c.available) {
-      notes.push("Limited seasonal history for this elevator and crop. Posted bids and your actual basis still work.");
-    }
-    if (c && c.latestDate) notes.push("Latest posted curve: " + c.latestDate + ".");
-    el.hidden = notes.length === 0;
-    el.textContent = notes.join(" ");
-  }
+
   function renderCropSeg() {
     const seg = document.getElementById("cropSeg");
     seg.className = "seg " + (cropKey() === "soybeans" ? "soy" : "corn");
     seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.crop === cropKey()));
   }
+
+  function renderLocs() {
+    const avail = availableLocs();
+    document.getElementById("locs").innerHTML = avail.map((id) => {
+      const on = state.visible[id] !== false;
+      return `<label class="loc ${on ? "" : "off"}">
+        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+        <strong>${id}</strong>
+      </label>`;
+    }).join("");
+    document.getElementById("locs").querySelectorAll("input").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        state.visible[inp.dataset.id] = inp.checked;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+
+    ensureTableLoc();
+    const sel = document.getElementById("tableLoc");
+    sel.innerHTML = avail.map((id) => `<option value="${id}">${id}</option>`).join("");
+    sel.value = state.tableLoc;
+  }
+
   function renderCarryForm() {
     const c = carry();
     document.getElementById("apr").value = c.apr;
     document.getElementById("storage").value = c.storage;
+    document.getElementById("trucking").value = c.trucking;
     document.getElementById("markMode").value = c.markMode;
     document.getElementById("handling").value = c.handling;
     document.getElementById("shrinkPct").value = c.shrinkPct;
     document.getElementById("extraPts").value = c.extraPts;
     document.getElementById("shrinkFactor").value = c.shrinkFactor;
-    document.getElementById("actualNow").value = state.actualNow;
+    document.getElementById("actualNow").value = state.actualNow[cropKey() + "|" + state.tableLoc] || "";
     document.getElementById("basisMode").value = state.basisMode;
+    document.getElementById("tableLoc").value = state.tableLoc;
   }
+
   function readCarryForm() {
     const c = carry();
     c.apr = num(document.getElementById("apr").value) ?? c.apr;
     c.storage = num(document.getElementById("storage").value) ?? 0;
+    c.trucking = num(document.getElementById("trucking").value) ?? 0;
     c.markMode = document.getElementById("markMode").value;
     c.handling = num(document.getElementById("handling").value) ?? 0;
     c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
     c.extraPts = num(document.getElementById("extraPts").value) ?? 0;
     c.shrinkFactor = num(document.getElementById("shrinkFactor").value) ?? 0;
-    state.actualNow = document.getElementById("actualNow").value;
+    const nowKey = cropKey() + "|" + state.tableLoc;
+    const nowVal = document.getElementById("actualNow").value;
+    if (String(nowVal).trim() === "") delete state.actualNow[nowKey];
+    else state.actualNow[nowKey] = nowVal;
     state.basisMode = document.getElementById("basisMode").value;
+    state.tableLoc = document.getElementById("tableLoc").value;
   }
+
   function renderStrip() {
     const rows = stripRows();
     const el = document.getElementById("strip");
@@ -348,56 +400,23 @@
         const v = num(inp.value);
         if (state.strip[stripCrop()][i]) state.strip[stripCrop()][i].price = v;
         save();
-        refresh({ reread: false });
+        refresh({ reread: false, forms: false });
       });
     });
   }
+
   function renderRate(nowFut, nowBasis) {
     const parts = carryParts(nowFut, nowBasis && nowBasis.value, DAYS_MO);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
-    const moist = carryParts(nowFut, nowBasis && nowBasis.value, 90).moisture;
     document.getElementById("rateBox").innerHTML =
       `<div><div class="l">Mark</div><b>${money(parts.mark, 4)}</b></div>
        <div><div class="l">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
        <div><div class="l">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
-       <div><div class="l">Handling shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="l">Monthly rate</div><b>${money(parts.monthlyRate, 4)}</b> / bu</div>
-       <div><div class="l">Extra moisture shrink (one-time)</div><b>${money(moist, 4)}</b></div>
-       <div><div class="l">In-and-out handling</div><b>${money(num(carry().handling) || 0, 4)}</b></div>`;
+       <div><div class="l">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
+       <div><div class="l">Trucking (one-time)</div><b>${money(num(carry().trucking) || 0, 4)}</b></div>
+       <div><div class="l">Monthly rate</div><b>${money(parts.monthlyRate, 4)}</b> / bu</div>`;
   }
-  function renderDecision(model) {
-    const { rows, nowCash } = model;
-    const best = bestRow(rows);
-    const box = document.getElementById("decision");
-    const hold = best && !best.isNow && best.net != null && best.net > 0.5;
-    box.className = "card decision " + (hold ? "hold" : "sell");
-    document.getElementById("decKicker").textContent = cropLabel() + " · " + state.location;
-    if (!best || best.net == null) {
-      document.getElementById("decTitle").textContent = "Need a futures price";
-      document.getElementById("decWhy").textContent = "Update futures or type the strip prices, then the net hold vs sell call appears here.";
-    } else if (hold) {
-      document.getElementById("decTitle").textContent = "Hold into " + best.label;
-      document.getElementById("decWhy").textContent =
-        "After interest, storage, and shrink, that window beats selling today by " +
-        cents(best.net, 1) + ". Futures carry " + cents(best.futCarry, 1) +
-        ", basis carry " + cents(best.basisCarry, 1) + ", cost " + cents(best.cost, 1) + ".";
-    } else {
-      document.getElementById("decTitle").textContent = "Sell now";
-      const why = best.isNow
-        ? "No later window covers the cost of carry after expected basis."
-        : "The best later window still loses " + cents(best.net, 1) + " versus cash today.";
-      document.getElementById("decWhy").textContent = why + " Inverse markets and harvest-weak basis are the usual reasons.";
-    }
-    const later = rows.filter((r) => !r.isNow && r.net != null).sort((a, b) => b.net - a.net)[0];
-    document.getElementById("mNow").textContent = money(nowCash, 2);
-    document.getElementById("mLater").textContent = later ? money(later.cash, 2) : "—";
-    document.getElementById("mLater").parentElement.querySelector(".l").textContent =
-      later ? "Best later cash · " + later.label : "Best later cash";
-    document.getElementById("mCost").textContent = later ? cents(later.cost, 1) : "—";
-    const netEl = document.getElementById("mNet");
-    netEl.textContent = later ? cents(later.net, 1) : "—";
-    netEl.className = "v " + (later && later.net > 0 ? "good" : later && later.net < 0 ? "bad" : "");
-  }
+
   function renderQuarters() {
     const qs = quarters();
     document.getElementById("quarters").innerHTML = qs.map((q, i) => {
@@ -413,26 +432,30 @@
       sel.addEventListener("change", () => {
         state.grain[sel.dataset.q] = sel.value;
         save();
-        refresh({ reread: false });
+        refresh({ reread: false, forms: false });
       });
     });
   }
+
   function renderTable(model) {
     const { rows } = model;
-    const best = bestRow(rows);
     let html = "";
     let lastQ = "";
     rows.forEach((r) => {
       if (r.quarter.key !== lastQ) {
         lastQ = r.quarter.key;
-        html += `<tr class="qhead"><td colspan="11">${r.quarter.label}</td></tr>`;
+        html += `<tr class="qhead"><td colspan="12">${r.quarter.label} · ${state.tableLoc}</td></tr>`;
       }
-      const cls = [r.isNow ? "now" : "", best === r ? "best" : "", r.net > 0.5 ? "pos" : r.net < -0.5 ? "neg" : ""].join(" ");
-      const call = r.isNow ? "Sell today" : best === r && r.net > 0.5 ? "Best hold" : r.net > 2 ? "Hold" : r.net < -5 ? "Don't wait" : "Flat";
-      const actualVal = r.isNow ? state.actualNow : (state.actual[actualKey(r.key)] ?? "");
+      const cls = [r.isNow ? "now" : "", r.net > 0.5 ? "pos" : r.net < -0.5 ? "neg" : ""].join(" ");
+      const actualVal = r.isNow
+        ? (state.actualNow[cropKey() + "|" + state.tableLoc] || "")
+        : (state.actual[actualKey(state.tableLoc, r.key)] ?? "");
       const input = r.isNow
         ? `<span class="muted">use box above</span>`
         : `<input class="basis" data-k="${r.key}" inputmode="decimal" value="${actualVal}" placeholder="—" />`;
+      const used = r.basis && r.basis.value != null
+        ? cents(r.basis.value, 1) + (r.basis.source === "actual" ? " act" : r.basis.source === "posted" ? " post" : " hist")
+        : "—";
       html += `<tr class="${cls}">
         <td class="l">${r.label}${r.contract ? " · " + r.contract.short : ""}</td>
         <td>${r.futures != null ? money(r.futures, 2) : "—"}</td>
@@ -440,25 +463,27 @@
         <td>${r.hist != null ? cents(r.hist, 1) : "—"}</td>
         <td>${r.posted != null ? cents(r.posted, 1) : "—"}</td>
         <td>${input}</td>
+        <td>${used}</td>
         <td>${cents(r.basisCarry, 1)}</td>
         <td>${cents(r.cost, 1)}</td>
+        <td>${cents(r.truck, 1)}</td>
         <td>${r.cash != null ? money(r.cash, 2) : "—"}</td>
         <td class="net">${cents(r.net, 1)}</td>
-        <td class="l call">${call}</td>
       </tr>`;
     });
     const tb = document.getElementById("tbody");
     tb.innerHTML = html;
     tb.querySelectorAll("input.basis").forEach((inp) => {
       inp.addEventListener("change", () => {
-        const k = actualKey(inp.dataset.k);
+        const k = actualKey(state.tableLoc, inp.dataset.k);
         if (String(inp.value).trim() === "") delete state.actual[k];
         else state.actual[k] = inp.value;
         save();
-        refresh({ reread: false });
+        refresh({ reread: false, forms: false });
       });
     });
   }
+
   function renderHistChart() {
     const ctx = document.getElementById("histChart");
     if (!ctx || typeof Chart === "undefined") return;
@@ -469,7 +494,7 @@
       data: {
         labels: series.map((p) => p.date),
         datasets: [{
-          label: cropLabel() + " nearby (delayed)",
+          label: cropLabel() + " nearby",
           data: series.map((p) => p.price),
           borderColor: cropKey() === "soybeans" ? "#2f4b8a" : "#c9920e",
           backgroundColor: "transparent",
@@ -490,20 +515,95 @@
       },
     });
   }
-  function renderNetChart(model) {
+
+  function renderNetChart() {
     const ctx = document.getElementById("netChart");
     if (!ctx || typeof Chart === "undefined") return;
-    const rows = model.rows.filter((r) => !r.isNow);
+    const locs = activeLocs();
+    const models = {};
+    locs.forEach((loc) => { models[loc] = buildRowsForLoc(loc); });
+
+    // Shared label set from first active location (non-now rows)
+    const baseRows = locs.length ? models[locs[0]].rows.filter((r) => !r.isNow) : [];
+    const labels = baseRows.map((r) => r.label);
+
+    const datasets = locs.map((loc) => {
+      const byKey = {};
+      models[loc].rows.filter((r) => !r.isNow).forEach((r) => { byKey[r.key] = r.net; });
+      return {
+        label: loc + " net ¢",
+        data: baseRows.map((r) => (byKey[r.key] != null ? byKey[r.key] : null)),
+        borderColor: LOC_COLORS[loc] || "#333",
+        backgroundColor: LOC_COLORS[loc] || "#333",
+        borderWidth: 2.25,
+        pointRadius: 2.5,
+        tension: 0.2,
+      };
+    });
+
     if (netChart) netChart.destroy();
     netChart = new Chart(ctx, {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : cents(v, 1));
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, title: { display: true, text: "Move window" } },
+          y: {
+            title: { display: true, text: "Net vs sell today (¢ / bu)" },
+            ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" },
+          },
+        },
+      },
+      plugins: [{
+        id: "zeroLine",
+        afterDraw(c) {
+          const y = c.scales.y;
+          if (y.min > 0 || y.max < 0) return;
+          const yPix = y.getPixelForValue(0);
+          const { ctx: g, chartArea } = c;
+          g.save();
+          g.strokeStyle = "rgba(42,64,51,0.45)";
+          g.setLineDash([5, 4]);
+          g.beginPath();
+          g.moveTo(chartArea.left, yPix);
+          g.lineTo(chartArea.right, yPix);
+          g.stroke();
+          g.fillStyle = "rgba(42,64,51,0.8)";
+          g.font = "11px sans-serif";
+          g.fillText("Sell now = 0", chartArea.right - 72, yPix - 5);
+          g.restore();
+        },
+      }],
+    });
+  }
+
+  function renderStackChart(model) {
+    const ctx = document.getElementById("stackChart");
+    if (!ctx || typeof Chart === "undefined") return;
+    const rows = model.rows.filter((r) => !r.isNow);
+    if (stackChart) stackChart.destroy();
+    stackChart = new Chart(ctx, {
       type: "bar",
       data: {
         labels: rows.map((r) => r.label),
         datasets: [
           { label: "Futures carry ¢", data: rows.map((r) => r.futCarry), backgroundColor: "#c9920e", stack: "m" },
           { label: "Basis carry ¢", data: rows.map((r) => r.basisCarry), backgroundColor: "#2f4b8a", stack: "m" },
-          { label: "Cost of carry ¢", data: rows.map((r) => r.cost == null ? null : -r.cost), backgroundColor: "#c23a12", stack: "m" },
-          { type: "line", label: "Net vs now ¢", data: rows.map((r) => r.net), borderColor: "#0d6b38", backgroundColor: "#0d6b38", tension: 0.2, pointRadius: 3, yAxisID: "y2" },
+          { label: "Cost (carry+truck) ¢", data: rows.map((r) => r.cost == null ? null : -r.cost), backgroundColor: "#c23a12", stack: "m" },
+          { type: "line", label: "Net ¢", data: rows.map((r) => r.net), borderColor: "#0d6b38", backgroundColor: "#0d6b38", tension: 0.2, pointRadius: 2, yAxisID: "y2" },
         ],
       },
       options: {
@@ -511,54 +611,58 @@
         interaction: { mode: "index", intersect: false },
         plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
         scales: {
-          x: { stacked: true, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } },
-          y: { stacked: true, title: { display: true, text: "Carry stack ¢ / bu" } },
-          y2: { stacked: false, position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Net ¢ / bu" } },
+          x: { stacked: true, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+          y: { stacked: true, title: { display: true, text: "Stack ¢ / bu" } },
+          y2: { stacked: false, position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Net ¢" } },
         },
       },
     });
   }
+
   function renderFooter() {
     const spot = DATA.spotRange[cropKey()] || DATA.spotRange.corn;
     document.getElementById("footer").innerHTML =
-      "Spot basis history " + (spot ? spot[0] + " to " + spot[1] : "") +
+      "Spot basis " + (spot ? spot[0] + " to " + spot[1] : "") +
       " · " + DATA.source +
-      ". Shrink: extra moisture points × factor × price (farm 1.25%/pt, elevator ~1.35–1.4%); handling/quality default 0.08%/mo corn and 0.10%/mo soy (~0.5–0.6% over 6 months, ISU 0.5–1% per season). Delayed CME via Yahoo. Informational only — not trading advice.";
+      ". Dayton = corn only. Sidney = soybeans only. Actual basis overrides historical for that window only. Delayed CME — informational only.";
     document.getElementById("asOfPill").textContent = state.quoteAsOf
       ? ("Quotes " + String(state.quoteAsOf).replace("T", " ").slice(0, 16) + " UTC")
       : "Quotes delayed";
   }
+
   function refresh(opts) {
     try {
-    const reread = !opts || opts.reread !== false;
-    const forms = !opts || opts.forms !== false;
-    if (reread) readCarryForm();
-    renderCropSeg();
-    renderLocs();
-    renderLocNote();
-    if (forms) renderCarryForm();
-    renderStrip();
-    const model = buildRows();
-    const front = frontRow();
-    renderRate(front && front.price, model.nowBasis);
-    renderDecision(model);
-    renderQuarters();
-    renderTable(model);
-    renderHistChart();
-    renderNetChart(model);
-    renderFooter();
-    save();
+      const reread = !opts || opts.reread !== false;
+      const forms = !opts || opts.forms !== false;
+      if (reread) readCarryForm();
+      ensureTableLoc();
+      renderCropSeg();
+      renderLocs();
+      if (forms) renderCarryForm();
+      renderStrip();
+      const model = buildRowsForLoc(state.tableLoc);
+      const front = frontRow();
+      renderRate(front && front.price, model.nowBasis);
+      renderQuarters();
+      renderTable(model);
+      renderHistChart();
+      renderNetChart();
+      renderStackChart(model);
+      renderFooter();
+      save();
     } catch (err) {
       setStatus(String(err && err.message ? err.message : err), true);
       console.error(err);
     }
   }
+
   function toBu(raw) {
     if (raw == null) return null;
     const v = Number(raw);
     if (!Number.isFinite(v)) return null;
     return Math.round((v > 40 ? v / 100 : v) * 10000) / 10000;
   }
+
   async function fetchYahooTicker(ticker) {
     const url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(ticker) + "?interval=1d&range=5d";
     const proxies = [url, "https://corsproxy.io/?" + encodeURIComponent(url), "https://api.allorigins.win/raw?url=" + encodeURIComponent(url)];
@@ -576,6 +680,7 @@
     }
     return null;
   }
+
   async function updateFromYahoo() {
     const next = { Corn: [], Soybeans: [] };
     for (const crop of ["Corn", "Soybeans"]) {
@@ -589,6 +694,7 @@
     state.strip = next;
     state.quoteAsOf = new Date().toISOString();
   }
+
   async function updateFutures() {
     const btn = document.getElementById("btnUpdate");
     btn.disabled = true;
@@ -612,7 +718,7 @@
         setStatus("Futures updated from delayed Yahoo quotes.");
       }
       save();
-      refresh({ reread: false });
+      refresh({ reread: false, forms: false });
     } catch (e) {
       setStatus("Could not reach a quote feed. Type strip prices by hand.", true);
     } finally {
@@ -627,17 +733,18 @@
     save();
     refresh({ reread: false, forms: true });
   });
-  document.getElementById("location").addEventListener("change", (e) => {
-    state.location = e.target.value;
+  document.getElementById("btnUpdate").addEventListener("click", updateFutures);
+  document.getElementById("tableLoc").addEventListener("change", () => {
+    state.tableLoc = document.getElementById("tableLoc").value;
     save();
     refresh({ reread: false, forms: true });
   });
-  document.getElementById("btnUpdate").addEventListener("click", updateFutures);
-  ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor", "actualNow", "basisMode"].forEach((id) => {
+  ["apr", "storage", "trucking", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor", "actualNow", "basisMode"].forEach((id) => {
     const el = document.getElementById(id);
     el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
     if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
   });
+
   refresh({ reread: false, forms: true });
   (function loadCharts() {
     if (typeof Chart !== "undefined") return;
