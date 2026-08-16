@@ -121,6 +121,30 @@
   .qchip strong { font-size: 0.82rem; }
   .qchip select { padding: 4px 6px; }
   .table-wrap { overflow-x: auto; max-height: 520px; }
+  .basis-mobile { display: none; }
+  .bm-loc {
+    border: 1px solid var(--line); border-radius: 12px; background: #f7fbf8;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .bm-loc-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    background: #e8f2ea; font-family: var(--display); font-size: 1.1rem; font-weight: 700;
+    border-bottom: 1px solid var(--line);
+  }
+  .bm-loc-head .swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .bm-row {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid #d7e4db;
+  }
+  .bm-row:last-child { border-bottom: 0; }
+  .bm-row.now { background: #fff7e0; }
+  .bm-row.act-on { background: #e5f6ea; }
+  .bm-when { font-size: 0.86rem; font-weight: 650; }
+  .bm-hist { font-size: 0.8rem; color: var(--muted); text-align: right; min-width: 4.5rem; }
+  .bm-hist span { display: block; font-size: 0.68rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.03em; }
+  .bm-act { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .bm-act span { font-size: 0.68rem; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .bm-act input.basis { width: 88px; text-align: right; padding: 7px 8px; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
   th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #d7e4db; white-space: nowrap; }
   th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 700; }
@@ -190,10 +214,15 @@
     .grid-2, .carry-grid, .winners-grid { grid-template-columns: 1fr 1fr; }
     .rate-box { grid-column: span 2; }
   }
-  @media (max-width: 640px) {
+  @media (max-width: 760px) {
     .grid-2, .carry-grid, .winners-grid { grid-template-columns: 1fr; }
     .rate-box { grid-column: span 1; }
+    .table-wrap.basis-desktop { display: none; }
+    .basis-mobile { display: block; }
+    .hint-desktop { display: none; }
+    .hint-mobile { display: block; }
   }
+  .hint-mobile { display: none; }
 </style>
 </head>
 <body>
@@ -296,14 +325,16 @@
         <h2 style="margin:0;font-size:1.15rem">Actual basis entry</h2>
         <span class="pill">Actual replaces historical for that window only</span>
       </div>
-      <p class="hint">Location names sit over each column pair (Historical ¢ | Actual ¢). Enter ¢/bu under Actual; leave blank to keep historical.</p>
+      <p class="hint hint-desktop">Location names sit over each column pair (Historical ¢ | Actual ¢). Enter ¢/bu under Actual; leave blank to keep historical.</p>
+      <p class="hint hint-mobile">Each elevator is its own block with the location name on top. Enter Actual ¢/bu for that location; leave blank to keep historical.</p>
       <div class="quarters" id="quarters"></div>
-      <div class="table-wrap">
+      <div class="table-wrap basis-desktop">
         <table id="basisTable">
           <thead></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
+      <div class="basis-mobile" id="basisMobile" aria-label="Actual basis by location"></div>
     </section>
 
     <p class="footer" id="footer"></p>
@@ -816,15 +847,30 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     });
   }
 
+  function bindBasisInputs(root) {
+    if (!root) return;
+    root.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const k = actualKey(inp.dataset.loc, inp.dataset.k);
+        if (String(inp.value).trim() === "") delete state.actual[k];
+        else state.actual[k] = inp.value;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
   function renderBasisEntry() {
     const points = timeline();
     const locs = availableLocs();
     const thead = document.querySelector("#basisTable thead");
     const tb = document.getElementById("tbody");
+    const mobile = document.getElementById("basisMobile");
 
     if (!locs.length) {
       if (thead) thead.innerHTML = "<tr><th class='l'>Time period</th></tr>";
       tb.innerHTML = "<tr><td class='l'>No locations for this crop.</td></tr>";
+      if (mobile) mobile.innerHTML = "<p class='hint'>No locations for this crop.</p>";
       return;
     }
 
@@ -850,20 +896,38 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
         const actualVal = state.actual[key] ?? "";
         const usingAct = num(actualVal) != null;
         html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
-        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" /></td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
       });
       html += "</tr>";
     });
     tb.innerHTML = html;
-    tb.querySelectorAll("input.basis").forEach((inp) => {
-      inp.addEventListener("change", () => {
-        const k = actualKey(inp.dataset.loc, inp.dataset.k);
-        if (String(inp.value).trim() === "") delete state.actual[k];
-        else state.actual[k] = inp.value;
-        save();
-        refresh({ reread: false, forms: false });
+    bindBasisInputs(tb);
+
+    // Mobile: one labeled block per location so the elevator name stays visible while typing
+    if (mobile) {
+      let mhtml = "";
+      locs.forEach((loc) => {
+        const color = LOC_COLORS[loc] || "#666";
+        mhtml += `<section class="bm-loc">
+          <div class="bm-loc-head"><span class="swatch" style="background:${color}"></span>${loc}</div>`;
+        points.forEach((p) => {
+          const hist = histBasis(loc, p.date);
+          const key = actualKey(loc, p.key);
+          const actualVal = state.actual[key] ?? "";
+          const usingAct = num(actualVal) != null;
+          mhtml += `<div class="bm-row ${p.isNow ? "now" : ""} ${usingAct ? "act-on" : ""}">
+            <div class="bm-when">${p.label}</div>
+            <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
+            <label class="bm-act"><span>Actual ¢ · ${loc}</span>
+              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="¢" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" />
+            </label>
+          </div>`;
+        });
+        mhtml += "</section>";
       });
-    });
+      mobile.innerHTML = mhtml;
+      bindBasisInputs(mobile);
+    }
   }
 
   function zeroLinePlugin() {

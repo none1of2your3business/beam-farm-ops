@@ -502,15 +502,30 @@
     });
   }
 
+  function bindBasisInputs(root) {
+    if (!root) return;
+    root.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const k = actualKey(inp.dataset.loc, inp.dataset.k);
+        if (String(inp.value).trim() === "") delete state.actual[k];
+        else state.actual[k] = inp.value;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
   function renderBasisEntry() {
     const points = timeline();
     const locs = availableLocs();
     const thead = document.querySelector("#basisTable thead");
     const tb = document.getElementById("tbody");
+    const mobile = document.getElementById("basisMobile");
 
     if (!locs.length) {
       if (thead) thead.innerHTML = "<tr><th class='l'>Time period</th></tr>";
       tb.innerHTML = "<tr><td class='l'>No locations for this crop.</td></tr>";
+      if (mobile) mobile.innerHTML = "<p class='hint'>No locations for this crop.</p>";
       return;
     }
 
@@ -536,20 +551,38 @@
         const actualVal = state.actual[key] ?? "";
         const usingAct = num(actualVal) != null;
         html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
-        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" /></td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
       });
       html += "</tr>";
     });
     tb.innerHTML = html;
-    tb.querySelectorAll("input.basis").forEach((inp) => {
-      inp.addEventListener("change", () => {
-        const k = actualKey(inp.dataset.loc, inp.dataset.k);
-        if (String(inp.value).trim() === "") delete state.actual[k];
-        else state.actual[k] = inp.value;
-        save();
-        refresh({ reread: false, forms: false });
+    bindBasisInputs(tb);
+
+    // Mobile: one labeled block per location so the elevator name stays visible while typing
+    if (mobile) {
+      let mhtml = "";
+      locs.forEach((loc) => {
+        const color = LOC_COLORS[loc] || "#666";
+        mhtml += `<section class="bm-loc">
+          <div class="bm-loc-head"><span class="swatch" style="background:${color}"></span>${loc}</div>`;
+        points.forEach((p) => {
+          const hist = histBasis(loc, p.date);
+          const key = actualKey(loc, p.key);
+          const actualVal = state.actual[key] ?? "";
+          const usingAct = num(actualVal) != null;
+          mhtml += `<div class="bm-row ${p.isNow ? "now" : ""} ${usingAct ? "act-on" : ""}">
+            <div class="bm-when">${p.label}</div>
+            <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
+            <label class="bm-act"><span>Actual ¢ · ${loc}</span>
+              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="¢" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" />
+            </label>
+          </div>`;
+        });
+        mhtml += "</section>";
       });
-    });
+      mobile.innerHTML = mhtml;
+      bindBasisInputs(mobile);
+    }
   }
 
   function zeroLinePlugin() {
