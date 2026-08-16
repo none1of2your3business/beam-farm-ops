@@ -15,15 +15,24 @@
     Bloomingburg: "#2f4b8a",
     Sidney: "#c23a12",
   };
+  const LOC_IDS = ["Kellogg", "Dayton", "Bloomingburg", "Sidney"];
+  const DEFAULT_TRUCK = 0.18;
+
+  function defaultTrucking() {
+    const out = {};
+    LOC_IDS.forEach((id) => { out[id] = DEFAULT_TRUCK; });
+    return out;
+  }
 
   const state = {
     crop: "corn",
     visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
+    trucking: defaultTrucking(),
     grain: {},
     actual: {},
     carry: {
-      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
-      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
+      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
     },
     strip: DATA.strip,
     history: DATA.history,
@@ -51,6 +60,26 @@
         corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
         soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
       };
+      // Per-location trucking (migrate old single carry.trucking if needed)
+      function parseN(v) {
+        const n = parseFloat(String(v ?? "").replace(",", ""));
+        return Number.isFinite(n) ? n : null;
+      }
+      const legacyTruck =
+        parseN(typeof saved.trucking === "number" ? saved.trucking : null) ??
+        parseN((saved.carry || {}).corn && saved.carry.corn.trucking) ??
+        parseN((saved.carry || {}).soybeans && saved.carry.soybeans.trucking) ??
+        DEFAULT_TRUCK;
+      state.trucking = defaultTrucking();
+      LOC_IDS.forEach((id) => { state.trucking[id] = legacyTruck; });
+      if (saved.trucking && typeof saved.trucking === "object") {
+        LOC_IDS.forEach((id) => {
+          const v = parseN(saved.trucking[id]);
+          if (v != null) state.trucking[id] = v;
+        });
+      }
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
       if (saved.strip) state.strip = saved.strip;
       if (saved.history) state.history = saved.history;
       if (saved.quoteAsOf) state.quoteAsOf = saved.quoteAsOf;
@@ -63,10 +92,16 @@
   function save() {
     try {
       localStorage.setItem(LS, JSON.stringify({
-        crop: state.crop, visible: state.visible, grain: state.grain, actual: state.actual,
+        crop: state.crop, visible: state.visible, trucking: state.trucking,
+        grain: state.grain, actual: state.actual,
         carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
       }));
     } catch (e) { /* ignore */ }
+  }
+
+  function truckingFor(loc) {
+    const v = num(state.trucking[loc]);
+    return v != null ? v : DEFAULT_TRUCK;
   }
 
   function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
@@ -163,7 +198,7 @@
     return fut + (basisCents || 0) / 100;
   }
 
-  function carryParts(fut, basisCents, days) {
+  function carryParts(fut, basisCents, days, loc) {
     const c = carry();
     const mark = markPrice(fut, basisCents) || 0;
     const months = Math.max(0, days) / DAYS_MO;
@@ -173,7 +208,7 @@
     const handlingShrink = (num(c.shrinkPct) || 0) / 100 * mark * months;
     const moisture = days > 0 ? (num(c.extraPts) || 0) * ((num(c.shrinkFactor) || 0) / 100) * mark : 0;
     const inout = days > 0 ? (num(c.handling) || 0) : 0;
-    const trucking = num(c.trucking) || 0; // paid whenever you deliver
+    const trucking = loc ? truckingFor(loc) : 0; // paid whenever you deliver; per location
     const holdCost = interest + storage + handlingShrink + moisture + inout;
     return {
       mark, interest, storage, handlingShrink, moisture, inout, trucking, holdCost,
@@ -264,7 +299,7 @@
     const fut = contract && contract.price != null ? Number(contract.price) : null;
     // Interest mark uses nearby + current basis for holding cost from today
     const nowB = usedBasis(loc, today(), "now");
-    const parts = carryParts(nowFut, nowB.value, days);
+    const parts = carryParts(nowFut, nowB.value, days, loc);
     const truckC = parts.trucking * 100;
     const holdC = parts.holdCost * 100;
     const netBasis = b.value != null ? b.value - truckC - holdC : null;
@@ -293,18 +328,35 @@
     const avail = availableLocs();
     document.getElementById("locs").innerHTML = avail.map((id) => {
       const on = state.visible[id] !== false;
-      return `<label class="loc ${on ? "" : "off"}">
-        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
-        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
-        <strong>${id}</strong>
-      </label>`;
+      const truck = truckingFor(id);
+      return `<div class="loc ${on ? "" : "off"}">
+        <label class="loc-toggle">
+          <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+          <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+          <strong>${id}</strong>
+        </label>
+        <label class="truck-lab">Truck $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
     }).join("");
-    document.getElementById("locs").querySelectorAll("input").forEach((inp) => {
+    const root = document.getElementById("locs");
+    root.querySelectorAll("input[type=checkbox]").forEach((inp) => {
       inp.addEventListener("change", () => {
         state.visible[inp.dataset.id] = inp.checked;
         save();
-        refresh({ reread: false, forms: false });
+        refresh({ reread: false, forms: false, locs: true });
       });
+    });
+    root.querySelectorAll("input.truck").forEach((inp) => {
+      const apply = () => {
+        const v = num(inp.value);
+        state.trucking[inp.dataset.truck] = v != null ? v : 0;
+        save();
+        refresh({ reread: false, forms: false });
+      };
+      inp.addEventListener("change", apply);
+      inp.addEventListener("input", apply);
     });
   }
 
@@ -312,7 +364,6 @@
     const c = carry();
     document.getElementById("apr").value = c.apr;
     document.getElementById("storage").value = c.storage;
-    document.getElementById("trucking").value = c.trucking;
     document.getElementById("markMode").value = c.markMode;
     document.getElementById("handling").value = c.handling;
     document.getElementById("shrinkPct").value = c.shrinkPct;
@@ -324,7 +375,6 @@
     const c = carry();
     c.apr = num(document.getElementById("apr").value) ?? c.apr;
     c.storage = num(document.getElementById("storage").value) ?? 0;
-    c.trucking = num(document.getElementById("trucking").value) ?? 0;
     c.markMode = document.getElementById("markMode").value;
     c.handling = num(document.getElementById("handling").value) ?? 0;
     c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
@@ -364,17 +414,20 @@
 
   function renderRate() {
     const front = frontRow();
-    const loc = availableLocs()[0];
+    const loc = activeLocs()[0] || availableLocs()[0];
     const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
-    const parts = carryParts(front && front.price, nowB.value, DAYS_MO);
+    const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
+    const truckBits = availableLocs().map((id) =>
+      `<span class="truck-chip"><i style="background:${LOC_COLORS[id] || "#666"}"></i>${id} ${money(truckingFor(id), 4)}</span>`
+    ).join(" ");
     document.getElementById("rateBox").innerHTML =
       `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
        <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
        <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
        <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="muted">Trucking</div><b>${money(num(carry().trucking) || 0, 4)}</b></div>
-       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>
+       <div class="truck-summary"><div class="muted">Trucking by location</div>${truckBits || "—"}</div>`;
   }
 
   function renderQuarters() {
@@ -547,7 +600,7 @@
 
   function renderFooter() {
     document.getElementById("footer").innerHTML =
-      "Net basis = used basis − trucking − interest − storage − shrink. Cash sale = futures + used basis − those same costs. Actual basis overrides historical only where entered. Dayton corn-only · Sidney soybeans-only. Delayed CME — informational only.";
+      "Net basis = used basis − location trucking − interest − storage − shrink. Cash sale = futures + used basis − those same costs. Actual basis overrides historical only where entered. Dayton corn-only · Sidney soybeans-only. Delayed CME — informational only.";
     document.getElementById("asOfPill").textContent = state.quoteAsOf
       ? ("Quotes " + String(state.quoteAsOf).replace("T", " ").slice(0, 16) + " UTC")
       : "Quotes delayed";
@@ -557,9 +610,10 @@
     try {
       const reread = !opts || opts.reread !== false;
       const forms = !opts || opts.forms !== false;
+      const locs = forms || (opts && opts.locs === true);
       if (reread) readCarryForm();
       renderCropSeg();
-      renderLocs();
+      if (locs) renderLocs();
       if (forms) renderCarryForm();
       renderStrip();
       renderRate();
@@ -652,7 +706,7 @@
     refresh({ reread: false, forms: true });
   });
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
-  ["apr", "storage", "trucking", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
+  ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
     const el = document.getElementById(id);
     el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
     if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });

@@ -52,14 +52,28 @@
     background: var(--card); border: 1px solid color-mix(in srgb, var(--line) 70%, #fff);
     border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px;
   }
-  .locs { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
+  .locs { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 0; }
   .loc {
-    display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line);
-    border-radius: 10px; padding: 7px 10px; background: #f7fbf8; cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 12px; background: #f7fbf8; user-select: none;
   }
   .loc.off { opacity: 0.45; }
-  .loc input { width: 16px; height: 16px; accent-color: var(--accent); }
-  .loc .swatch { width: 10px; height: 10px; border-radius: 50%; }
+  .loc-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .loc input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .loc .swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .truck-lab {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem;
+    color: var(--muted); font-weight: 650; border-left: 1px solid var(--line); padding-left: 10px;
+  }
+  .truck-lab input.truck {
+    width: 72px; font-weight: 700; color: var(--ink); padding: 4px 6px; text-align: right;
+  }
+  .truck-summary { grid-column: 1 / -1; }
+  .truck-chip {
+    display: inline-flex; align-items: center; gap: 5px; margin: 4px 8px 0 0;
+    font-size: 0.82rem; font-weight: 650; color: var(--ink);
+  }
+  .truck-chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
   .month {
     min-width: 108px; padding: 10px 12px; border: 1px solid var(--line);
@@ -155,9 +169,10 @@
 
     <section class="card">
       <div class="row">
-        <h2 style="margin:0;font-size:1.15rem">Locations on charts</h2>
+        <h2 style="margin:0;font-size:1.15rem">Locations & trucking</h2>
         <span class="pill">Dayton = corn only · Sidney = soybeans only</span>
       </div>
+      <p class="hint">Each elevator has its own trucking $/bu. Charts and cash sale use that location’s rate.</p>
       <div class="locs" id="locs"></div>
     </section>
 
@@ -190,11 +205,10 @@
       <div class="row" style="margin-bottom:6px">
         <h2 style="margin:0;font-size:1.15rem">Cost of carry</h2>
       </div>
-      <p class="hint">These feed both charts. Trucking is usually under $1/bu.</p>
+      <p class="hint">These feed both charts. Trucking is set per location above.</p>
       <div class="carry-grid">
         <label>Interest APR % / yr<input id="apr" inputmode="decimal"></label>
         <label>Storage $/bu / month<input id="storage" inputmode="decimal"></label>
-        <label>Trucking $/bu<input id="trucking" inputmode="decimal" placeholder="e.g. 0.18"></label>
         <label>Mark for interest
           <select id="markMode">
             <option value="cash">Futures + basis (cash)</option>
@@ -247,15 +261,24 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     Bloomingburg: "#2f4b8a",
     Sidney: "#c23a12",
   };
+  const LOC_IDS = ["Kellogg", "Dayton", "Bloomingburg", "Sidney"];
+  const DEFAULT_TRUCK = 0.18;
+
+  function defaultTrucking() {
+    const out = {};
+    LOC_IDS.forEach((id) => { out[id] = DEFAULT_TRUCK; });
+    return out;
+  }
 
   const state = {
     crop: "corn",
     visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
+    trucking: defaultTrucking(),
     grain: {},
     actual: {},
     carry: {
-      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
-      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
+      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
     },
     strip: DATA.strip,
     history: DATA.history,
@@ -283,6 +306,26 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
         corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
         soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
       };
+      // Per-location trucking (migrate old single carry.trucking if needed)
+      function parseN(v) {
+        const n = parseFloat(String(v ?? "").replace(",", ""));
+        return Number.isFinite(n) ? n : null;
+      }
+      const legacyTruck =
+        parseN(typeof saved.trucking === "number" ? saved.trucking : null) ??
+        parseN((saved.carry || {}).corn && saved.carry.corn.trucking) ??
+        parseN((saved.carry || {}).soybeans && saved.carry.soybeans.trucking) ??
+        DEFAULT_TRUCK;
+      state.trucking = defaultTrucking();
+      LOC_IDS.forEach((id) => { state.trucking[id] = legacyTruck; });
+      if (saved.trucking && typeof saved.trucking === "object") {
+        LOC_IDS.forEach((id) => {
+          const v = parseN(saved.trucking[id]);
+          if (v != null) state.trucking[id] = v;
+        });
+      }
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
       if (saved.strip) state.strip = saved.strip;
       if (saved.history) state.history = saved.history;
       if (saved.quoteAsOf) state.quoteAsOf = saved.quoteAsOf;
@@ -295,10 +338,16 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
   function save() {
     try {
       localStorage.setItem(LS, JSON.stringify({
-        crop: state.crop, visible: state.visible, grain: state.grain, actual: state.actual,
+        crop: state.crop, visible: state.visible, trucking: state.trucking,
+        grain: state.grain, actual: state.actual,
         carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
       }));
     } catch (e) { /* ignore */ }
+  }
+
+  function truckingFor(loc) {
+    const v = num(state.trucking[loc]);
+    return v != null ? v : DEFAULT_TRUCK;
   }
 
   function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
@@ -395,7 +444,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     return fut + (basisCents || 0) / 100;
   }
 
-  function carryParts(fut, basisCents, days) {
+  function carryParts(fut, basisCents, days, loc) {
     const c = carry();
     const mark = markPrice(fut, basisCents) || 0;
     const months = Math.max(0, days) / DAYS_MO;
@@ -405,7 +454,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const handlingShrink = (num(c.shrinkPct) || 0) / 100 * mark * months;
     const moisture = days > 0 ? (num(c.extraPts) || 0) * ((num(c.shrinkFactor) || 0) / 100) * mark : 0;
     const inout = days > 0 ? (num(c.handling) || 0) : 0;
-    const trucking = num(c.trucking) || 0; // paid whenever you deliver
+    const trucking = loc ? truckingFor(loc) : 0; // paid whenever you deliver; per location
     const holdCost = interest + storage + handlingShrink + moisture + inout;
     return {
       mark, interest, storage, handlingShrink, moisture, inout, trucking, holdCost,
@@ -496,7 +545,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const fut = contract && contract.price != null ? Number(contract.price) : null;
     // Interest mark uses nearby + current basis for holding cost from today
     const nowB = usedBasis(loc, today(), "now");
-    const parts = carryParts(nowFut, nowB.value, days);
+    const parts = carryParts(nowFut, nowB.value, days, loc);
     const truckC = parts.trucking * 100;
     const holdC = parts.holdCost * 100;
     const netBasis = b.value != null ? b.value - truckC - holdC : null;
@@ -525,18 +574,35 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const avail = availableLocs();
     document.getElementById("locs").innerHTML = avail.map((id) => {
       const on = state.visible[id] !== false;
-      return `<label class="loc ${on ? "" : "off"}">
-        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
-        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
-        <strong>${id}</strong>
-      </label>`;
+      const truck = truckingFor(id);
+      return `<div class="loc ${on ? "" : "off"}">
+        <label class="loc-toggle">
+          <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+          <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+          <strong>${id}</strong>
+        </label>
+        <label class="truck-lab">Truck $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
     }).join("");
-    document.getElementById("locs").querySelectorAll("input").forEach((inp) => {
+    const root = document.getElementById("locs");
+    root.querySelectorAll("input[type=checkbox]").forEach((inp) => {
       inp.addEventListener("change", () => {
         state.visible[inp.dataset.id] = inp.checked;
         save();
         refresh({ reread: false, forms: false });
       });
+    });
+    root.querySelectorAll("input.truck").forEach((inp) => {
+      const apply = () => {
+        const v = num(inp.value);
+        state.trucking[inp.dataset.truck] = v != null ? v : 0;
+        save();
+        refresh({ reread: false, forms: false });
+      };
+      inp.addEventListener("change", apply);
+      inp.addEventListener("input", apply);
     });
   }
 
@@ -544,7 +610,6 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const c = carry();
     document.getElementById("apr").value = c.apr;
     document.getElementById("storage").value = c.storage;
-    document.getElementById("trucking").value = c.trucking;
     document.getElementById("markMode").value = c.markMode;
     document.getElementById("handling").value = c.handling;
     document.getElementById("shrinkPct").value = c.shrinkPct;
@@ -556,7 +621,6 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const c = carry();
     c.apr = num(document.getElementById("apr").value) ?? c.apr;
     c.storage = num(document.getElementById("storage").value) ?? 0;
-    c.trucking = num(document.getElementById("trucking").value) ?? 0;
     c.markMode = document.getElementById("markMode").value;
     c.handling = num(document.getElementById("handling").value) ?? 0;
     c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
@@ -596,17 +660,20 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
 
   function renderRate() {
     const front = frontRow();
-    const loc = availableLocs()[0];
+    const loc = activeLocs()[0] || availableLocs()[0];
     const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
-    const parts = carryParts(front && front.price, nowB.value, DAYS_MO);
+    const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
+    const truckBits = availableLocs().map((id) =>
+      `<span class="truck-chip"><i style="background:${LOC_COLORS[id] || "#666"}"></i>${id} ${money(truckingFor(id), 4)}</span>`
+    ).join(" ");
     document.getElementById("rateBox").innerHTML =
       `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
        <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
        <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
        <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="muted">Trucking</div><b>${money(num(carry().trucking) || 0, 4)}</b></div>
-       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>
+       <div class="truck-summary"><div class="muted">Trucking by location</div>${truckBits || "—"}</div>`;
   }
 
   function renderQuarters() {
@@ -789,9 +856,10 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     try {
       const reread = !opts || opts.reread !== false;
       const forms = !opts || opts.forms !== false;
+      const locs = forms || (opts && opts.locs === true);
       if (reread) readCarryForm();
       renderCropSeg();
-      renderLocs();
+      if (locs) renderLocs();
       if (forms) renderCarryForm();
       renderStrip();
       renderRate();
@@ -884,7 +952,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     refresh({ reread: false, forms: true });
   });
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
-  ["apr", "storage", "trucking", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
+  ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
     const el = document.getElementById(id);
     el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
     if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
@@ -900,7 +968,6 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     document.head.appendChild(s);
   })();
 })();
-
 </script>
 </body>
 </html>
