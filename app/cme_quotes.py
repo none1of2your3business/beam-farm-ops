@@ -165,18 +165,23 @@ def futures_month_choices(crop: str, as_of: Optional[date] = None) -> list[dict[
     return out
 
 
-def strip_contracts(crop: str, as_of: Optional[date] = None) -> list[dict[str, Any]]:
+def strip_contracts(
+    crop: str,
+    as_of: Optional[date] = None,
+    horizon_months: int = 12,
+) -> list[dict[str, Any]]:
     """
     Active listed contracts from the current unexpired front month through
-    the same calendar month one year later (e.g. Jul'26 … Jul'27).
-    When the front expires, the window rolls forward automatically.
+    the same calendar month one year later by default (e.g. Jul'26 … Jul'27).
+    horizon_months=18 covers ~1.5 years of deferreds. Front rolls after last trade day.
     """
     as_of = as_of or date.today()
     months = CORN_MONTHS if crop == "Corn" else SOY_MONTHS
     root = "ZC" if crop == "Corn" else "ZS"
+    horizon = max(1, int(horizon_months or 12))
 
     candidates: list[dict[str, Any]] = []
-    for y in range(as_of.year - 1, as_of.year + 3):
+    for y in range(as_of.year - 1, as_of.year + 4):
         for code, m in months:
             ltd = last_trading_day(y, m)
             if ltd < as_of:
@@ -200,12 +205,11 @@ def strip_contracts(crop: str, as_of: Optional[date] = None) -> list[dict[str, A
 
     front = candidates[0]
     front["is_front"] = True
-    end_year = front["year"] + 1
-    end_month = front["month"]
+    end_ym = front["year"] * 12 + front["month"] + horizon
 
     out: list[dict[str, Any]] = []
     for c in candidates:
-        if (c["year"], c["month"]) <= (end_year, end_month):
+        if c["year"] * 12 + c["month"] <= end_ym:
             out.append(c)
         else:
             break
@@ -662,6 +666,78 @@ def fetch_nearby_quotes(max_seconds: float = 90.0) -> dict[str, Any]:
         total = sum(len(out["strip"].get(crop) or []) for crop in ("Corn", "Soybeans"))
         if priced < total:
             out["error"] = f"partial strip ({priced}/{total} months) — hit Refresh again to fill gaps"
+    return out
+
+
+def _weekly_history(ticker: str) -> list[dict[str, Any]]:
+    """18 months of weekly nearby closes from Yahoo chart (delayed)."""
+    import urllib.request
+
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        "?interval=1wk&range=18mo"
+    )
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 BeamFarmOps/hold-sell"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode())
+        res = (data.get("chart") or {}).get("result") or []
+        if not res:
+            return []
+        row = res[0]
+        ts = row.get("timestamp") or []
+        closes = ((row.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+        out: list[dict[str, Any]] = []
+        for t, close in zip(ts, closes):
+            if close is None:
+                continue
+            day = datetime.fromtimestamp(int(t), tz=timezone.utc).date().isoformat()
+            out.append({"date": day, "price": _to_dollars_per_bu(float(close))})
+        return out
+    except Exception:
+        return []
+
+
+def fetch_hold_sell_quotes(max_seconds: float = 45.0) -> dict[str, Any]:
+    """~1.5 year listed strip plus 18 months of weekly nearby history."""
+    out: dict[str, Any] = {
+        "error": None,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "source": "yahoo_delayed",
+        "strip": {"Corn": [], "Soybeans": []},
+        "history": {"Corn": [], "Soybeans": []},
+    }
+    deadline = time.monotonic() + max(8.0, float(max_seconds or 45.0))
+    timed_out = False
+    any_price = False
+    for crop in ("Corn", "Soybeans"):
+        rows: list[dict[str, Any]] = []
+        for meta in strip_contracts(crop, horizon_months=18):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                rows.append({**meta, "price": None, "change": None})
+                continue
+            q = _quote_one(meta["ticker"], timeout=min(8.0, remaining))
+            price = q["price"] if q else None
+            change = q["change"] if q else None
+            if price is not None:
+                any_price = True
+            rows.append({**meta, "price": price, "change": change})
+            time.sleep(0.12 if q is not None else 0.08)
+        out["strip"][crop] = rows
+
+    remaining = deadline - time.monotonic()
+    if remaining > 1.5:
+        out["history"]["Corn"] = _weekly_history(TICKERS["Corn"])
+        out["history"]["Soybeans"] = _weekly_history(TICKERS["Soybeans"])
+
+    if timed_out and not any_price:
+        out["error"] = "quote fetch timed out"
+    elif not any_price:
+        out["error"] = "quote fetch failed (rate limit or offline)"
     return out
 
 

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hold or sell — Corn &amp; Soybeans</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #c9dff0;
+    --bg2: #e7f4ea;
+    --card: #ffffff;
+    --ink: #06140c;
+    --muted: #2a4033;
+    --line: #6f9a7c;
+    --accent: #0d6b38;
+    --accent-soft: #d7f0e1;
+    --gold: #c9920e;
+    --gold-soft: #fff4d6;
+    --soy: #2f4b8a;
+    --good: #0d6b38;
+    --bad: #b01010;
+    --clay: #c23a12;
+    --font: "DM Sans", system-ui, sans-serif;
+    --display: "Fraunces", Georgia, serif;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: var(--font);
+    color: var(--ink);
+    background: var(--bg);
+    min-height: 100vh;
+  }
+  body.embed { background: #d7eadc; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 22px 18px 48px; }
+  body.embed .wrap { padding-top: 8px; }
+  h1, h2 { font-family: var(--display); }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.03em; }
+  .lede { margin: 0 0 18px; color: var(--muted); max-width: 46rem; line-height: 1.45; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .spacer { flex: 1; }
+  button, select, input {
+    font: inherit;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    padding: 8px 11px;
+  }
+  button { cursor: pointer; font-weight: 600; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.55; cursor: wait; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--card); }
+  .seg button { border: 0; border-radius: 0; background: transparent; padding: 7px 14px; }
+  .seg button.on { background: var(--ink); color: #fff; }
+  .seg.corn button.on { background: #4a3500; }
+  .seg.soy button.on { background: var(--soy); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: rgba(255,255,255,0.7);
+    border: 1px solid var(--line);
+    color: var(--muted); font-size: 0.8rem;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid color-mix(in srgb, var(--line) 70%, #fff);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .decision {
+    display: grid;
+    grid-template-columns: minmax(240px, 1.3fr) repeat(4, 1fr);
+    gap: 12px;
+    padding: 18px;
+  }
+  .decision.sell { border-color: color-mix(in srgb, var(--clay) 45%, var(--line)); }
+  .decision.hold { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+  .decision .kicker { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .decision h2 { margin: 0; font-size: 1.85rem; letter-spacing: -0.03em; line-height: 1.1; }
+  .decision.sell h2 { color: var(--clay); }
+  .decision.hold h2 { color: var(--accent); }
+  .decision .why { margin: 8px 0 0; color: var(--muted); font-size: 0.92rem; line-height: 1.4; }
+  .metric .v { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; }
+  .metric .v.good { color: var(--good); }
+  .metric .v.bad { color: var(--bad); }
+  .metric .l { margin-top: 3px; font-size: 0.78rem; color: var(--muted); }
+  .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  .month {
+    min-width: 108px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: #f7fbf8;
+  }
+  .month.front { outline: 2px solid var(--accent); }
+  .month .lab { font-size: 0.75rem; color: var(--muted); font-weight: 650; }
+  .month input { width: 100%; font-weight: 700; font-size: 1.05rem; padding: 4px 6px; margin: 4px 0; }
+  .month em { font-style: normal; font-size: 0.75rem; color: var(--muted); }
+  .spread {
+    min-width: 72px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+    font-size: 0.78rem;
+  }
+  .spread strong { font-size: 0.95rem; }
+  .spread.carry strong { color: var(--good); }
+  .spread.inverse strong { color: var(--bad); }
+  .chart-wrap { position: relative; height: 280px; }
+  .grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 14px; }
+  .carry-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 12px; }
+  .carry-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+  .carry-grid input, .carry-grid select { font-weight: 600; color: var(--ink); }
+  .hint { font-size: 0.78rem; color: var(--muted); line-height: 1.4; margin: 0 0 12px; }
+  .rate-box {
+    grid-column: span 4;
+    display: flex; flex-wrap: wrap; gap: 16px;
+    background: var(--accent-soft);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .rate-box b { font-size: 1.05rem; }
+  .quarters { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+  .qchip {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 6px 8px 6px 10px; background: #f7fbf8;
+  }
+  .qchip strong { font-size: 0.82rem; }
+  .qchip select { padding: 4px 6px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+  th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #d7e4db; white-space: nowrap; }
+  th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 700; }
+  td:first-child, th:first-child, td.l, th.l { text-align: left; }
+  tr.qhead td { background: #eef6f0; font-weight: 700; text-align: left; font-family: var(--display); }
+  tr.best td { background: #e5f6ea; }
+  tr.now td { background: #fff7e0; }
+  tr.neg td.net { color: var(--bad); font-weight: 700; }
+  tr.pos td.net { color: var(--good); font-weight: 700; }
+  td input.basis { width: 72px; text-align: right; padding: 4px 6px; }
+  .call { font-weight: 700; font-size: 0.78rem; }
+  .banner {
+    padding: 10px 12px; border-radius: 10px; margin-bottom: 12px;
+    background: var(--gold-soft); border: 1px solid color-mix(in srgb, var(--gold) 45%, #fff);
+    font-size: 0.88rem;
+  }
+  .footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin-top: 8px; }
+  .status { font-size: 0.82rem; color: var(--muted); }
+  .status.err { color: var(--bad); }
+  .muted { color: var(--muted); font-size: 0.78rem; }
+  @media (max-width: 980px) {
+    .decision, .grid-2, .carry-grid { grid-template-columns: 1fr 1fr; }
+    .rate-box { grid-column: span 2; }
+  }
+  @media (max-width: 640px) {
+    .decision, .grid-2, .carry-grid { grid-template-columns: 1fr; }
+    .rate-box { grid-column: span 1; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="row" style="margin-bottom:10px">
+      <div>
+        <h1>Hold or sell</h1>
+        <p class="lede">Compare selling corn or soybeans now versus holding. Uses the CME strip, your cost of carry (including shrink), and historical basis at Kellogg, Dayton, Bloomingburg, and Sidney.</p>
+      </div>
+    </div>
+
+    <div class="row" style="margin-bottom:14px">
+      <div class="seg" id="cropSeg">
+        <button type="button" data-crop="corn" class="on">Corn</button>
+        <button type="button" data-crop="soybeans">Soybeans</button>
+      </div>
+      <select id="location" aria-label="Elevator"></select>
+      <span class="pill" id="asOfPill">Quotes delayed</span>
+      <span class="status" id="status"></span>
+      <div class="spacer"></div>
+      <button type="button" class="primary" id="btnUpdate">Update futures prices</button>
+    </div>
+
+    <div id="locNote" class="banner" hidden></div>
+
+    <section class="card decision" id="decision">
+      <div>
+        <div class="kicker" id="decKicker">Working it out</div>
+        <h2 id="decTitle">—</h2>
+        <p class="why" id="decWhy"></p>
+      </div>
+      <div class="metric"><div class="v" id="mNow">—</div><div class="l">Sell now · expected cash</div></div>
+      <div class="metric"><div class="v" id="mLater">—</div><div class="l">Best later cash</div></div>
+      <div class="metric"><div class="v" id="mCost">—</div><div class="l">Cost of carry to best window</div></div>
+      <div class="metric"><div class="v" id="mNet">—</div><div class="l">Net vs selling today</div></div>
+    </section>
+
+    <section class="card">
+      <div class="row" style="margin-bottom:8px">
+        <h2 style="margin:0;font-size:1.15rem">CME futures — 18 months</h2>
+        <span class="pill">Listed months · click a price to type an override</span>
+      </div>
+      <p class="hint">Green spread = carry (later month higher). Red = inverse. Prices are delayed CBT quotes, not for trading. Front month is outlined.</p>
+      <div class="strip" id="strip"></div>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <div class="row" style="margin-bottom:8px">
+          <h2 style="margin:0;font-size:1.15rem">Nearby futures, last 18 months</h2>
+        </div>
+        <div class="chart-wrap"><canvas id="histChart"></canvas></div>
+      </section>
+      <section class="card">
+        <div class="row" style="margin-bottom:8px">
+          <h2 style="margin:0;font-size:1.15rem">When the board pays you to wait</h2>
+        </div>
+        <div class="chart-wrap"><canvas id="netChart"></canvas></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="row" style="margin-bottom:6px">
+        <h2 style="margin:0;font-size:1.15rem">Cost of carry</h2>
+        <span class="pill">Every figure is editable · shrink is built from ISU AgDM A2-33</span>
+      </div>
+      <p class="hint">Interest is the money tied up in the grain. Storage is the bin or elevator fee. Shrink is bushels you lose: handling/quality over time, plus extra moisture if you dry below the sale standard to keep it. Formula: <strong>interest + storage + handling shrink</strong> over the hold, plus one-time extra-moisture shrink and in-and-out handling.</p>
+      <div class="carry-grid" id="carryGrid">
+        <label>Interest APR % / yr<input id="apr" inputmode="decimal"></label>
+        <label>Storage $/bu / month<input id="storage" inputmode="decimal"></label>
+        <label>Mark for interest
+          <select id="markMode">
+            <option value="cash">Futures + basis (cash)</option>
+            <option value="futures">Futures only</option>
+          </select>
+        </label>
+        <label>In-and-out handling $/bu<input id="handling" inputmode="decimal"></label>
+        <label>Handling / quality shrink % per month<input id="shrinkPct" inputmode="decimal"></label>
+        <label>Extra moisture points to store<input id="extraPts" inputmode="decimal"></label>
+        <label>Shrink factor % / moisture point<input id="shrinkFactor" inputmode="decimal"></label>
+        <label>Current / spot actual basis ¢/bu<input id="actualNow" inputmode="decimal" placeholder="blank = posted or hist"></label>
+        <div class="rate-box" id="rateBox"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Move windows by quarter</h2>
+        <div class="spacer"></div>
+        <label class="pill" style="gap:8px">Basis used for empty cells
+          <select id="basisMode">
+            <option value="seasonal">Seasonal history</option>
+            <option value="posted">Latest posted bids</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">Pick how fine each quarter is: weekly, bi-monthly (1st &amp; 15th), or monthly. Type an actual basis (¢/bu) on any row to override history for that window. Net = futures carry + basis carry − cost of carry. The green row is the best time to move after costs.</p>
+      <div class="quarters" id="quarters"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Window</th>
+              <th>Futures</th>
+              <th>Fut. carry</th>
+              <th>Hist. basis</th>
+              <th>Posted</th>
+              <th>Actual ¢</th>
+              <th>Basis carry</th>
+              <th>Cost</th>
+              <th>Exp. cash</th>
+              <th>Net vs now</th>
+              <th class="l">Call</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="footer" id="footer"></p>
+  </div>
+
+<script src="hold-or-sell-data.js"></script>
+<script src="hold-or-sell.js"></script>
+</body>
+</html>

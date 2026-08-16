@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Hold or sell — {{ farm_name }}{% endblock %}
+{% block content %}
+<style>
+  .hold-sell-embed { margin: 0 -0.15rem; }
+  .hold-sell-embed iframe {
+    display: block;
+    width: 100%;
+    min-height: calc(100vh - 9.25rem);
+    border: 0;
+    background: transparent;
+  }
+</style>
+<div class="hold-sell-embed">
+  <iframe src="/static/hold-or-sell.html?embed=1" title="Hold or sell corn and soybeans"></iframe>
+</div>
+{% endblock %}
