@@ -109,16 +109,16 @@
     font-family: var(--display); font-size: 1.05rem; font-weight: 700;
     text-transform: none; letter-spacing: -0.01em; padding: 10px 8px;
   }
-  th.loc:first-of-type { border-left: none; }
   th.loc .loc-dot {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle;
   }
   th.sub {
     font-size: 0.68rem; font-weight: 650; background: #f3f8f4;
-    border-left: 2px solid transparent;
   }
-  th.sub:nth-child(odd) { border-left: 2px solid rgba(13, 107, 56, 0.22); }
+  thead tr:nth-child(2) th.sub:nth-child(odd) {
+    border-left: 2px solid rgba(13, 107, 56, 0.22);
+  }
   tr.now td { background: #fff7e0; }
   tr.now td:first-child { background: #fff7e0; }
   td input.basis { width: 76px; text-align: right; padding: 5px 6px; font-weight: 600; }
