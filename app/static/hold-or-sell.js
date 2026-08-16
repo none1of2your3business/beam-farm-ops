@@ -400,23 +400,42 @@
   function renderBasisEntry() {
     const points = timeline();
     const locs = availableLocs();
-    let html = "";
+    const thead = document.querySelector("#basisTable thead");
+    const tb = document.getElementById("tbody");
+
+    if (!locs.length) {
+      if (thead) thead.innerHTML = "<tr><th class='l'>Time period</th></tr>";
+      tb.innerHTML = "<tr><td class='l'>No locations for this crop.</td></tr>";
+      return;
+    }
+
+    // Header row 1: location names spanning hist + actual
+    // Header row 2: Historical / Actual under each location
+    let head = "<tr><th class='l' rowspan='2'>Time period</th>";
     locs.forEach((loc) => {
-      html += `<tr class="lochead"><td colspan="3">${loc}</td></tr>`;
-      points.forEach((p) => {
+      head += `<th class="loc" colspan="2">${loc}</th>`;
+    });
+    head += "</tr><tr>";
+    locs.forEach(() => {
+      head += "<th>Hist ¢</th><th>Actual ¢</th>";
+    });
+    head += "</tr>";
+    if (thead) thead.innerHTML = head;
+
+    let html = "";
+    points.forEach((p) => {
+      html += `<tr class="${p.isNow ? "now" : ""}"><td class="l">${p.label}</td>`;
+      locs.forEach((loc) => {
         const hist = histBasis(loc, p.date);
         const key = actualKey(loc, p.key);
         const actualVal = state.actual[key] ?? "";
         const usingAct = num(actualVal) != null;
-        html += `<tr class="${p.isNow ? "now" : ""}">
-          <td class="l">${p.label}${usingAct ? ' <span class="act">actual</span>' : ""}</td>
-          <td>${hist != null ? cents(hist, 1) : "—"}</td>
-          <td><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" /></td>
-        </tr>`;
+        html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" /></td>`;
       });
+      html += "</tr>";
     });
-    const tb = document.getElementById("tbody");
-    tb.innerHTML = html || "<tr><td class='l' colspan='3'>No locations for this crop.</td></tr>";
+    tb.innerHTML = html;
     tb.querySelectorAll("input.basis").forEach((inp) => {
       inp.addEventListener("change", () => {
         const k = actualKey(inp.dataset.loc, inp.dataset.k);
