@@ -461,6 +461,7 @@
   }
   function renderHistChart() {
     const ctx = document.getElementById("histChart");
+    if (!ctx || typeof Chart === "undefined") return;
     const series = state.history[stripCrop()] || [];
     if (histChart) histChart.destroy();
     histChart = new Chart(ctx, {
@@ -491,6 +492,7 @@
   }
   function renderNetChart(model) {
     const ctx = document.getElementById("netChart");
+    if (!ctx || typeof Chart === "undefined") return;
     const rows = model.rows.filter((r) => !r.isNow);
     if (netChart) netChart.destroy();
     netChart = new Chart(ctx, {
@@ -527,6 +529,7 @@
       : "Quotes delayed";
   }
   function refresh(opts) {
+    try {
     const reread = !opts || opts.reread !== false;
     const forms = !opts || opts.forms !== false;
     if (reread) readCarryForm();
@@ -545,6 +548,10 @@
     renderNetChart(model);
     renderFooter();
     save();
+    } catch (err) {
+      setStatus(String(err && err.message ? err.message : err), true);
+      console.error(err);
+    }
   }
   function toBu(raw) {
     if (raw == null) return null;
@@ -632,4 +639,12 @@
     if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
   });
   refresh({ reread: false, forms: true });
+  (function loadCharts() {
+    if (typeof Chart !== "undefined") return;
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js";
+    s.async = true;
+    s.onload = function () { refresh({ reread: false, forms: false }); };
+    document.head.appendChild(s);
+  })();
 })();

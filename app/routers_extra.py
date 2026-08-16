@@ -3867,16 +3867,8 @@ def hold_sell_page(request: Request, db: Session = Depends(get_db)):
     user = _need(request, "risk")
     if isinstance(user, RedirectResponse):
         return user
-    return templates.TemplateResponse(
-        "hold_sell.html",
-        {
-            "request": request,
-            "user": user,
-            "active": "hold_sell",
-            "farm_name": _farm(db),
-            "year": _year(db),
-        },
-    )
+    path = Path(__file__).resolve().parent / "static" / "hold-or-sell.html"
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 @router.get("/risk/hold-sell/quotes")
