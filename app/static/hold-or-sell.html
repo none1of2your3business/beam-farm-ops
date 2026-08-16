@@ -61,19 +61,31 @@
   .loc-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
   .loc input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
   .loc .swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
-  .truck-lab {
-    display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem;
-    color: var(--muted); font-weight: 650; border-left: 1px solid var(--line); padding-left: 10px;
+  .truck-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 8px; }
+  .truck-card {
+    display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; background: #f7fbf8;
   }
-  .truck-lab input.truck {
-    width: 72px; font-weight: 700; color: var(--ink); padding: 4px 6px; text-align: right;
+  .truck-card .name { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+  .truck-card .name .swatch { width: 10px; height: 10px; border-radius: 50%; }
+  .truck-card label { font-size: 0.72rem; color: var(--muted); font-weight: 650; }
+  .truck-card input.truck { width: 100%; font-weight: 700; color: var(--ink); padding: 6px 8px; text-align: right; }
+  .winners {
+    background: linear-gradient(135deg, #e8f2ea 0%, #fff8e8 55%, #eef3fa 100%);
+    border-color: color-mix(in srgb, var(--line) 55%, #fff);
   }
-  .truck-summary { grid-column: 1 / -1; }
-  .truck-chip {
-    display: inline-flex; align-items: center; gap: 5px; margin: 4px 8px 0 0;
-    font-size: 0.82rem; font-weight: 650; color: var(--ink);
+  .winners-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .winner {
+    background: rgba(255,255,255,0.72); border: 1px solid color-mix(in srgb, var(--line) 60%, #fff);
+    border-radius: 12px; padding: 14px 16px;
   }
-  .truck-chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .winner-lab { font-size: 0.78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .winner-val { font-family: var(--display); font-size: 1.85rem; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 2px; }
+  .winner-meta { font-size: 0.95rem; color: var(--ink); font-weight: 650; }
+  .winner-meta .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle;
+  }
+  .winner-sub { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
   .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
   .month {
     min-width: 108px; padding: 10px 12px; border: 1px solid var(--line);
@@ -162,11 +174,11 @@
     .no-print { display: none !important; }
   }
   @media (max-width: 980px) {
-    .grid-2, .carry-grid { grid-template-columns: 1fr 1fr; }
+    .grid-2, .carry-grid, .winners-grid { grid-template-columns: 1fr 1fr; }
     .rate-box { grid-column: span 2; }
   }
   @media (max-width: 640px) {
-    .grid-2, .carry-grid { grid-template-columns: 1fr; }
+    .grid-2, .carry-grid, .winners-grid { grid-template-columns: 1fr; }
     .rate-box { grid-column: span 1; }
   }
 </style>
@@ -196,11 +208,18 @@
 
     <section class="card">
       <div class="row">
-        <h2 style="margin:0;font-size:1.15rem">Locations & trucking</h2>
+        <h2 style="margin:0;font-size:1.15rem">Locations on charts</h2>
         <span class="pill">Dayton = corn only · Sidney = soybeans only</span>
       </div>
-      <p class="hint">Each elevator has its own trucking $/bu. Charts and cash sale use that location’s rate.</p>
       <div class="locs" id="locs"></div>
+    </section>
+
+    <section class="card winners">
+      <div class="row" style="margin-bottom:10px">
+        <h2 style="margin:0;font-size:1.15rem">Best results</h2>
+        <span class="pill">Across checked locations &amp; all move windows</span>
+      </div>
+      <div class="winners-grid" id="winners"></div>
     </section>
 
     <div class="grid-2">
@@ -232,7 +251,7 @@
       <div class="row" style="margin-bottom:6px">
         <h2 style="margin:0;font-size:1.15rem">Cost of carry</h2>
       </div>
-      <p class="hint">These feed both charts. Trucking is set per location above.</p>
+      <p class="hint">These feed both charts. Trucking is set per location below.</p>
       <div class="carry-grid">
         <label>Interest APR % / yr<input id="apr" inputmode="decimal"></label>
         <label>Storage $/bu / month<input id="storage" inputmode="decimal"></label>
@@ -248,6 +267,15 @@
         <label>Shrink factor % / point<input id="shrinkFactor" inputmode="decimal"></label>
         <div class="rate-box" id="rateBox"></div>
       </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Cost of trucking</h2>
+        <span class="pill">$/bu by elevator</span>
+      </div>
+      <p class="hint">Each location has its own haul cost. Charts and cash sale use that location’s rate.</p>
+      <div class="truck-grid" id="truckGrid"></div>
     </section>
 
     <section class="card">
@@ -601,26 +629,34 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const avail = availableLocs();
     document.getElementById("locs").innerHTML = avail.map((id) => {
       const on = state.visible[id] !== false;
-      const truck = truckingFor(id);
-      return `<div class="loc ${on ? "" : "off"}">
-        <label class="loc-toggle">
-          <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
-          <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
-          <strong>${id}</strong>
-        </label>
-        <label class="truck-lab">Truck $/bu
-          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
-        </label>
-      </div>`;
+      return `<label class="loc ${on ? "" : "off"}">
+        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+        <strong>${id}</strong>
+      </label>`;
     }).join("");
-    const root = document.getElementById("locs");
-    root.querySelectorAll("input[type=checkbox]").forEach((inp) => {
+    document.getElementById("locs").querySelectorAll("input[type=checkbox]").forEach((inp) => {
       inp.addEventListener("change", () => {
         state.visible[inp.dataset.id] = inp.checked;
         save();
         refresh({ reread: false, forms: false, locs: true });
       });
     });
+  }
+
+  function renderTrucking() {
+    const root = document.getElementById("truckGrid");
+    if (!root) return;
+    const avail = availableLocs();
+    root.innerHTML = avail.map((id) => {
+      const truck = truckingFor(id);
+      return `<div class="truck-card">
+        <div class="name"><span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>${id}</div>
+        <label>Trucking $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
+    }).join("") || "<p class='hint'>No locations for this crop.</p>";
     root.querySelectorAll("input.truck").forEach((inp) => {
       const apply = () => {
         const v = num(inp.value);
@@ -631,6 +667,54 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       inp.addEventListener("change", apply);
       inp.addEventListener("input", apply);
     });
+  }
+
+  function findBest(metric) {
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key };
+        }
+      });
+    });
+    return best;
+  }
+
+  function renderWinners() {
+    const el = document.getElementById("winners");
+    if (!el) return;
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function card(title, best, fmt) {
+      if (!best) {
+        return `<div class="winner">
+          <div class="winner-lab">${title}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+          <div class="winner-sub">Check a location and load futures/basis.</div>
+        </div>`;
+      }
+      const color = LOC_COLORS[best.loc] || "#666";
+      return `<div class="winner">
+        <div class="winner-lab">${title}</div>
+        <div class="winner-val">${fmt(best.value)}</div>
+        <div class="winner-meta"><span class="dot" style="background:${color}"></span>${best.loc} · ${best.label}</div>
+        <div class="winner-sub">Best ${title.toLowerCase()} among checked locations</div>
+      </div>`;
+    }
+
+    el.innerHTML =
+      card("Best net basis", bestBasis, (v) => cents(v, 1)) +
+      card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
   }
 
   function renderCarryForm() {
@@ -691,16 +775,12 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
     const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
-    const truckBits = availableLocs().map((id) =>
-      `<span class="truck-chip"><i style="background:${LOC_COLORS[id] || "#666"}"></i>${id} ${money(truckingFor(id), 4)}</span>`
-    ).join(" ");
     document.getElementById("rateBox").innerHTML =
       `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
        <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
        <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
        <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>
-       <div class="truck-summary"><div class="muted">Trucking by location</div>${truckBits || "—"}</div>`;
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
   }
 
   function renderQuarters() {
@@ -886,12 +966,16 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       const locs = forms || (opts && opts.locs === true);
       if (reread) readCarryForm();
       renderCropSeg();
-      if (locs) renderLocs();
+      if (locs) {
+        renderLocs();
+        renderTrucking();
+      }
       if (forms) renderCarryForm();
       renderStrip();
       renderRate();
       renderQuarters();
       renderBasisEntry();
+      renderWinners();
       renderCharts();
       renderFooter();
       save();
@@ -1115,9 +1199,25 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     try { if (basisChart) basisImg = basisChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
     try { if (cashChart) cashImg = cashChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
 
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+    const winnersHtml = `
+      <h2>Best results</h2>
+      <div class="grid-print">
+        <div>
+          <strong>Best net basis</strong><br/>
+          ${bestBasis ? `${esc(cents(bestBasis.value, 1))} · ${esc(bestBasis.loc)} · ${esc(bestBasis.label)}` : "—"}
+        </div>
+        <div>
+          <strong>Best cash sale</strong><br/>
+          ${bestCash ? `${esc(money(bestCash.value, 2))}/bu · ${esc(bestCash.loc)} · ${esc(bestCash.label)}` : "—"}
+        </div>
+      </div>`;
+
     return `
       <h1>Grain Marketing Decisions</h1>
       <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
+      ${winnersHtml}
       <h2>Cost of carry</h2>
       ${kv}
       <h2>Locations &amp; trucking</h2>

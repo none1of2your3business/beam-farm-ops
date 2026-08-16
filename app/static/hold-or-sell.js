@@ -328,26 +328,34 @@
     const avail = availableLocs();
     document.getElementById("locs").innerHTML = avail.map((id) => {
       const on = state.visible[id] !== false;
-      const truck = truckingFor(id);
-      return `<div class="loc ${on ? "" : "off"}">
-        <label class="loc-toggle">
-          <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
-          <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
-          <strong>${id}</strong>
-        </label>
-        <label class="truck-lab">Truck $/bu
-          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
-        </label>
-      </div>`;
+      return `<label class="loc ${on ? "" : "off"}">
+        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+        <strong>${id}</strong>
+      </label>`;
     }).join("");
-    const root = document.getElementById("locs");
-    root.querySelectorAll("input[type=checkbox]").forEach((inp) => {
+    document.getElementById("locs").querySelectorAll("input[type=checkbox]").forEach((inp) => {
       inp.addEventListener("change", () => {
         state.visible[inp.dataset.id] = inp.checked;
         save();
         refresh({ reread: false, forms: false, locs: true });
       });
     });
+  }
+
+  function renderTrucking() {
+    const root = document.getElementById("truckGrid");
+    if (!root) return;
+    const avail = availableLocs();
+    root.innerHTML = avail.map((id) => {
+      const truck = truckingFor(id);
+      return `<div class="truck-card">
+        <div class="name"><span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>${id}</div>
+        <label>Trucking $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
+    }).join("") || "<p class='hint'>No locations for this crop.</p>";
     root.querySelectorAll("input.truck").forEach((inp) => {
       const apply = () => {
         const v = num(inp.value);
@@ -358,6 +366,54 @@
       inp.addEventListener("change", apply);
       inp.addEventListener("input", apply);
     });
+  }
+
+  function findBest(metric) {
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key };
+        }
+      });
+    });
+    return best;
+  }
+
+  function renderWinners() {
+    const el = document.getElementById("winners");
+    if (!el) return;
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function card(title, best, fmt) {
+      if (!best) {
+        return `<div class="winner">
+          <div class="winner-lab">${title}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+          <div class="winner-sub">Check a location and load futures/basis.</div>
+        </div>`;
+      }
+      const color = LOC_COLORS[best.loc] || "#666";
+      return `<div class="winner">
+        <div class="winner-lab">${title}</div>
+        <div class="winner-val">${fmt(best.value)}</div>
+        <div class="winner-meta"><span class="dot" style="background:${color}"></span>${best.loc} · ${best.label}</div>
+        <div class="winner-sub">Best ${title.toLowerCase()} among checked locations</div>
+      </div>`;
+    }
+
+    el.innerHTML =
+      card("Best net basis", bestBasis, (v) => cents(v, 1)) +
+      card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
   }
 
   function renderCarryForm() {
@@ -418,16 +474,12 @@
     const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
     const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
-    const truckBits = availableLocs().map((id) =>
-      `<span class="truck-chip"><i style="background:${LOC_COLORS[id] || "#666"}"></i>${id} ${money(truckingFor(id), 4)}</span>`
-    ).join(" ");
     document.getElementById("rateBox").innerHTML =
       `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
        <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
        <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
        <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>
-       <div class="truck-summary"><div class="muted">Trucking by location</div>${truckBits || "—"}</div>`;
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
   }
 
   function renderQuarters() {
@@ -613,12 +665,16 @@
       const locs = forms || (opts && opts.locs === true);
       if (reread) readCarryForm();
       renderCropSeg();
-      if (locs) renderLocs();
+      if (locs) {
+        renderLocs();
+        renderTrucking();
+      }
       if (forms) renderCarryForm();
       renderStrip();
       renderRate();
       renderQuarters();
       renderBasisEntry();
+      renderWinners();
       renderCharts();
       renderFooter();
       save();
@@ -842,9 +898,25 @@
     try { if (basisChart) basisImg = basisChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
     try { if (cashChart) cashImg = cashChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
 
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+    const winnersHtml = `
+      <h2>Best results</h2>
+      <div class="grid-print">
+        <div>
+          <strong>Best net basis</strong><br/>
+          ${bestBasis ? `${esc(cents(bestBasis.value, 1))} · ${esc(bestBasis.loc)} · ${esc(bestBasis.label)}` : "—"}
+        </div>
+        <div>
+          <strong>Best cash sale</strong><br/>
+          ${bestCash ? `${esc(money(bestCash.value, 2))}/bu · ${esc(bestCash.loc)} · ${esc(bestCash.label)}` : "—"}
+        </div>
+      </div>`;
+
     return `
       <h1>Grain Marketing Decisions</h1>
       <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
+      ${winnersHtml}
       <h2>Cost of carry</h2>
       ${kv}
       <h2>Locations &amp; trucking</h2>
