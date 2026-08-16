@@ -502,6 +502,46 @@
     });
   }
 
+  let basisLocObserver = null;
+
+  function setBasisLocPin(loc) {
+    const pin = document.getElementById("basisLocPin");
+    if (!pin || !loc) return;
+    const color = LOC_COLORS[loc] || "#fff";
+    pin.classList.add("on");
+    pin.innerHTML = `<span class="swatch" style="background:${color}"></span><strong>${loc}</strong><em>Actual basis</em>`;
+  }
+
+  function setupBasisLocPin(mobile) {
+    const pin = document.getElementById("basisLocPin");
+    if (!mobile || !pin) return;
+    if (basisLocObserver) {
+      basisLocObserver.disconnect();
+      basisLocObserver = null;
+    }
+    const sections = mobile.querySelectorAll(".bm-loc");
+    if (!sections.length) {
+      pin.classList.remove("on");
+      pin.innerHTML = "";
+      return;
+    }
+    setBasisLocPin(sections[0].dataset.loc);
+    if (typeof IntersectionObserver !== "undefined") {
+      basisLocObserver = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0] && visible[0].target.dataset.loc) {
+          setBasisLocPin(visible[0].target.dataset.loc);
+        }
+      }, { root: null, rootMargin: "-20% 0px -55% 0px", threshold: [0, 0.1, 0.4] });
+      sections.forEach((sec) => basisLocObserver.observe(sec));
+    }
+    mobile.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("focus", () => setBasisLocPin(inp.dataset.loc));
+    });
+  }
+
   function bindBasisInputs(root) {
     if (!root) return;
     root.querySelectorAll("input.basis").forEach((inp) => {
@@ -509,8 +549,14 @@
         const k = actualKey(inp.dataset.loc, inp.dataset.k);
         if (String(inp.value).trim() === "") delete state.actual[k];
         else state.actual[k] = inp.value;
+        // Mark row visually without rebuilding the whole list (keeps sticky header + scroll)
+        const row = inp.closest(".bm-row, td");
+        if (row) {
+          if (num(inp.value) != null) row.classList.add("act-on");
+          else row.classList.remove("act-on");
+        }
         save();
-        refresh({ reread: false, forms: false });
+        refresh({ reread: false, forms: false, basis: false });
       });
     });
   }
@@ -558,12 +604,12 @@
     tb.innerHTML = html;
     bindBasisInputs(tb);
 
-    // Mobile: one labeled block per location so the elevator name stays visible while typing
+    // Mobile: sticky location pin + sticky section headers while typing
     if (mobile) {
-      let mhtml = "";
+      let mhtml = `<div class="bm-pin" id="basisLocPin" aria-live="polite"></div>`;
       locs.forEach((loc) => {
         const color = LOC_COLORS[loc] || "#666";
-        mhtml += `<section class="bm-loc">
+        mhtml += `<section class="bm-loc" data-loc="${loc}">
           <div class="bm-loc-head"><span class="swatch" style="background:${color}"></span>${loc}</div>`;
         points.forEach((p) => {
           const hist = histBasis(loc, p.date);
@@ -573,7 +619,7 @@
           mhtml += `<div class="bm-row ${p.isNow ? "now" : ""} ${usingAct ? "act-on" : ""}">
             <div class="bm-when">${p.label}</div>
             <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
-            <label class="bm-act"><span>Actual ¢ · ${loc}</span>
+            <label class="bm-act"><span>Actual ¢</span>
               <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="¢" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" />
             </label>
           </div>`;
@@ -582,6 +628,7 @@
       });
       mobile.innerHTML = mhtml;
       bindBasisInputs(mobile);
+      setupBasisLocPin(mobile);
     }
   }
 
@@ -696,6 +743,7 @@
       const reread = !opts || opts.reread !== false;
       const forms = !opts || opts.forms !== false;
       const locs = forms || (opts && opts.locs === true);
+      const basis = !opts || opts.basis !== false;
       if (reread) readCarryForm();
       renderCropSeg();
       if (locs) {
@@ -706,7 +754,7 @@
       renderStrip();
       renderRate();
       renderQuarters();
-      renderBasisEntry();
+      if (basis) renderBasisEntry();
       renderWinners();
       renderCharts();
       renderFooter();
