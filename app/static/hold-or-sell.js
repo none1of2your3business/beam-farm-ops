@@ -409,15 +409,15 @@
       return;
     }
 
-    // Header row 1: location names spanning hist + actual
-    // Header row 2: Historical / Actual under each location
+    // Header: location name on top spanning both columns, then Hist / Actual under it
     let head = "<tr><th class='l' rowspan='2'>Time period</th>";
     locs.forEach((loc) => {
-      head += `<th class="loc" colspan="2">${loc}</th>`;
+      const color = LOC_COLORS[loc] || "#666";
+      head += `<th class="loc" colspan="2"><span class="loc-dot" style="background:${color}"></span>${loc}</th>`;
     });
     head += "</tr><tr>";
     locs.forEach(() => {
-      head += "<th>Hist ¢</th><th>Actual ¢</th>";
+      head += "<th class='sub'>Historical ¢</th><th class='sub'>Actual ¢</th>";
     });
     head += "</tr>";
     if (thead) thead.innerHTML = head;

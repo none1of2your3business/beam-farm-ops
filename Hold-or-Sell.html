@@ -101,9 +101,24 @@
   td:first-child, th:first-child, td.l, th.l { text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }
   thead th { position: sticky; top: 0; background: #f3f8f4; z-index: 2; }
   thead tr:first-child th { top: 0; }
-  thead tr:nth-child(2) th { top: 28px; }
+  thead tr:nth-child(2) th { top: 40px; }
   thead th:first-child { z-index: 3; }
-  th.loc { background: #e8f2ea; color: var(--ink); border-bottom: 2px solid var(--line); }
+  th.loc {
+    background: #e8f2ea; color: var(--ink); border-bottom: 1px solid var(--line);
+    border-left: 2px solid rgba(13, 107, 56, 0.22);
+    font-family: var(--display); font-size: 1.05rem; font-weight: 700;
+    text-transform: none; letter-spacing: -0.01em; padding: 10px 8px;
+  }
+  th.loc:first-of-type { border-left: none; }
+  th.loc .loc-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  th.sub {
+    font-size: 0.68rem; font-weight: 650; background: #f3f8f4;
+    border-left: 2px solid transparent;
+  }
+  th.sub:nth-child(odd) { border-left: 2px solid rgba(13, 107, 56, 0.22); }
   tr.now td { background: #fff7e0; }
   tr.now td:first-child { background: #fff7e0; }
   td input.basis { width: 76px; text-align: right; padding: 5px 6px; font-weight: 600; }
@@ -199,7 +214,7 @@
         <h2 style="margin:0;font-size:1.15rem">Actual basis entry</h2>
         <span class="pill">Actual replaces historical for that window only</span>
       </div>
-      <p class="hint">Each location is a column pair: historical and actual. Enter ¢/bu under Actual. Leave blank to keep historical.</p>
+      <p class="hint">Location names sit over each column pair (Historical ¢ | Actual ¢). Enter ¢/bu under Actual; leave blank to keep historical.</p>
       <div class="quarters" id="quarters"></div>
       <div class="table-wrap">
         <table id="basisTable">
@@ -626,15 +641,15 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       return;
     }
 
-    // Header row 1: location names spanning hist + actual
-    // Header row 2: Historical / Actual under each location
+    // Header: location name on top spanning both columns, then Hist / Actual under it
     let head = "<tr><th class='l' rowspan='2'>Time period</th>";
     locs.forEach((loc) => {
-      head += `<th class="loc" colspan="2">${loc}</th>`;
+      const color = LOC_COLORS[loc] || "#666";
+      head += `<th class="loc" colspan="2"><span class="loc-dot" style="background:${color}"></span>${loc}</th>`;
     });
     head += "</tr><tr>";
     locs.forEach(() => {
-      head += "<th>Hist ¢</th><th>Actual ¢</th>";
+      head += "<th class='sub'>Historical ¢</th><th class='sub'>Actual ¢</th>";
     });
     head += "</tr>";
     if (thead) thead.innerHTML = head;
