@@ -1,4 +1,4 @@
-/* Hold or sell desk — crop + multi-location net after carry/trucking/basis. */
+/* Hold or sell — net basis chart + cash sale chart + simple actual basis entry. */
 (function () {
   const DATA = window.HOLD_SELL_DATA;
   if (!DATA) {
@@ -6,7 +6,7 @@
     return;
   }
 
-  const LS = "beam.holdSell.v2";
+  const LS = "beam.holdSell.v3";
   const DAYS_MO = 30.4375;
   const HORIZON_MO = 18;
   const LOC_COLORS = {
@@ -19,11 +19,8 @@
   const state = {
     crop: "corn",
     visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
-    tableLoc: "Kellogg",
-    basisMode: "seasonal",
     grain: {},
     actual: {},
-    actualNow: {},
     carry: {
       corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
       soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, trucking: 0.18, markMode: "cash" },
@@ -34,38 +31,42 @@
   };
 
   try {
-    const saved = JSON.parse(localStorage.getItem(LS) || "null");
+    const saved = JSON.parse(localStorage.getItem(LS) || localStorage.getItem("beam.holdSell.v2") || "null");
     if (saved && typeof saved === "object") {
-      Object.assign(state, {
-        crop: saved.crop || state.crop,
-        visible: { ...state.visible, ...(saved.visible || {}) },
-        tableLoc: saved.tableLoc || state.tableLoc,
-        basisMode: saved.basisMode || state.basisMode,
-        grain: saved.grain || {},
-        actual: saved.actual || {},
-        actualNow: saved.actualNow || (typeof saved.actualNow === "string" ? {} : {}),
-        carry: {
-          corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
-          soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
-        },
-      });
+      state.crop = saved.crop || state.crop;
+      state.visible = { ...state.visible, ...(saved.visible || {}) };
+      state.grain = saved.grain || {};
+      state.actual = saved.actual || {};
+      // migrate old actualNow into actual keys
+      if (saved.actualNow && typeof saved.actualNow === "object") {
+        Object.keys(saved.actualNow).forEach((k) => {
+          const parts = k.split("|");
+          if (parts.length === 2) {
+            const nk = parts[0] + "|" + parts[1] + "|now";
+            if (saved.actualNow[k] != null && saved.actualNow[k] !== "") state.actual[nk] = saved.actualNow[k];
+          }
+        });
+      }
+      state.carry = {
+        corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
+      };
       if (saved.strip) state.strip = saved.strip;
       if (saved.history) state.history = saved.history;
       if (saved.quoteAsOf) state.quoteAsOf = saved.quoteAsOf;
     }
   } catch (e) { /* ignore */ }
 
-  let histChart;
-  let netChart;
-  let stackChart;
+  let basisChart;
+  let cashChart;
 
   function save() {
-    const payload = {
-      crop: state.crop, visible: state.visible, tableLoc: state.tableLoc, basisMode: state.basisMode,
-      grain: state.grain, actual: state.actual, actualNow: state.actualNow, carry: state.carry,
-      strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
-    };
-    try { localStorage.setItem(LS, JSON.stringify(payload)); } catch (e) { /* ignore */ }
+    try {
+      localStorage.setItem(LS, JSON.stringify({
+        crop: state.crop, visible: state.visible, grain: state.grain, actual: state.actual,
+        carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
+      }));
+    } catch (e) { /* ignore */ }
   }
 
   function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
@@ -79,14 +80,10 @@
       return c && c.available && !c.hidden;
     });
   }
-
   function activeLocs() {
     return availableLocs().filter((id) => state.visible[id] !== false);
   }
-
-  function cropBlock(loc) {
-    return (DATA.locations[loc] || {})[cropKey()];
-  }
+  function cropBlock(loc) { return (DATA.locations[loc] || {})[cropKey()]; }
 
   function num(v) {
     const n = parseFloat(String(v ?? "").replace(",", ""));
@@ -148,41 +145,16 @@
     return mRow && mRow.avg != null ? mRow.avg : null;
   }
 
-  function postedBasis(loc, d) {
-    const curve = ((cropBlock(loc) || {}).latestCurve) || [];
-    let best = null;
-    let bestDelta = 1e9;
-    for (const c of curve) {
-      if (c.month == null) continue;
-      if (c.year === d.getFullYear() && c.month === d.getMonth() + 1) return c.basis;
-      if (c.end) {
-        const end = parseISO(c.end);
-        const delta = Math.abs(end - d);
-        if (delta < bestDelta) { bestDelta = delta; best = c.basis; }
-      }
-    }
-    return (best != null && bestDelta <= 20 * 86400000) ? best : null;
-  }
-
   function actualKey(loc, periodKey) {
     return cropKey() + "|" + loc + "|" + periodKey;
   }
 
-  /** Actual basis replaces historical for that window only; blank reverts to hist/posted. */
-  function basisFor(loc, d, periodKey, isNow) {
-    const typed = isNow
-      ? num(state.actualNow[cropKey() + "|" + loc])
-      : num(state.actual[actualKey(loc, periodKey)]);
-    if (typed != null) return { value: typed, source: "actual" };
-    if (state.basisMode === "posted") {
-      const p = postedBasis(loc, d);
-      if (p != null) return { value: p, source: "posted" };
-    }
+  /** Actual replaces historical for that window only; blank reverts to historical. */
+  function usedBasis(loc, d, periodKey) {
+    const typed = num(state.actual[actualKey(loc, periodKey)]);
+    if (typed != null) return { value: typed, source: "actual", hist: histBasis(loc, d) };
     const h = histBasis(loc, d);
-    if (h != null) return { value: h, source: "seasonal" };
-    const p = postedBasis(loc, d);
-    if (p != null) return { value: p, source: "posted" };
-    return { value: null, source: "none" };
+    return { value: h, source: h == null ? "none" : "seasonal", hist: h };
   }
 
   function markPrice(fut, basisCents) {
@@ -199,15 +171,14 @@
     const interest = mark * (num(c.apr) || 0) / 100 * years;
     const storage = (num(c.storage) || 0) * months;
     const handlingShrink = (num(c.shrinkPct) || 0) / 100 * mark * months;
-    const extraPts = num(c.extraPts) || 0;
-    const factor = (num(c.shrinkFactor) || 0) / 100;
-    const moisture = days > 0 ? extraPts * factor * mark : 0;
+    const moisture = days > 0 ? (num(c.extraPts) || 0) * ((num(c.shrinkFactor) || 0) / 100) * mark : 0;
     const inout = days > 0 ? (num(c.handling) || 0) : 0;
-    const trucking = days > 0 ? (num(c.trucking) || 0) : 0;
-    const monthlyRate = (mark * (num(c.apr) || 0) / 100 / 12) + (num(c.storage) || 0) + ((num(c.shrinkPct) || 0) / 100 * mark);
+    const trucking = num(c.trucking) || 0; // paid whenever you deliver
+    const holdCost = interest + storage + handlingShrink + moisture + inout;
     return {
-      mark, interest, storage, handlingShrink, moisture, inout, trucking, monthlyRate,
-      total: interest + storage + handlingShrink + moisture + inout + trucking,
+      mark, interest, storage, handlingShrink, moisture, inout, trucking, holdCost,
+      total: holdCost + trucking,
+      monthlyRate: (mark * (num(c.apr) || 0) / 100 / 12) + (num(c.storage) || 0) + ((num(c.shrinkPct) || 0) / 100 * mark),
     };
   }
 
@@ -262,48 +233,48 @@
     return list;
   }
 
-  function ensureTableLoc() {
-    const avail = availableLocs();
-    if (!avail.includes(state.tableLoc)) state.tableLoc = avail[0] || "Kellogg";
-  }
-
-  function buildRowsForLoc(loc) {
-    const qs = quarters();
+  function timeline() {
     const now = today();
-    const front = frontRow();
-    const nowBasis = basisFor(loc, now, "now", true);
-    const nowFut = front && front.price != null ? Number(front.price) : null;
-    const nowCash = nowFut != null && nowBasis.value != null ? nowFut + nowBasis.value / 100 : nowFut;
-    const rows = [{
-      isNow: true, quarter: quarterInfo(now), date: now, key: "now",
-      label: "Now · " + fmtDate(now), contract: front, futures: nowFut,
-      hist: histBasis(loc, now), posted: postedBasis(loc, now),
-      basis: nowBasis, futCarry: 0, basisCarry: 0, days: 0, cost: 0, truck: 0, cash: nowCash, net: 0,
-    }];
+    const qs = quarters();
+    const points = [{ date: now, key: "now", label: "Now · " + fmtDate(now), isNow: true }];
     qs.forEach((q, qi) => {
       const grain = state.grain[q.key] || defaultGrain(qi);
       periodDates(q.start, q.end, grain).forEach((d) => {
         if (ymd(d) === ymd(now)) return;
-        const key = ymd(d);
-        const contract = contractForDate(d);
-        const fut = contract && contract.price != null ? Number(contract.price) : null;
-        const b = basisFor(loc, d, key, false);
-        const cash = fut != null && b.value != null ? fut + b.value / 100 : fut;
-        const days = Math.max(0, Math.round((d - now) / 86400000));
-        const parts = carryParts(nowFut, nowBasis.value, days);
-        const futCarry = fut != null && nowFut != null ? (fut - nowFut) * 100 : null;
-        const basisCarry = b.value != null && nowBasis.value != null ? b.value - nowBasis.value : null;
-        const net = cash != null && nowCash != null ? (cash - parts.total - nowCash) * 100 : null;
-        rows.push({
-          isNow: false, quarter: q, date: d, key,
+        points.push({
+          date: d, key: ymd(d),
           label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-          contract, futures: fut, hist: histBasis(loc, d), posted: postedBasis(loc, d),
-          basis: b, futCarry, basisCarry, days,
-          cost: parts.total * 100, truck: parts.trucking * 100, cash, net,
+          isNow: false, quarter: q,
         });
       });
     });
-    return { rows, nowCash, nowFut, nowBasis };
+    return points;
+  }
+
+  /**
+   * Per location / window:
+   * - usedBasis ¢
+   * - netBasis ¢ = usedBasis − trucking¢ − holdCost¢  (everything on the basis side)
+   * - cash $ = futures + usedBasis/100 − holdCost − trucking  (sell futures + basis together)
+   */
+  function buildPoint(loc, point, nowFut) {
+    const days = point.isNow ? 0 : Math.max(0, Math.round((point.date - today()) / 86400000));
+    const b = usedBasis(loc, point.date, point.key);
+    const contract = point.isNow ? frontRow() : contractForDate(point.date);
+    const fut = contract && contract.price != null ? Number(contract.price) : null;
+    // Interest mark uses nearby + current basis for holding cost from today
+    const nowB = usedBasis(loc, today(), "now");
+    const parts = carryParts(nowFut, nowB.value, days);
+    const truckC = parts.trucking * 100;
+    const holdC = parts.holdCost * 100;
+    const netBasis = b.value != null ? b.value - truckC - holdC : null;
+    const cash = (fut != null && b.value != null)
+      ? fut + b.value / 100 - parts.holdCost - parts.trucking
+      : null;
+    return {
+      ...point, loc, hist: b.hist, used: b.value, source: b.source,
+      futures: fut, netBasis, cash, truckC, holdC, costC: truckC + holdC,
+    };
   }
 
   function setStatus(msg, err) {
@@ -335,11 +306,6 @@
         refresh({ reread: false, forms: false });
       });
     });
-
-    ensureTableLoc();
-    const sel = document.getElementById("tableLoc");
-    sel.innerHTML = avail.map((id) => `<option value="${id}">${id}</option>`).join("");
-    sel.value = state.tableLoc;
   }
 
   function renderCarryForm() {
@@ -352,9 +318,6 @@
     document.getElementById("shrinkPct").value = c.shrinkPct;
     document.getElementById("extraPts").value = c.extraPts;
     document.getElementById("shrinkFactor").value = c.shrinkFactor;
-    document.getElementById("actualNow").value = state.actualNow[cropKey() + "|" + state.tableLoc] || "";
-    document.getElementById("basisMode").value = state.basisMode;
-    document.getElementById("tableLoc").value = state.tableLoc;
   }
 
   function readCarryForm() {
@@ -367,12 +330,6 @@
     c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
     c.extraPts = num(document.getElementById("extraPts").value) ?? 0;
     c.shrinkFactor = num(document.getElementById("shrinkFactor").value) ?? 0;
-    const nowKey = cropKey() + "|" + state.tableLoc;
-    const nowVal = document.getElementById("actualNow").value;
-    if (String(nowVal).trim() === "") delete state.actualNow[nowKey];
-    else state.actualNow[nowKey] = nowVal;
-    state.basisMode = document.getElementById("basisMode").value;
-    state.tableLoc = document.getElementById("tableLoc").value;
   }
 
   function renderStrip() {
@@ -405,16 +362,19 @@
     });
   }
 
-  function renderRate(nowFut, nowBasis) {
-    const parts = carryParts(nowFut, nowBasis && nowBasis.value, DAYS_MO);
+  function renderRate() {
+    const front = frontRow();
+    const loc = availableLocs()[0];
+    const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
+    const parts = carryParts(front && front.price, nowB.value, DAYS_MO);
     const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
     document.getElementById("rateBox").innerHTML =
-      `<div><div class="l">Mark</div><b>${money(parts.mark, 4)}</b></div>
-       <div><div class="l">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
-       <div><div class="l">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
-       <div><div class="l">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
-       <div><div class="l">Trucking (one-time)</div><b>${money(num(carry().trucking) || 0, 4)}</b></div>
-       <div><div class="l">Monthly rate</div><b>${money(parts.monthlyRate, 4)}</b> / bu</div>`;
+      `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
+       <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
+       <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
+       <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
+       <div><div class="muted">Trucking</div><b>${money(num(carry().trucking) || 0, 4)}</b></div>
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
   }
 
   function renderQuarters() {
@@ -437,45 +397,29 @@
     });
   }
 
-  function renderTable(model) {
-    const { rows } = model;
+  function renderBasisEntry() {
+    const points = timeline();
+    const locs = availableLocs();
     let html = "";
-    let lastQ = "";
-    rows.forEach((r) => {
-      if (r.quarter.key !== lastQ) {
-        lastQ = r.quarter.key;
-        html += `<tr class="qhead"><td colspan="12">${r.quarter.label} · ${state.tableLoc}</td></tr>`;
-      }
-      const cls = [r.isNow ? "now" : "", r.net > 0.5 ? "pos" : r.net < -0.5 ? "neg" : ""].join(" ");
-      const actualVal = r.isNow
-        ? (state.actualNow[cropKey() + "|" + state.tableLoc] || "")
-        : (state.actual[actualKey(state.tableLoc, r.key)] ?? "");
-      const input = r.isNow
-        ? `<span class="muted">use box above</span>`
-        : `<input class="basis" data-k="${r.key}" inputmode="decimal" value="${actualVal}" placeholder="—" />`;
-      const used = r.basis && r.basis.value != null
-        ? cents(r.basis.value, 1) + (r.basis.source === "actual" ? " act" : r.basis.source === "posted" ? " post" : " hist")
-        : "—";
-      html += `<tr class="${cls}">
-        <td class="l">${r.label}${r.contract ? " · " + r.contract.short : ""}</td>
-        <td>${r.futures != null ? money(r.futures, 2) : "—"}</td>
-        <td>${cents(r.futCarry, 1)}</td>
-        <td>${r.hist != null ? cents(r.hist, 1) : "—"}</td>
-        <td>${r.posted != null ? cents(r.posted, 1) : "—"}</td>
-        <td>${input}</td>
-        <td>${used}</td>
-        <td>${cents(r.basisCarry, 1)}</td>
-        <td>${cents(r.cost, 1)}</td>
-        <td>${cents(r.truck, 1)}</td>
-        <td>${r.cash != null ? money(r.cash, 2) : "—"}</td>
-        <td class="net">${cents(r.net, 1)}</td>
-      </tr>`;
+    locs.forEach((loc) => {
+      html += `<tr class="lochead"><td colspan="3">${loc}</td></tr>`;
+      points.forEach((p) => {
+        const hist = histBasis(loc, p.date);
+        const key = actualKey(loc, p.key);
+        const actualVal = state.actual[key] ?? "";
+        const usingAct = num(actualVal) != null;
+        html += `<tr class="${p.isNow ? "now" : ""}">
+          <td class="l">${p.label}${usingAct ? ' <span class="act">actual</span>' : ""}</td>
+          <td>${hist != null ? cents(hist, 1) : "—"}</td>
+          <td><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" /></td>
+        </tr>`;
+      });
     });
     const tb = document.getElementById("tbody");
-    tb.innerHTML = html;
+    tb.innerHTML = html || "<tr><td class='l' colspan='3'>No locations for this crop.</td></tr>";
     tb.querySelectorAll("input.basis").forEach((inp) => {
       inp.addEventListener("change", () => {
-        const k = actualKey(state.tableLoc, inp.dataset.k);
+        const k = actualKey(inp.dataset.loc, inp.dataset.k);
         if (String(inp.value).trim() === "") delete state.actual[k];
         else state.actual[k] = inp.value;
         save();
@@ -484,67 +428,57 @@
     });
   }
 
-  function renderHistChart() {
-    const ctx = document.getElementById("histChart");
-    if (!ctx || typeof Chart === "undefined") return;
-    const series = state.history[stripCrop()] || [];
-    if (histChart) histChart.destroy();
-    histChart = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels: series.map((p) => p.date),
-        datasets: [{
-          label: cropLabel() + " nearby",
-          data: series.map((p) => p.price),
-          borderColor: cropKey() === "soybeans" ? "#2f4b8a" : "#c9920e",
-          backgroundColor: "transparent",
-          borderWidth: 2, pointRadius: 0, tension: 0.15,
-        }],
+  function zeroLinePlugin() {
+    return {
+      id: "zeroLine",
+      afterDraw(c) {
+        const y = c.scales.y;
+        if (!y || y.min > 0 || y.max < 0) return;
+        const yPix = y.getPixelForValue(0);
+        const { ctx: g, chartArea } = c;
+        g.save();
+        g.strokeStyle = "rgba(42,64,51,0.45)";
+        g.setLineDash([5, 4]);
+        g.beginPath();
+        g.moveTo(chartArea.left, yPix);
+        g.lineTo(chartArea.right, yPix);
+        g.stroke();
+        g.restore();
       },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: true, labels: { boxWidth: 12 } },
-          tooltip: { callbacks: { label(item) { return " " + money(item.parsed.y, 2) + "/bu"; } } },
-        },
-        scales: {
-          x: { ticks: { maxTicksLimit: 8, callback(val) { const lab = this.getLabelForValue(val); return lab ? String(lab).slice(0, 7) : ""; } }, title: { display: true, text: "Week" } },
-          y: { title: { display: true, text: "$ / bu" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
-        },
-      },
-    });
+    };
   }
 
-  function renderNetChart() {
-    const ctx = document.getElementById("netChart");
-    if (!ctx || typeof Chart === "undefined") return;
+  function renderCharts() {
+    if (typeof Chart === "undefined") return;
+    const points = timeline();
+    const labels = points.map((p) => p.label);
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
     const locs = activeLocs();
-    const models = {};
-    locs.forEach((loc) => { models[loc] = buildRowsForLoc(loc); });
 
-    // Shared label set from first active location (non-now rows)
-    const baseRows = locs.length ? models[locs[0]].rows.filter((r) => !r.isNow) : [];
-    const labels = baseRows.map((r) => r.label);
+    const basisSets = locs.map((loc) => ({
+      label: loc,
+      data: points.map((p) => buildPoint(loc, p, nowFut).netBasis),
+      borderColor: LOC_COLORS[loc] || "#333",
+      backgroundColor: LOC_COLORS[loc] || "#333",
+      borderWidth: 2.25, pointRadius: 2.5, tension: 0.2,
+    }));
+    const cashSets = locs.map((loc) => ({
+      label: loc,
+      data: points.map((p) => buildPoint(loc, p, nowFut).cash),
+      borderColor: LOC_COLORS[loc] || "#333",
+      backgroundColor: LOC_COLORS[loc] || "#333",
+      borderWidth: 2.25, pointRadius: 2.5, tension: 0.2,
+    }));
 
-    const datasets = locs.map((loc) => {
-      const byKey = {};
-      models[loc].rows.filter((r) => !r.isNow).forEach((r) => { byKey[r.key] = r.net; });
-      return {
-        label: loc + " net ¢",
-        data: baseRows.map((r) => (byKey[r.key] != null ? byKey[r.key] : null)),
-        borderColor: LOC_COLORS[loc] || "#333",
-        backgroundColor: LOC_COLORS[loc] || "#333",
-        borderWidth: 2.25,
-        pointRadius: 2.5,
-        tension: 0.2,
-      };
-    });
+    const bctx = document.getElementById("basisChart");
+    const cctx = document.getElementById("cashChart");
+    if (basisChart) basisChart.destroy();
+    if (cashChart) cashChart.destroy();
 
-    if (netChart) netChart.destroy();
-    netChart = new Chart(ctx, {
+    basisChart = new Chart(bctx, {
       type: "line",
-      data: { labels, datasets },
+      data: { labels, datasets: basisSets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
@@ -560,71 +494,41 @@
           },
         },
         scales: {
-          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, title: { display: true, text: "Move window" } },
-          y: {
-            title: { display: true, text: "Net vs sell today (¢ / bu)" },
-            ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" },
-          },
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Net basis after costs (¢ / bu)" }, ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" } },
         },
       },
-      plugins: [{
-        id: "zeroLine",
-        afterDraw(c) {
-          const y = c.scales.y;
-          if (y.min > 0 || y.max < 0) return;
-          const yPix = y.getPixelForValue(0);
-          const { ctx: g, chartArea } = c;
-          g.save();
-          g.strokeStyle = "rgba(42,64,51,0.45)";
-          g.setLineDash([5, 4]);
-          g.beginPath();
-          g.moveTo(chartArea.left, yPix);
-          g.lineTo(chartArea.right, yPix);
-          g.stroke();
-          g.fillStyle = "rgba(42,64,51,0.8)";
-          g.font = "11px sans-serif";
-          g.fillText("Sell now = 0", chartArea.right - 72, yPix - 5);
-          g.restore();
-        },
-      }],
+      plugins: [zeroLinePlugin()],
     });
-  }
 
-  function renderStackChart(model) {
-    const ctx = document.getElementById("stackChart");
-    if (!ctx || typeof Chart === "undefined") return;
-    const rows = model.rows.filter((r) => !r.isNow);
-    if (stackChart) stackChart.destroy();
-    stackChart = new Chart(ctx, {
-      type: "bar",
-      data: {
-        labels: rows.map((r) => r.label),
-        datasets: [
-          { label: "Futures carry ¢", data: rows.map((r) => r.futCarry), backgroundColor: "#c9920e", stack: "m" },
-          { label: "Basis carry ¢", data: rows.map((r) => r.basisCarry), backgroundColor: "#2f4b8a", stack: "m" },
-          { label: "Cost (carry+truck) ¢", data: rows.map((r) => r.cost == null ? null : -r.cost), backgroundColor: "#c23a12", stack: "m" },
-          { type: "line", label: "Net ¢", data: rows.map((r) => r.net), borderColor: "#0d6b38", backgroundColor: "#0d6b38", tension: 0.2, pointRadius: 2, yAxisID: "y2" },
-        ],
-      },
+    cashChart = new Chart(cctx, {
+      type: "line",
+      data: { labels, datasets: cashSets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
-        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : money(v, 2) + "/bu");
+              },
+            },
+          },
+        },
         scales: {
-          x: { stacked: true, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
-          y: { stacked: true, title: { display: true, text: "Stack ¢ / bu" } },
-          y2: { stacked: false, position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Net ¢" } },
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Expected cash sale ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
         },
       },
     });
   }
 
   function renderFooter() {
-    const spot = DATA.spotRange[cropKey()] || DATA.spotRange.corn;
     document.getElementById("footer").innerHTML =
-      "Spot basis " + (spot ? spot[0] + " to " + spot[1] : "") +
-      " · " + DATA.source +
-      ". Dayton = corn only. Sidney = soybeans only. Actual basis overrides historical for that window only. Delayed CME — informational only.";
+      "Net basis = used basis − trucking − interest − storage − shrink. Cash sale = futures + used basis − those same costs. Actual basis overrides historical only where entered. Dayton corn-only · Sidney soybeans-only. Delayed CME — informational only.";
     document.getElementById("asOfPill").textContent = state.quoteAsOf
       ? ("Quotes " + String(state.quoteAsOf).replace("T", " ").slice(0, 16) + " UTC")
       : "Quotes delayed";
@@ -635,19 +539,14 @@
       const reread = !opts || opts.reread !== false;
       const forms = !opts || opts.forms !== false;
       if (reread) readCarryForm();
-      ensureTableLoc();
       renderCropSeg();
       renderLocs();
       if (forms) renderCarryForm();
       renderStrip();
-      const model = buildRowsForLoc(state.tableLoc);
-      const front = frontRow();
-      renderRate(front && front.price, model.nowBasis);
+      renderRate();
       renderQuarters();
-      renderTable(model);
-      renderHistChart();
-      renderNetChart();
-      renderStackChart(model);
+      renderBasisEntry();
+      renderCharts();
       renderFooter();
       save();
     } catch (err) {
@@ -734,12 +633,7 @@
     refresh({ reread: false, forms: true });
   });
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
-  document.getElementById("tableLoc").addEventListener("change", () => {
-    state.tableLoc = document.getElementById("tableLoc").value;
-    save();
-    refresh({ reread: false, forms: true });
-  });
-  ["apr", "storage", "trucking", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor", "actualNow", "basisMode"].forEach((id) => {
+  ["apr", "storage", "trucking", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
     const el = document.getElementById(id);
     el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
     if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
