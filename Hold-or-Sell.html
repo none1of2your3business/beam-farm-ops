@@ -90,7 +90,7 @@
   .store-controls {
     display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 8px 0 14px;
   }
-  .store-controls label.days-lab {
+  .store-controls label.days-lab, .store-controls .days-lab {
     display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); font-weight: 650;
   }
   .store-controls input#storeDays { width: 120px; font-weight: 700; font-size: 1.1rem; }
@@ -425,8 +425,15 @@
         <h2 style="margin:0;font-size:1.15rem">Most profitable crop to store</h2>
         <span class="pill">Updates as you change inputs</span>
       </div>
-      <p class="hint">Compares corn vs soybeans for storing vs selling today. Extra cash is after all carry and trucking costs (interest, storage, shrink, handling, and haul).</p>
+      <p class="hint" id="storeHint">Compares corn vs soybeans on cash after all carry and trucking. Extra = cash later − cash now.</p>
       <div class="store-controls">
+        <div>
+          <div class="days-lab" style="margin-bottom:6px">Score by</div>
+          <div class="seg" id="storeMetricSeg">
+            <button type="button" data-metric="cash" class="on">Cash $/bu</button>
+            <button type="button" data-metric="basis">Net basis ¢</button>
+          </div>
+        </div>
         <label class="days-lab">How many days to store
           <input id="storeDays" inputmode="numeric" placeholder="90">
         </label>
@@ -478,6 +485,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     chartBoth: false,
     storeDays: 90,
     storeBestAny: false,
+    storeMetric: "cash",
     grain: {},
     actual: {},
     carry: {
@@ -497,6 +505,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       if (saved.chartBoth != null) state.chartBoth = !!saved.chartBoth;
       if (saved.storeDays != null && Number.isFinite(Number(saved.storeDays))) state.storeDays = Number(saved.storeDays);
       if (saved.storeBestAny != null) state.storeBestAny = !!saved.storeBestAny;
+      if (saved.storeMetric === "basis" || saved.storeMetric === "cash") state.storeMetric = saved.storeMetric;
       state.grain = saved.grain || {};
       state.actual = saved.actual || {};
       // migrate old actualNow into actual keys
@@ -546,7 +555,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     try {
       localStorage.setItem(LS, JSON.stringify({
         crop: state.crop, visible: state.visible, trucking: state.trucking, chartBoth: state.chartBoth,
-        storeDays: state.storeDays, storeBestAny: state.storeBestAny,
+        storeDays: state.storeDays, storeBestAny: state.storeBestAny, storeMetric: state.storeMetric,
         grain: state.grain, actual: state.actual,
         carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
       }));
@@ -929,20 +938,22 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       const locs = activeLocs();
       const front = frontRow();
       const nowFut = front && front.price != null ? Number(front.price) : null;
-      let nowRow = null;
+      let nowCashRow = null;
+      let nowBasisRow = null;
       locs.forEach((loc) => {
         const row = buildPoint(loc, nowPt, nowFut);
-        if (row.cash != null && (nowRow == null || row.cash > nowRow.cash)) nowRow = row;
+        if (row.cash != null && (nowCashRow == null || row.cash > nowCashRow.cash)) nowCashRow = row;
+        if (row.netBasis != null && (nowBasisRow == null || row.netBasis > nowBasisRow.netBasis)) nowBasisRow = row;
       });
-      const nowCash = nowRow ? nowRow.cash : null;
-      const nowBasis = nowRow ? nowRow.netBasis : null;
-      const nowLoc = nowRow ? nowRow.loc : null;
+      const nowCash = nowCashRow ? nowCashRow.cash : null;
+      const nowBasis = nowBasisRow ? nowBasisRow.netBasis : null;
       const cashGain = (bestCash && nowCash != null) ? bestCash.value - nowCash : null;
       const basisGain = (bestBasis && nowBasis != null) ? bestBasis.value - nowBasis : null;
       return {
         crop,
         label: crop === "soybeans" ? "Soybeans" : "Corn",
-        bestCash, bestBasis, nowRow, nowCash, nowBasis, nowLoc, cashGain, basisGain,
+        bestCash, bestBasis, nowCashRow, nowBasisRow, nowRow: nowCashRow,
+        nowCash, nowBasis, nowLoc: nowCashRow ? nowCashRow.loc : null, cashGain, basisGain,
       };
     });
   }
@@ -983,40 +994,61 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     ].filter(([, v]) => v != null && Math.abs(v) > 0.00005);
   }
 
+  function isStoreBasis() { return state.storeMetric === "basis"; }
+  function snapLater(snap) { return isStoreBasis() ? snap.bestBasis : snap.bestCash; }
+  function snapNow(snap) { return isStoreBasis() ? snap.nowBasisRow : snap.nowCashRow; }
+  function snapGain(snap) { return isStoreBasis() ? snap.basisGain : snap.cashGain; }
+  function fmtGain(n) { return isStoreBasis() ? cents(n, 1) : money(n, 2) + "/bu"; }
+
   function snapMathHtml(snap, isWinner) {
     if (!snap) return "";
-    const later = snap.bestCash;
-    const now = snap.nowRow;
-    if (!later || later.cash == null || !now || now.cash == null) {
+    const later = snapLater(snap);
+    const now = snapNow(snap);
+    const basisMode = isStoreBasis();
+    if (!later || later.value == null || !now || (basisMode ? now.netBasis == null : now.cash == null)) {
       return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
         <p class="why">Need futures and basis for ${esc(snap.label)}.</p></article>`;
     }
     const same = later.isNow || (now.loc === later.loc && now.key === later.key);
     const cols = same ? 2 : 3;
+    const laterHead = basisMode ? "Hold for basis" : "Store and sell";
+    const nowHead = "Sell now";
     const head = same
-      ? `<tr><th></th><th>Sell now<span>${esc(whereLabel(now))}</span></th></tr>`
-      : `<tr><th></th><th>Store and sell<span>${esc(whereLabel(later))}</span></th><th>Sell now<span>${esc(whereLabel(now))}</span></th></tr>`;
+      ? `<tr><th></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`
+      : `<tr><th></th><th>${esc(laterHead)}<span>${esc(whereLabel(later))}</span></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`;
 
     function cells(label, laterHtml, nowHtml, cls) {
       if (same) return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${nowHtml}</td></tr>`;
       return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${laterHtml}</td><td>${nowHtml}</td></tr>`;
     }
 
-    let rows = cells("Futures", amt(later.futures, 4, false), amt(now.futures, 4, false));
-    rows += same
-      ? `<tr><td>Basis</td><td>${basisCell(now)}</td></tr>`
-      : `<tr><td>Basis</td><td>${basisCell(later)}</td><td>${basisCell(now)}</td></tr>`;
-    rows += cells("Carry", amt(-(later.hold$ || 0), 3, true), amt(-(now.hold$ || 0), 3, true));
-    carryBits(same ? now : later).forEach(([lab, v]) => {
-      rows += cells(lab, amt(-v, 3, true), "—", "sub");
-    });
-    rows += cells("Trucking", amt(-(later.truck$ || 0), 3, true), amt(-(now.truck$ || 0), 3, true));
-    rows += cells("Cash $/bu", money(later.cash, 2), money(now.cash, 2), "total");
+    let rows = "";
+    if (basisMode) {
+      rows += cells("Used basis", cents(later.used, 1), cents(now.used, 1));
+      rows += cells("Carry", cents(-(later.holdC || 0), 1), cents(-(now.holdC || 0), 1));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, cents(-v * 100, 1), "—", "sub");
+      });
+      rows += cells("Trucking", cents(-(later.truckC || 0), 1), cents(-(now.truckC || 0), 1));
+      rows += cells("Net basis ¢", cents(later.netBasis, 1), cents(now.netBasis, 1), "total");
+    } else {
+      rows += cells("Futures", amt(later.futures, 4, false), amt(now.futures, 4, false));
+      rows += same
+        ? `<tr><td>Basis</td><td>${basisCell(now)}</td></tr>`
+        : `<tr><td>Basis</td><td>${basisCell(later)}</td><td>${basisCell(now)}</td></tr>`;
+      rows += cells("Carry", amt(-(later.hold$ || 0), 3, true), amt(-(now.hold$ || 0), 3, true));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, amt(-v, 3, true), "—", "sub");
+      });
+      rows += cells("Trucking", amt(-(later.truck$ || 0), 3, true), amt(-(now.truck$ || 0), 3, true));
+      rows += cells("Cash $/bu", money(later.cash, 2), money(now.cash, 2), "total");
+    }
 
+    const gain = snapGain(snap);
     const extra = same
-      ? `<p class="store-extra"><span>Extra vs now</span><b>$0.00/bu</b></p>`
+      ? `<p class="store-extra"><span>Extra vs now</span><b>${esc(fmtGain(0))}</b></p>`
       : `<p class="store-extra"><span>Extra vs now</span>
-           <b>${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</b></p>`;
+           <b>${esc(basisMode ? cents(later.netBasis, 1) : money(later.cash, 2))} − ${esc(basisMode ? cents(now.netBasis, 1) : money(now.cash, 2))} = ${esc(fmtGain(gain))}</b></p>`;
 
     return `<article class="${isWinner ? "on" : ""}">
       <h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
@@ -1031,7 +1063,10 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
   function storeMathHtml(pick) {
     if (!pick || (!pick.corn && !pick.soy)) return "";
     const w = pick.winner;
-    return `<p class="store-formula">Cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
+    const formula = isStoreBasis()
+      ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+      : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
+    return `<p class="store-formula">${formula}</p>
       <div class="store-cmp">
         ${snapMathHtml(pick.corn, w && w.crop === "corn")}
         ${snapMathHtml(pick.soy, w && w.crop === "soybeans")}
@@ -1039,27 +1074,31 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
   }
 
   function pickStoreWinner(corn, soy) {
+    const g = (s) => snapGain(s);
     let winner = null;
-    if (corn.cashGain != null && soy.cashGain != null) winner = corn.cashGain >= soy.cashGain ? corn : soy;
-    else if (corn.cashGain != null) winner = corn;
-    else if (soy.cashGain != null) winner = soy;
+    if (g(corn) != null && g(soy) != null) winner = g(corn) >= g(soy) ? corn : soy;
+    else if (g(corn) != null) winner = corn;
+    else if (g(soy) != null) winner = soy;
     const other = winner ? (winner.crop === "corn" ? soy : corn) : null;
     let why = "Need futures and basis on both crops to compare.";
     if (winner) {
-      const wGain = winner.cashGain;
-      const oGain = other && other.cashGain;
-      const later = winner.bestCash && !winner.bestCash.isNow;
+      const wGain = g(winner);
+      const oGain = other ? g(other) : null;
+      const later = snapLater(winner);
+      const laterOk = later && !later.isNow;
+      const unit = isStoreBasis() ? "net basis" : "cash";
+      const nearZero = isStoreBasis() ? 0.5 : 0.005;
       if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
         why = "Neither crop pays to store after all carry and trucking — sell now beats holding both.";
-      } else if (later && winner.bestCash) {
-        why = winner.label + " at " + winner.bestCash.loc + " on " + winner.bestCash.label
-          + " (" + winner.bestCash.days + " days) adds " + money(wGain, 2) + "/bu vs selling now, after all carry and trucking.";
-        if (oGain != null) why += " That is " + money(Math.abs(wGain - oGain), 2) + "/bu more than " + other.label.toLowerCase() + ".";
-        if (wGain != null && wGain <= 0.005) {
-          why = winner.label + " is the less-bad store, but extra cash vs now is about zero after all carry and trucking.";
+      } else if (laterOk) {
+        why = winner.label + " at " + later.loc + " on " + later.label
+          + " (" + later.days + " days) adds " + fmtGain(wGain) + " vs selling now, after all carry and trucking.";
+        if (oGain != null) why += " That is " + fmtGain(Math.abs(wGain - oGain)) + " more than " + other.label.toLowerCase() + ".";
+        if (wGain != null && wGain <= nearZero) {
+          why = winner.label + " is the less-bad store, but extra " + unit + " vs now is about zero after all carry and trucking.";
         }
       } else {
-        why = winner.label + " wins, but the best cash is already now — storing does not add money after carry and trucking.";
+        why = winner.label + " wins, but the best " + unit + " is already now — storing does not add money after carry and trucking.";
       }
     }
     return { winner, why, corn, soy };
@@ -1071,6 +1110,19 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     const windowOut = document.getElementById("storeWindowOut");
     const anyOut = document.getElementById("storeAnyOut");
     if (!windowOut) return;
+
+    const metricEl = document.getElementById("storeMetricSeg");
+    if (metricEl) {
+      metricEl.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.metric === (isStoreBasis() ? "basis" : "cash"));
+      });
+    }
+    const hintEl = document.getElementById("storeHint");
+    if (hintEl) {
+      hintEl.textContent = isStoreBasis()
+        ? "Compares corn vs soybeans on net basis after all carry and trucking. Extra = later net basis − now net basis."
+        : "Compares corn vs soybeans on cash after all carry and trucking. Extra = cash later − cash now.";
+    }
 
     if (daysEl && document.activeElement !== daysEl) {
       daysEl.value = state.storeDays == null ? "" : String(state.storeDays);
@@ -1089,7 +1141,8 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
           <p class="why">${pick.why}</p>
           ${storeMathHtml(pick)}`;
       }
-      const when = w.bestCash ? w.bestCash.loc + " · " + w.bestCash.label + " · " + w.bestCash.days + " days" : "";
+      const later = w ? snapLater(w) : null;
+      const when = later ? later.loc + " · " + later.label + " · " + later.days + " days" : "";
       return `<div class="winner-lab">${title}</div>
         <div class="pick-val">${w.label}</div>
         <div class="meta-line">${when}</div>
@@ -1358,6 +1411,101 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     };
   }
 
+  function highPointPlugin(kind) {
+    return {
+      id: "highPoint_" + kind,
+      afterDraw(chart) {
+        const xScale = chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+        const groups = (kind === "cash" && chart.scales.ySoy)
+          ? [{ axis: "y" }, { axis: "ySoy" }]
+          : [{ axis: "y" }];
+        const ctx = chart.ctx;
+        const boxes = [];
+        groups.forEach((g) => {
+          const scale = chart.scales[g.axis];
+          if (!scale) return;
+          let best = null;
+          chart.data.datasets.forEach((ds) => {
+            const axis = ds.yAxisID || "y";
+            if (axis !== g.axis) return;
+            (ds.data || []).forEach((raw, i) => {
+              const v = raw == null ? null : Number(raw);
+              if (v == null || !Number.isFinite(v)) return;
+              if (!best || v > best.v) best = { v, i, ds };
+            });
+          });
+          if (!best) return;
+          const x = xScale.getPixelForValue(best.i);
+          const y = scale.getPixelForValue(best.v);
+          const color = best.ds.borderColor || "#0d6b38";
+          const when = (chart.data.labels || [])[best.i] || "";
+          const valTxt = kind === "basis" ? cents(best.v, 1) : money(best.v, 2) + "/bu";
+          const line1 = "High  " + valTxt;
+          const line2 = (best.ds.label || "") + (when ? " · " + when : "");
+
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.32;
+          ctx.setLineDash([4, 3]);
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x, area.top);
+          ctx.lineTo(x, area.bottom);
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "#fff";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.75;
+          ctx.beginPath();
+          ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          ctx.save();
+          ctx.font = "700 11px system-ui, sans-serif";
+          const w1 = ctx.measureText(line1).width;
+          ctx.font = "650 10px system-ui, sans-serif";
+          const w2 = ctx.measureText(line2).width;
+          const tw = Math.min(Math.max(w1, w2) + 16, area.right - area.left - 8);
+          const th = 34;
+          let lx = x - tw / 2;
+          let ly = y - th - 12;
+          if (lx < area.left + 4) lx = area.left + 4;
+          if (lx + tw > area.right - 4) lx = area.right - tw - 4;
+          if (ly < area.top + 4) ly = Math.min(y + 12, area.bottom - th - 4);
+          boxes.forEach((box) => {
+            if (Math.abs(box.x - lx) < tw && Math.abs(box.y - ly) < th + 4) {
+              ly = Math.min(box.y + th + 6, area.bottom - th - 4);
+            }
+          });
+          boxes.push({ x: lx, y: ly });
+          ctx.fillStyle = "rgba(6, 20, 12, 0.9)";
+          const r = 6;
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(lx, ly, tw, th, r);
+          else ctx.rect(lx, ly, tw, th);
+          ctx.fill();
+          ctx.fillStyle = "#fff";
+          ctx.font = "700 11px system-ui, sans-serif";
+          ctx.fillText(line1, lx + 8, ly + 14, tw - 16);
+          ctx.fillStyle = "rgba(255,255,255,0.9)";
+          ctx.font = "650 10px system-ui, sans-serif";
+          ctx.fillText(line2, lx + 8, ly + 27, tw - 16);
+          ctx.restore();
+        });
+      },
+    };
+  }
+
   function renderCharts() {
     if (typeof Chart === "undefined") return;
     const points = timeline();
@@ -1421,6 +1569,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       data: { labels, datasets: basisSets },
       options: {
         responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 36 } },
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
@@ -1438,7 +1587,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
           y: { title: { display: true, text: "Net basis after costs (¢ / bu)" }, ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" } },
         },
       },
-      plugins: [zeroLinePlugin()],
+      plugins: [zeroLinePlugin(), highPointPlugin("basis")],
     });
 
     cashChart = new Chart(cctx, {
@@ -1446,6 +1595,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       data: { labels, datasets: cashSets },
       options: {
         responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 36 } },
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
@@ -1460,6 +1610,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
         },
         scales: cashScales,
       },
+      plugins: [highPointPlugin("cash")],
     });
   }
 
@@ -1592,6 +1743,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       chartBoth: state.chartBoth,
       storeDays: state.storeDays,
       storeBestAny: state.storeBestAny,
+      storeMetric: state.storeMetric,
       grain: state.grain,
       actual: state.actual,
       carry: state.carry,
@@ -1616,6 +1768,7 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     if (data.chartBoth != null) state.chartBoth = !!data.chartBoth;
     if (data.storeDays != null && Number.isFinite(Number(data.storeDays))) state.storeDays = Number(data.storeDays);
     if (data.storeBestAny != null) state.storeBestAny = !!data.storeBestAny;
+    if (data.storeMetric === "basis" || data.storeMetric === "cash") state.storeMetric = data.storeMetric;
     if (data.trucking && typeof data.trucking === "object") {
       LOC_IDS.forEach((id) => {
         const v = num(data.trucking[id]);
@@ -1766,9 +1919,13 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
         return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? snapMathHtml(pick.corn, false) + snapMathHtml(pick.soy, false) : ""}`;
       }
       const w = pick.winner;
-      const when = w.bestCash ? `${w.bestCash.loc} · ${w.bestCash.label} · ${w.bestCash.days} days` : "";
+      const later = snapLater(w);
+      const when = later ? `${later.loc} · ${later.label} · ${later.days} days` : "";
+      const formula = isStoreBasis()
+        ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+        : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
       return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>
-        <p>Cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
+        <p>Scored by ${isStoreBasis() ? "net basis" : "cash"}. ${formula}</p>
         <div class="store-cmp">
           ${snapMathHtml(pick.corn, w.crop === "corn")}
           ${snapMathHtml(pick.soy, w.crop === "soybeans")}
@@ -1829,9 +1986,11 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
         They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
 
         <p><strong>Most profitable crop to store.</strong>
-        Corn vs soybeans, storing vs selling today. Extra cash is after all carry and trucking
-        (interest, storage, shrink, handling, and haul to that elevator).
-        Math: cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
+        Corn vs soybeans, storing vs selling today, scored by ${isStoreBasis() ? "net basis" : "cash"}.
+        Extra is after all carry and trucking (interest, storage, shrink, handling, and haul).
+        ${isStoreBasis()
+          ? "Math: net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+          : "Math: cash = futures + basis − carry − trucking. Extra = cash later − cash now."}</p>
 
         <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
       </div>`;
@@ -1891,6 +2050,16 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
   if (storeAnyEl) {
     storeAnyEl.addEventListener("change", () => {
       state.storeBestAny = storeAnyEl.checked;
+      save();
+      renderStorePick();
+    });
+  }
+  const storeMetricEl = document.getElementById("storeMetricSeg");
+  if (storeMetricEl) {
+    storeMetricEl.addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b || !b.dataset.metric) return;
+      state.storeMetric = b.dataset.metric === "basis" ? "basis" : "cash";
       save();
       renderStorePick();
     });
