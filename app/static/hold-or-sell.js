@@ -335,6 +335,9 @@
     return {
       ...point, loc, hist: b.hist, used: b.value, source: b.source,
       futures: fut, netBasis, cash, truckC, holdC, costC: truckC + holdC,
+      hold$: parts.holdCost, truck$: parts.trucking,
+      interest$: parts.interest, storage$: parts.storage,
+      shrink$: parts.handlingShrink + parts.moisture, handling$: parts.inout,
     };
   }
 
@@ -463,7 +466,7 @@
         const v = row[metric];
         if (v == null || !Number.isFinite(v)) return;
         if (!best || v > best.value) {
-          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key, days: d };
+          best = { ...row, value: v, days: d };
         }
       });
     });
@@ -479,25 +482,99 @@
       const locs = activeLocs();
       const front = frontRow();
       const nowFut = front && front.price != null ? Number(front.price) : null;
-      let nowCash = null;
-      let nowBasis = null;
-      let nowLoc = null;
+      let nowRow = null;
       locs.forEach((loc) => {
         const row = buildPoint(loc, nowPt, nowFut);
-        if (row.cash != null && (nowCash == null || row.cash > nowCash)) {
-          nowCash = row.cash;
-          nowBasis = row.netBasis;
-          nowLoc = loc;
-        }
+        if (row.cash != null && (nowRow == null || row.cash > nowRow.cash)) nowRow = row;
       });
+      const nowCash = nowRow ? nowRow.cash : null;
+      const nowBasis = nowRow ? nowRow.netBasis : null;
+      const nowLoc = nowRow ? nowRow.loc : null;
       const cashGain = (bestCash && nowCash != null) ? bestCash.value - nowCash : null;
       const basisGain = (bestBasis && nowBasis != null) ? bestBasis.value - nowBasis : null;
       return {
         crop,
         label: crop === "soybeans" ? "Soybeans" : "Corn",
-        bestCash, bestBasis, nowCash, nowBasis, nowLoc, cashGain, basisGain,
+        bestCash, bestBasis, nowRow, nowCash, nowBasis, nowLoc, cashGain, basisGain,
       };
     });
+  }
+
+  function signedMoney(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const mag = "$" + Math.abs(n).toFixed(d);
+    if (n < -0.0000001) return "−" + mag;
+    if (n > 0.0000001) return "+" + mag;
+    return mag;
+  }
+
+  function eqRow(label, val, d, cls) {
+    const signed = cls && cls.indexOf("unsigned") >= 0 ? false : true;
+    const txt = val == null || !Number.isFinite(val) ? "—" : (signed ? signedMoney(val, d) : money(val, d));
+    return `<div class="${cls || ""}"><span>${esc(label)}</span><b>${txt}</b></div>`;
+  }
+
+  function cashEqHtml(row, heading) {
+    if (!row || row.cash == null) {
+      return `<p class="eq-head">${esc(heading)}</p><p class="why">Need futures and basis.</p>`;
+    }
+    const basis$ = row.used != null ? row.used / 100 : null;
+    const src = row.source === "actual" ? "actual" : "seasonal hist";
+    const basisLab = row.used != null ? "Basis (" + cents(row.used, 1) + " " + src + ")" : "Basis";
+    const when = (row.loc || "") + (row.label ? " · " + row.label : "") + (row.days ? " · " + row.days + " days" : "");
+    let html = `<p class="eq-head">${esc(heading)}${when ? " · " + esc(when) : ""}</p><div class="eq">`;
+    html += eqRow("Futures", row.futures, 4, "unsigned");
+    html += eqRow(basisLab, basis$, 3);
+    if (row.hold$ != null && row.hold$ > 0.00005) {
+      html += eqRow("Carry", -row.hold$, 3);
+      const bits = [
+        ["interest", row.interest$],
+        ["storage", row.storage$],
+        ["shrink", row.shrink$],
+        ["handling", row.handling$],
+      ];
+      bits.forEach(([lab, v]) => {
+        if (v != null && Math.abs(v) > 0.00005) html += eqRow(lab, -v, 3, "sub");
+      });
+    } else {
+      html += eqRow("Carry", 0, 3);
+    }
+    html += eqRow("Trucking", row.truck$ != null ? -row.truck$ : null, 3);
+    html += eqRow("Cash $/bu", row.cash, 2, "total unsigned");
+    html += "</div>";
+    return html;
+  }
+
+  function snapMathHtml(snap, isWinner) {
+    if (!snap) return "";
+    const later = snap.bestCash;
+    const now = snap.nowRow;
+    let body;
+    if (!later || later.cash == null || !now || now.cash == null) {
+      body = `<p class="why">Need futures and basis for ${esc(snap.label)}.</p>`;
+    } else {
+      const same = later.isNow || (now.loc === later.loc && now.key === later.key);
+      if (same) {
+        body = cashEqHtml(now, "Best cash is already now")
+          + `<div class="eq extra">${eqRow("Extra vs now", 0, 2, "total")}</div>`;
+      } else {
+        body = cashEqHtml(later, "Store and sell")
+          + cashEqHtml(now, "Sell now")
+          + `<div class="eq extra">${eqRow("Extra vs now $/bu", snap.cashGain, 2, "total")}</div>
+              <p class="formula">${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</p>`;
+      }
+    }
+    return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>${body}</article>`;
+  }
+
+  function storeMathHtml(pick) {
+    if (!pick || (!pick.corn && !pick.soy)) return "";
+    const w = pick.winner;
+    return `<p class="store-formula">Cash = futures + basis − carry − trucking. Extra = cash later − cash now (after all costs).</p>
+      <div class="store-cmp">
+        ${snapMathHtml(pick.corn, w && w.crop === "corn")}
+        ${snapMathHtml(pick.soy, w && w.crop === "soybeans")}
+      </div>`;
   }
 
   function pickStoreWinner(corn, soy) {
@@ -548,13 +625,15 @@
       if (!w) {
         return `<div class="winner-lab">${title}</div>
           <div class="pick-val">—</div>
-          <p class="why">${pick.why}</p>`;
+          <p class="why">${pick.why}</p>
+          ${storeMathHtml(pick)}`;
       }
       const when = w.bestCash ? w.bestCash.loc + " · " + w.bestCash.label + " · " + w.bestCash.days + " days" : "";
       return `<div class="winner-lab">${title}</div>
         <div class="pick-val">${w.label}</div>
         <div class="meta-line">${when}</div>
-        <p class="why">${pick.why} ${rangeNote || ""}</p>`;
+        <p class="why">${pick.why} ${rangeNote || ""}</p>
+        ${storeMathHtml(pick)}`;
     }
 
     if (cap == null) {
@@ -1221,11 +1300,44 @@
     const anyPick = state.storeBestAny
       ? pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null))
       : null;
+    function printSnapMath(snap, isWinner) {
+      if (!snap) return "";
+      const later = snap.bestCash;
+      const now = snap.nowRow;
+      const tag = isWinner ? " (winner)" : "";
+      if (!later || later.cash == null || !now || now.cash == null) {
+        return `<h3>${esc(snap.label)}${tag}</h3><p>Need futures and basis.</p>`;
+      }
+      const laterWhen = `${later.loc || ""} · ${later.label || ""} · ${later.days || 0} days`;
+      const nowWhen = `${now.loc || ""} · ${now.label || "Now"}`;
+      const basisLater = later.used != null ? cents(later.used, 1) + " → " + signedMoney(later.used / 100, 3) : "—";
+      const basisNow = now.used != null ? cents(now.used, 1) + " → " + signedMoney(now.used / 100, 3) : "—";
+      return `<h3>${esc(snap.label)}${tag}</h3>
+        <div class="kv">
+          <div><span>Store and sell</span><b>${esc(laterWhen)}</b></div>
+          <div><span>Futures</span><b>${esc(money(later.futures, 4))}</b></div>
+          <div><span>Basis</span><b>${esc(basisLater)}</b></div>
+          <div><span>Carry</span><b>${esc(signedMoney(-(later.hold$ || 0), 3))}</b></div>
+          <div><span>Trucking</span><b>${esc(signedMoney(-(later.truck$ || 0), 3))}</b></div>
+          <div><span>Cash later</span><b>${esc(money(later.cash, 2))}/bu</b></div>
+          <div><span>Sell now</span><b>${esc(nowWhen)}</b></div>
+          <div><span>Futures now</span><b>${esc(money(now.futures, 4))}</b></div>
+          <div><span>Basis now</span><b>${esc(basisNow)}</b></div>
+          <div><span>Trucking now</span><b>${esc(signedMoney(-(now.truck$ || 0), 3))}</b></div>
+          <div><span>Cash now</span><b>${esc(money(now.cash, 2))}/bu</b></div>
+          <div><span>Extra vs now</span><b>${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</b></div>
+        </div>`;
+    }
     function printPick(title, pick) {
-      if (!pick || !pick.winner) return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>`;
+      if (!pick || !pick.winner) {
+        return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? printSnapMath(pick.corn, false) + printSnapMath(pick.soy, false) : ""}`;
+      }
       const w = pick.winner;
       const when = w.bestCash ? `${w.bestCash.loc} · ${w.bestCash.label} · ${w.bestCash.days} days` : "";
-      return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>`;
+      return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>
+        <p>Cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
+        ${printSnapMath(pick.corn, w.crop === "corn")}
+        ${printSnapMath(pick.soy, w.crop === "soybeans")}`;
     }
     const storeHtml = `
       <h2>Most profitable crop to store</h2>
@@ -1283,7 +1395,8 @@
 
         <p><strong>Most profitable crop to store.</strong>
         Corn vs soybeans, storing vs selling today. Extra cash is after all carry and trucking
-        (interest, storage, shrink, handling, and haul to that elevator).</p>
+        (interest, storage, shrink, handling, and haul to that elevator).
+        Math: cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
 
         <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
       </div>`;
