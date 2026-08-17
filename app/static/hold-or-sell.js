@@ -508,69 +508,83 @@
     return mag;
   }
 
-  function eqRow(label, val, d, cls) {
-    const signed = cls && cls.indexOf("unsigned") >= 0 ? false : true;
-    const txt = val == null || !Number.isFinite(val) ? "—" : (signed ? signedMoney(val, d) : money(val, d));
-    return `<div class="${cls || ""}"><span>${esc(label)}</span><b>${txt}</b></div>`;
+  function amt(n, d, signed) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return signed ? signedMoney(n, d) : money(n, d);
   }
 
-  function cashEqHtml(row, heading) {
-    if (!row || row.cash == null) {
-      return `<p class="eq-head">${esc(heading)}</p><p class="why">Need futures and basis.</p>`;
-    }
-    const basis$ = row.used != null ? row.used / 100 : null;
-    const src = row.source === "actual" ? "actual" : "seasonal hist";
-    const basisLab = row.used != null ? "Basis (" + cents(row.used, 1) + " " + src + ")" : "Basis";
-    const when = (row.loc || "") + (row.label ? " · " + row.label : "") + (row.days ? " · " + row.days + " days" : "");
-    let html = `<p class="eq-head">${esc(heading)}${when ? " · " + esc(when) : ""}</p><div class="eq">`;
-    html += eqRow("Futures", row.futures, 4, "unsigned");
-    html += eqRow(basisLab, basis$, 3);
-    if (row.hold$ != null && row.hold$ > 0.00005) {
-      html += eqRow("Carry", -row.hold$, 3);
-      const bits = [
-        ["interest", row.interest$],
-        ["storage", row.storage$],
-        ["shrink", row.shrink$],
-        ["handling", row.handling$],
-      ];
-      bits.forEach(([lab, v]) => {
-        if (v != null && Math.abs(v) > 0.00005) html += eqRow(lab, -v, 3, "sub");
-      });
-    } else {
-      html += eqRow("Carry", 0, 3);
-    }
-    html += eqRow("Trucking", row.truck$ != null ? -row.truck$ : null, 3);
-    html += eqRow("Cash $/bu", row.cash, 2, "total unsigned");
-    html += "</div>";
-    return html;
+  function whereLabel(row) {
+    if (!row) return "—";
+    const bits = [row.loc, row.isNow ? "Now" : row.label];
+    if (row.days) bits.push(row.days + " days");
+    return bits.filter(Boolean).join(" · ");
+  }
+
+  function basisCell(row) {
+    if (!row || row.used == null) return "—";
+    const src = row.source === "actual" ? "actual" : "hist";
+    return `${signedMoney(row.used / 100, 3)}<small>${cents(row.used, 1)} ${src}</small>`;
+  }
+
+  function carryBits(row) {
+    if (!row) return [];
+    return [
+      ["interest", row.interest$],
+      ["storage", row.storage$],
+      ["shrink", row.shrink$],
+      ["handling", row.handling$],
+    ].filter(([, v]) => v != null && Math.abs(v) > 0.00005);
   }
 
   function snapMathHtml(snap, isWinner) {
     if (!snap) return "";
     const later = snap.bestCash;
     const now = snap.nowRow;
-    let body;
     if (!later || later.cash == null || !now || now.cash == null) {
-      body = `<p class="why">Need futures and basis for ${esc(snap.label)}.</p>`;
-    } else {
-      const same = later.isNow || (now.loc === later.loc && now.key === later.key);
-      if (same) {
-        body = cashEqHtml(now, "Best cash is already now")
-          + `<div class="eq extra">${eqRow("Extra vs now", 0, 2, "total")}</div>`;
-      } else {
-        body = cashEqHtml(later, "Store and sell")
-          + cashEqHtml(now, "Sell now")
-          + `<div class="eq extra">${eqRow("Extra vs now $/bu", snap.cashGain, 2, "total")}</div>
-              <p class="formula">${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</p>`;
-      }
+      return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+        <p class="why">Need futures and basis for ${esc(snap.label)}.</p></article>`;
     }
-    return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>${body}</article>`;
+    const same = later.isNow || (now.loc === later.loc && now.key === later.key);
+    const cols = same ? 2 : 3;
+    const head = same
+      ? `<tr><th></th><th>Sell now<span>${esc(whereLabel(now))}</span></th></tr>`
+      : `<tr><th></th><th>Store and sell<span>${esc(whereLabel(later))}</span></th><th>Sell now<span>${esc(whereLabel(now))}</span></th></tr>`;
+
+    function cells(label, laterHtml, nowHtml, cls) {
+      if (same) return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${nowHtml}</td></tr>`;
+      return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${laterHtml}</td><td>${nowHtml}</td></tr>`;
+    }
+
+    let rows = cells("Futures", amt(later.futures, 4, false), amt(now.futures, 4, false));
+    rows += same
+      ? `<tr><td>Basis</td><td>${basisCell(now)}</td></tr>`
+      : `<tr><td>Basis</td><td>${basisCell(later)}</td><td>${basisCell(now)}</td></tr>`;
+    rows += cells("Carry", amt(-(later.hold$ || 0), 3, true), amt(-(now.hold$ || 0), 3, true));
+    carryBits(same ? now : later).forEach(([lab, v]) => {
+      rows += cells(lab, amt(-v, 3, true), "—", "sub");
+    });
+    rows += cells("Trucking", amt(-(later.truck$ || 0), 3, true), amt(-(now.truck$ || 0), 3, true));
+    rows += cells("Cash $/bu", money(later.cash, 2), money(now.cash, 2), "total");
+
+    const extra = same
+      ? `<p class="store-extra"><span>Extra vs now</span><b>$0.00/bu</b></p>`
+      : `<p class="store-extra"><span>Extra vs now</span>
+           <b>${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</b></p>`;
+
+    return `<article class="${isWinner ? "on" : ""}">
+      <h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+      <table class="store-math cols-${cols}">
+        <thead>${head}</thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${extra}
+    </article>`;
   }
 
   function storeMathHtml(pick) {
     if (!pick || (!pick.corn && !pick.soy)) return "";
     const w = pick.winner;
-    return `<p class="store-formula">Cash = futures + basis − carry − trucking. Extra = cash later − cash now (after all costs).</p>
+    return `<p class="store-formula">Cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
       <div class="store-cmp">
         ${snapMathHtml(pick.corn, w && w.crop === "corn")}
         ${snapMathHtml(pick.soy, w && w.crop === "soybeans")}
@@ -1300,44 +1314,18 @@
     const anyPick = state.storeBestAny
       ? pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null))
       : null;
-    function printSnapMath(snap, isWinner) {
-      if (!snap) return "";
-      const later = snap.bestCash;
-      const now = snap.nowRow;
-      const tag = isWinner ? " (winner)" : "";
-      if (!later || later.cash == null || !now || now.cash == null) {
-        return `<h3>${esc(snap.label)}${tag}</h3><p>Need futures and basis.</p>`;
-      }
-      const laterWhen = `${later.loc || ""} · ${later.label || ""} · ${later.days || 0} days`;
-      const nowWhen = `${now.loc || ""} · ${now.label || "Now"}`;
-      const basisLater = later.used != null ? cents(later.used, 1) + " → " + signedMoney(later.used / 100, 3) : "—";
-      const basisNow = now.used != null ? cents(now.used, 1) + " → " + signedMoney(now.used / 100, 3) : "—";
-      return `<h3>${esc(snap.label)}${tag}</h3>
-        <div class="kv">
-          <div><span>Store and sell</span><b>${esc(laterWhen)}</b></div>
-          <div><span>Futures</span><b>${esc(money(later.futures, 4))}</b></div>
-          <div><span>Basis</span><b>${esc(basisLater)}</b></div>
-          <div><span>Carry</span><b>${esc(signedMoney(-(later.hold$ || 0), 3))}</b></div>
-          <div><span>Trucking</span><b>${esc(signedMoney(-(later.truck$ || 0), 3))}</b></div>
-          <div><span>Cash later</span><b>${esc(money(later.cash, 2))}/bu</b></div>
-          <div><span>Sell now</span><b>${esc(nowWhen)}</b></div>
-          <div><span>Futures now</span><b>${esc(money(now.futures, 4))}</b></div>
-          <div><span>Basis now</span><b>${esc(basisNow)}</b></div>
-          <div><span>Trucking now</span><b>${esc(signedMoney(-(now.truck$ || 0), 3))}</b></div>
-          <div><span>Cash now</span><b>${esc(money(now.cash, 2))}/bu</b></div>
-          <div><span>Extra vs now</span><b>${esc(money(later.cash, 2))} − ${esc(money(now.cash, 2))} = ${esc(signedMoney(snap.cashGain, 2))}/bu</b></div>
-        </div>`;
-    }
     function printPick(title, pick) {
       if (!pick || !pick.winner) {
-        return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? printSnapMath(pick.corn, false) + printSnapMath(pick.soy, false) : ""}`;
+        return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? snapMathHtml(pick.corn, false) + snapMathHtml(pick.soy, false) : ""}`;
       }
       const w = pick.winner;
       const when = w.bestCash ? `${w.bestCash.loc} · ${w.bestCash.label} · ${w.bestCash.days} days` : "";
       return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>
         <p>Cash = futures + basis − carry − trucking. Extra = cash later − cash now.</p>
-        ${printSnapMath(pick.corn, w.crop === "corn")}
-        ${printSnapMath(pick.soy, w.crop === "soybeans")}`;
+        <div class="store-cmp">
+          ${snapMathHtml(pick.corn, w.crop === "corn")}
+          ${snapMathHtml(pick.soy, w.crop === "soybeans")}
+        </div>`;
     }
     const storeHtml = `
       <h2>Most profitable crop to store</h2>
