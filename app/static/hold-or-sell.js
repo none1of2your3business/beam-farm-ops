@@ -28,6 +28,7 @@
     crop: "corn",
     visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
     trucking: defaultTrucking(),
+    chartBoth: false,
     grain: {},
     actual: {},
     carry: {
@@ -44,6 +45,7 @@
     if (saved && typeof saved === "object") {
       state.crop = saved.crop || state.crop;
       state.visible = { ...state.visible, ...(saved.visible || {}) };
+      if (saved.chartBoth != null) state.chartBoth = !!saved.chartBoth;
       state.grain = saved.grain || {};
       state.actual = saved.actual || {};
       // migrate old actualNow into actual keys
@@ -92,7 +94,7 @@
   function save() {
     try {
       localStorage.setItem(LS, JSON.stringify({
-        crop: state.crop, visible: state.visible, trucking: state.trucking,
+        crop: state.crop, visible: state.visible, trucking: state.trucking, chartBoth: state.chartBoth,
         grain: state.grain, actual: state.actual,
         carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
       }));
@@ -108,6 +110,25 @@
   function cropLabel() { return cropKey() === "soybeans" ? "Soybeans" : "Corn"; }
   function stripCrop() { return cropLabel(); }
   function carry() { return state.carry[cropKey()]; }
+
+  function withCrop(crop, fn) {
+    const prev = state.crop;
+    state.crop = crop === "soybeans" ? "soybeans" : "corn";
+    try { return fn(); }
+    finally { state.crop = prev; }
+  }
+
+  function chartCrops() {
+    return state.chartBoth ? ["corn", "soybeans"] : [cropKey()];
+  }
+
+  function unionLocs() {
+    const ids = new Set();
+    chartCrops().forEach((c) => {
+      withCrop(c, () => availableLocs().forEach((id) => ids.add(id)));
+    });
+    return LOC_IDS.filter((id) => ids.has(id));
+  }
 
   function availableLocs() {
     return Object.keys(DATA.locations).filter((id) => {
@@ -322,10 +343,12 @@
     const seg = document.getElementById("cropSeg");
     seg.className = "seg " + (cropKey() === "soybeans" ? "soy" : "corn");
     seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.crop === cropKey()));
+    const both = document.getElementById("chartBoth");
+    if (both) both.checked = !!state.chartBoth;
   }
 
   function renderLocs() {
-    const avail = availableLocs();
+    const avail = unionLocs();
     document.getElementById("locs").innerHTML = avail.map((id) => {
       const on = state.visible[id] !== false;
       return `<label class="loc ${on ? "" : "off"}">
@@ -346,7 +369,7 @@
   function renderTrucking() {
     const root = document.getElementById("truckGrid");
     if (!root) return;
-    const avail = availableLocs();
+    const avail = unionLocs();
     root.innerHTML = avail.map((id) => {
       const truck = truckingFor(id);
       return `<div class="truck-card">
@@ -414,6 +437,100 @@
     el.innerHTML =
       card("Best net basis", bestBasis, (v) => cents(v, 1)) +
       card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
+    renderStorePick();
+  }
+
+  function cropStoreSnapshot(crop) {
+    return withCrop(crop, () => {
+      const bestCash = findBest("cash");
+      const bestBasis = findBest("netBasis");
+      const points = timeline();
+      const nowPt = points.find((p) => p.isNow) || points[0];
+      const locs = activeLocs();
+      const front = frontRow();
+      const nowFut = front && front.price != null ? Number(front.price) : null;
+      let nowCash = null;
+      let nowBasis = null;
+      let nowLoc = null;
+      locs.forEach((loc) => {
+        const row = buildPoint(loc, nowPt, nowFut);
+        if (row.cash != null && (nowCash == null || row.cash > nowCash)) {
+          nowCash = row.cash;
+          nowBasis = row.netBasis;
+          nowLoc = loc;
+        }
+      });
+      const cashGain = (bestCash && nowCash != null) ? bestCash.value - nowCash : null;
+      const basisGain = (bestBasis && nowBasis != null) ? bestBasis.value - nowBasis : null;
+      return {
+        crop,
+        label: crop === "soybeans" ? "Soybeans" : "Corn",
+        bestCash, bestBasis, nowCash, nowBasis, nowLoc, cashGain, basisGain,
+      };
+    });
+  }
+
+  function renderStorePick() {
+    const el = document.getElementById("storePick");
+    if (!el) return;
+    const corn = cropStoreSnapshot("corn");
+    const soy = cropStoreSnapshot("soybeans");
+
+    function fmtBest(best, kind) {
+      if (!best) return "—";
+      const v = kind === "cash" ? money(best.value, 2) + "/bu" : cents(best.value, 1);
+      return v + " · " + best.loc + " · " + best.label;
+    }
+    function fmtGain(g, kind) {
+      if (g == null || !Number.isFinite(g)) return "—";
+      if (kind === "cash") return (g >= 0 ? "+" : "") + money(g, 2) + "/bu vs sell now";
+      return (g >= 0 ? "+" : "") + g.toFixed(1) + "¢ vs sell now";
+    }
+
+    let winner = null;
+    if (corn.cashGain != null && soy.cashGain != null) winner = corn.cashGain >= soy.cashGain ? corn : soy;
+    else if (corn.cashGain != null) winner = corn;
+    else if (soy.cashGain != null) winner = soy;
+
+    let why = "Need futures and basis on both crops to compare.";
+    if (winner) {
+      const other = winner.crop === "corn" ? soy : corn;
+      const wGain = winner.cashGain;
+      const oGain = other.cashGain;
+      const later = winner.bestCash && !winner.bestCash.isNow;
+      if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
+        why = "Neither crop pays to store after trucking and hold costs — selling now beats holding both.";
+      } else if (later && winner.bestCash) {
+        const extra = (wGain - (oGain || 0));
+        why = winner.label + " stores better: holding to " + winner.bestCash.loc + " / " + winner.bestCash.label
+          + " adds " + money(wGain, 2) + "/bu vs selling now"
+          + (oGain != null ? ", " + money(Math.abs(extra), 2) + "/bu more than " + other.label.toLowerCase() + "." : ".");
+        if (wGain != null && wGain <= 0.005) {
+          why = winner.label + " is the less-bad store, but extra cash vs selling now is about zero after costs.";
+        }
+      } else {
+        why = winner.label + " wins on cash, but the best reading is already now — storing does not add money.";
+      }
+    }
+
+    el.innerHTML = `
+      <div class="winner-lab">Most profitable crop to store</div>
+      <div class="pick-val">${winner ? winner.label : "—"}</div>
+      <p class="why">${why}</p>
+      <div class="store-cmp">
+        <article class="${winner && winner.crop === "corn" ? "on" : ""}">
+          <h3>Corn</h3>
+          <div><span>Best net basis</span><b>${fmtBest(corn.bestBasis, "basis")}</b></div>
+          <div><span>Best cash</span><b>${fmtBest(corn.bestCash, "cash")}</b></div>
+          <div><span>Store vs now</span><b>${fmtGain(corn.cashGain, "cash")}</b></div>
+        </article>
+        <article class="${winner && winner.crop === "soybeans" ? "on" : ""}">
+          <h3>Soybeans</h3>
+          <div><span>Best net basis</span><b>${fmtBest(soy.bestBasis, "basis")}</b></div>
+          <div><span>Best cash</span><b>${fmtBest(soy.bestCash, "cash")}</b></div>
+          <div><span>Store vs now</span><b>${fmtGain(soy.cashGain, "cash")}</b></div>
+        </article>
+      </div>`;
   }
 
   function renderCarryForm() {
@@ -656,29 +773,59 @@
     if (typeof Chart === "undefined") return;
     const points = timeline();
     const labels = points.map((p) => p.label);
-    const front = frontRow();
-    const nowFut = front && front.price != null ? Number(front.price) : null;
-    const locs = activeLocs();
+    const both = !!state.chartBoth;
+    const crops = chartCrops();
+    const basisSets = [];
+    const cashSets = [];
 
-    const basisSets = locs.map((loc) => ({
-      label: loc,
-      data: points.map((p) => buildPoint(loc, p, nowFut).netBasis),
-      borderColor: LOC_COLORS[loc] || "#333",
-      backgroundColor: LOC_COLORS[loc] || "#333",
-      borderWidth: 2.25, pointRadius: 2.5, tension: 0.2,
-    }));
-    const cashSets = locs.map((loc) => ({
-      label: loc,
-      data: points.map((p) => buildPoint(loc, p, nowFut).cash),
-      borderColor: LOC_COLORS[loc] || "#333",
-      backgroundColor: LOC_COLORS[loc] || "#333",
-      borderWidth: 2.25, pointRadius: 2.5, tension: 0.2,
-    }));
+    crops.forEach((crop) => {
+      withCrop(crop, () => {
+        const front = frontRow();
+        const nowFut = front && front.price != null ? Number(front.price) : null;
+        const locs = activeLocs();
+        const soy = crop === "soybeans";
+        const short = soy ? "Soy" : "Corn";
+        locs.forEach((loc) => {
+          const color = LOC_COLORS[loc] || "#333";
+          const name = both ? short + " · " + loc : loc;
+          const style = {
+            label: name,
+            borderColor: color,
+            backgroundColor: color,
+            borderWidth: soy && both ? 2 : 2.25,
+            borderDash: soy && both ? [7, 4] : [],
+            pointRadius: 2.5,
+            tension: 0.2,
+            yAxisID: both && soy ? "ySoy" : "y",
+          };
+          basisSets.push({
+            ...style,
+            yAxisID: "y",
+            data: points.map((p) => buildPoint(loc, p, nowFut).netBasis),
+          });
+          cashSets.push({
+            ...style,
+            data: points.map((p) => buildPoint(loc, p, nowFut).cash),
+          });
+        });
+      });
+    });
 
     const bctx = document.getElementById("basisChart");
     const cctx = document.getElementById("cashChart");
     if (basisChart) basisChart.destroy();
     if (cashChart) cashChart.destroy();
+
+    const cashScales = both
+      ? {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Corn cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+          ySoy: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Soy cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        }
+      : {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Expected cash sale ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        };
 
     basisChart = new Chart(bctx, {
       type: "line",
@@ -722,10 +869,7 @@
             },
           },
         },
-        scales: {
-          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
-          y: { title: { display: true, text: "Expected cash sale ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
-        },
+        scales: cashScales,
       },
     });
   }
@@ -855,6 +999,7 @@
       crop: state.crop,
       visible: state.visible,
       trucking: state.trucking,
+      chartBoth: state.chartBoth,
       grain: state.grain,
       actual: state.actual,
       carry: state.carry,
@@ -876,6 +1021,7 @@
     if (!data || typeof data !== "object") throw new Error("Not a worksheet file.");
     if (data.crop) state.crop = data.crop;
     if (data.visible) state.visible = { ...state.visible, ...data.visible };
+    if (data.chartBoth != null) state.chartBoth = !!data.chartBoth;
     if (data.trucking && typeof data.trucking === "object") {
       LOC_IDS.forEach((id) => {
         const v = num(data.trucking[id]);
@@ -1016,6 +1162,23 @@
         )}
       </div>`;
 
+    const cornSnap = cropStoreSnapshot("corn");
+    const soySnap = cropStoreSnapshot("soybeans");
+    const storeEl = document.getElementById("storePick");
+    const storeWhy = storeEl ? (storeEl.querySelector(".why") || {}).textContent || "" : "";
+    const storeVal = storeEl ? (storeEl.querySelector(".pick-val") || {}).textContent || "—" : "—";
+    const storeHtml = `
+      <h2>Most profitable crop to store</h2>
+      <p><strong>${esc(storeVal)}</strong> — ${esc(storeWhy)}</p>
+      <div class="grid-print">
+        <div>Corn best basis ${esc(cornSnap.bestBasis ? cents(cornSnap.bestBasis.value, 1) + " · " + cornSnap.bestBasis.loc + " · " + cornSnap.bestBasis.label : "—")}<br/>
+        Corn best cash ${esc(cornSnap.bestCash ? money(cornSnap.bestCash.value, 2) + "/bu · " + cornSnap.bestCash.loc + " · " + cornSnap.bestCash.label : "—")}<br/>
+        Store vs now ${esc(cornSnap.cashGain != null ? money(cornSnap.cashGain, 2) + "/bu" : "—")}</div>
+        <div>Soy best basis ${esc(soySnap.bestBasis ? cents(soySnap.bestBasis.value, 1) + " · " + soySnap.bestBasis.loc + " · " + soySnap.bestBasis.label : "—")}<br/>
+        Soy best cash ${esc(soySnap.bestCash ? money(soySnap.bestCash.value, 2) + "/bu · " + soySnap.bestCash.loc + " · " + soySnap.bestCash.label : "—")}<br/>
+        Store vs now ${esc(soySnap.cashGain != null ? money(soySnap.cashGain, 2) + "/bu" : "—")}</div>
+      </div>`;
+
     const chartsHtml = `
       <h2>Charts</h2>
       <div class="grid-print">
@@ -1071,6 +1234,7 @@
       <h1>Grain Marketing Decisions</h1>
       <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
       ${winnersHtml}
+      ${storeHtml}
       ${chartsHtml}
       ${metricsHtml}
       ${explainHtml}
@@ -1099,6 +1263,14 @@
     save();
     refresh({ reread: false, forms: true });
   });
+  const bothEl = document.getElementById("chartBoth");
+  if (bothEl) {
+    bothEl.addEventListener("change", () => {
+      state.chartBoth = bothEl.checked;
+      save();
+      refresh({ reread: false, forms: false, locs: true });
+    });
+  }
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
   document.getElementById("btnSave").addEventListener("click", saveWorksheetFile);
   document.getElementById("btnLoad").addEventListener("click", () => document.getElementById("fileLoad").click());
