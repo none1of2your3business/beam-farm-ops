@@ -279,6 +279,10 @@ def _parse_chart_payload(data: dict[str, Any], ticker: str) -> Optional[dict[str
         open_px = meta.get("regularMarketOpen") or meta.get("open")
         high_52 = meta.get("fiftyTwoWeekHigh")
         low_52 = meta.get("fiftyTwoWeekLow")
+        market_time = meta.get("regularMarketTime")
+
+        # Last trade: prefer regularMarketPrice, then the latest bar close.
+        # Never use previous close as the last price (that looks a day old).
 
         # Fill gaps from daily bars when meta is thin
         try:
@@ -332,7 +336,7 @@ def _parse_chart_payload(data: dict[str, Any], ticker: str) -> Optional[dict[str
             "low_52w": low_d,
             "ticker": ticker,
             "source": "yahoo_delayed",
-            "as_of": datetime.now(timezone.utc),
+            "as_of": datetime.fromtimestamp(int(market_time), tz=timezone.utc) if market_time else datetime.now(timezone.utc),
             "currency": currency or None,
         }
     except Exception:
@@ -488,19 +492,23 @@ def _quote_one_impl(ticker: str) -> Optional[dict[str, Any]]:
     for cand in _ticker_candidates(ticker):
         enc = quote(cand, safe="")
         for host in _yahoo_chart_hosts():
-            url = f"{host}/v8/finance/chart/{enc}?interval=1d&range=10d"
-            status, data = _http_get_json(url, timeout=14.0)
-            if status == 200 and data:
-                parsed = _parse_chart_payload(data, cand)
-                if parsed:
-                    return parsed
-            if status == 429:
-                saw_rate_limit = True
-                time.sleep(0.35)
-                continue
-            if status in (500, 502, 503, 504, 0):
-                time.sleep(0.2)
-                continue
+            for qs in (
+                "interval=1m&range=1d&includePrePost=true",
+                "interval=1d&range=5d",
+            ):
+                url = f"{host}/v8/finance/chart/{enc}?{qs}"
+                status, data = _http_get_json(url, timeout=14.0)
+                if status == 200 and data:
+                    parsed = _parse_chart_payload(data, cand)
+                    if parsed:
+                        return parsed
+                if status == 429:
+                    saw_rate_limit = True
+                    time.sleep(0.35)
+                    continue
+                if status in (500, 502, 503, 504, 0):
+                    time.sleep(0.2)
+                    continue
 
     # HTML fallback — only some deferred months are listed on Yahoo's HTML pages
     html_q = _quote_from_yahoo_html(ticker)
@@ -712,6 +720,7 @@ def fetch_hold_sell_quotes(max_seconds: float = 45.0) -> dict[str, Any]:
     deadline = time.monotonic() + max(8.0, float(max_seconds or 45.0))
     timed_out = False
     any_price = False
+    latest_trade = None
     for crop in ("Corn", "Soybeans"):
         rows: list[dict[str, Any]] = []
         for meta in strip_contracts(crop, horizon_months=18):
@@ -725,6 +734,10 @@ def fetch_hold_sell_quotes(max_seconds: float = 45.0) -> dict[str, Any]:
             change = q["change"] if q else None
             if price is not None:
                 any_price = True
+            if q and q.get("as_of"):
+                ts = q["as_of"]
+                if latest_trade is None or ts > latest_trade:
+                    latest_trade = ts
             rows.append({**meta, "price": price, "change": change})
             time.sleep(0.12 if q is not None else 0.08)
         out["strip"][crop] = rows
@@ -733,6 +746,9 @@ def fetch_hold_sell_quotes(max_seconds: float = 45.0) -> dict[str, Any]:
     if remaining > 1.5:
         out["history"]["Corn"] = _weekly_history(TICKERS["Corn"])
         out["history"]["Soybeans"] = _weekly_history(TICKERS["Soybeans"])
+
+    if latest_trade is not None:
+        out["as_of"] = latest_trade.isoformat() if hasattr(latest_trade, "isoformat") else str(latest_trade)
 
     if timed_out and not any_price:
         out["error"] = "quote fetch timed out"

@@ -1678,71 +1678,150 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
     }
   }
 
-  function toBu(raw) {
+  function toBu(raw, currency) {
     if (raw == null) return null;
     const v = Number(raw);
     if (!Number.isFinite(v)) return null;
-    return Math.round((v > 40 ? v / 100 : v) * 10000) / 10000;
+    const usx = String(currency || "").toUpperCase() === "USX" || v > 40;
+    const px = usx ? v / 100 : v;
+    return Math.round(px * 10000) / 10000;
+  }
+
+  function parseYahooChart(data) {
+    if (data && typeof data.contents === "string") {
+      try { data = JSON.parse(data.contents); } catch (e) { return null; }
+    }
+    const result = (((data || {}).chart || {}).result || [])[0];
+    if (!result) return null;
+    const meta = result.meta || {};
+    const quote = ((result.indicators || {}).quote || [])[0] || {};
+    const closes = (quote.close || []).filter((c) => c != null && Number.isFinite(Number(c)));
+    let last = meta.regularMarketPrice;
+    if (last == null && closes.length) last = closes[closes.length - 1];
+    if (last == null) return null;
+    const prev = meta.chartPreviousClose ?? meta.previousClose ?? (closes.length > 1 ? closes[closes.length - 2] : null);
+    const currency = meta.currency;
+    const price = toBu(last, currency);
+    const prevPx = toBu(prev, currency);
+    const t = meta.regularMarketTime;
+    return {
+      price,
+      change: price != null && prevPx != null ? Math.round((price - prevPx) * 10000) / 10000 : null,
+      asOf: t ? new Date(Number(t) * 1000).toISOString() : null,
+    };
+  }
+
+  async function fetchJson(url) {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return null;
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    const text = await r.text();
+    if (!text) return null;
+    if (ct.includes("html") && text.trim().startsWith("<")) return null;
+    try { return JSON.parse(text); } catch (e) { return null; }
   }
 
   async function fetchYahooTicker(ticker) {
-    const url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(ticker) + "?interval=1d&range=5d";
-    const proxies = [url, "https://corsproxy.io/?" + encodeURIComponent(url), "https://api.allorigins.win/raw?url=" + encodeURIComponent(url)];
-    for (const u of proxies) {
+    const bust = Date.now();
+    const symbols = [];
+    const t = String(ticker || "").trim();
+    if (t) symbols.push(t);
+    if (t.endsWith(".CBT")) symbols.push(t.slice(0, -4));
+    const charts = [];
+    symbols.forEach((sym) => {
+      const enc = encodeURIComponent(sym);
+      charts.push(`https://query2.finance.yahoo.com/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=true&_=${bust}`);
+      charts.push(`https://query1.finance.yahoo.com/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=true&_=${bust}`);
+      charts.push(`https://query2.finance.yahoo.com/v8/finance/chart/${enc}?interval=1d&range=5d&_=${bust}`);
+    });
+    const urls = [];
+    charts.forEach((url) => {
+      urls.push(url);
+      urls.push("https://corsproxy.io/?" + encodeURIComponent(url));
+      urls.push("https://api.allorigins.win/raw?url=" + encodeURIComponent(url));
+    });
+    for (const u of urls) {
       try {
-        const r = await fetch(u);
-        if (!r.ok) continue;
-        const data = await r.json();
-        const meta = (((data.chart || {}).result) || [])[0];
-        if (!meta || !meta.meta) continue;
-        const last = meta.meta.regularMarketPrice || meta.meta.chartPreviousClose;
-        const prev = meta.meta.chartPreviousClose;
-        return { price: toBu(last), change: last != null && prev != null ? toBu(last) - toBu(prev) : null };
+        const data = await fetchJson(u);
+        const parsed = parseYahooChart(data);
+        if (parsed && parsed.price != null) return parsed;
       } catch (e) { /* next */ }
     }
     return null;
   }
 
+  async function mapPool(items, limit, fn) {
+    const out = new Array(items.length);
+    let i = 0;
+    async function worker() {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
+    }
+    const n = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: n }, () => worker()));
+    return out;
+  }
+
   async function updateFromYahoo() {
     const next = { Corn: [], Soybeans: [] };
+    let ok = 0;
+    let latestAsOf = null;
+    let tried = 0;
     for (const crop of ["Corn", "Soybeans"]) {
       const rows = (state.strip[crop] || DATA.strip[crop] || []).map((r) => ({ ...r }));
-      for (const row of rows) {
+      await mapPool(rows, 4, async (row) => {
+        tried += 1;
         const q = await fetchYahooTicker(row.ticker);
-        if (q && q.price != null) { row.price = q.price; row.change = q.change; }
-      }
+        if (q && q.price != null) {
+          row.price = q.price;
+          row.change = q.change;
+          ok += 1;
+          if (q.asOf && (!latestAsOf || q.asOf > latestAsOf)) latestAsOf = q.asOf;
+        }
+      });
       next[crop] = rows;
     }
+    if (ok === 0) {
+      throw new Error("Yahoo did not return any last trades. Prices on screen were left unchanged.");
+    }
     state.strip = next;
-    state.quoteAsOf = new Date().toISOString();
+    state.quoteAsOf = latestAsOf || new Date().toISOString();
+    return { ok, tried, asOf: state.quoteAsOf };
   }
 
   async function updateFutures() {
     const btn = document.getElementById("btnUpdate");
     btn.disabled = true;
-    setStatus("Updating delayed CME prices…");
+    setStatus("Updating delayed CME last trades…");
     try {
       let usedLive = false;
       try {
-        const r = await fetch("/risk/hold-sell/quotes", { credentials: "same-origin" });
-        if (r.ok) {
+        const r = await fetch("/risk/hold-sell/quotes", { credentials: "same-origin", cache: "no-store" });
+        const ct = (r.headers.get("content-type") || "").toLowerCase();
+        if (r.ok && ct.includes("json")) {
           const data = await r.json();
-          if (data.strip) state.strip = data.strip;
-          if (data.history && (data.history.Corn || []).length) state.history = data.history;
-          state.quoteAsOf = data.as_of || new Date().toISOString();
-          if (data.error) setStatus(data.error + " — showing what loaded.", true);
-          else setStatus("Futures updated.");
-          usedLive = true;
+          const priced = ["Corn", "Soybeans"].reduce((n, crop) => n + ((data.strip || {})[crop] || []).filter((x) => x && x.price != null).length, 0);
+          if (priced > 0 && data.strip) {
+            state.strip = data.strip;
+            if (data.history && (data.history.Corn || []).length) state.history = data.history;
+            state.quoteAsOf = data.as_of || new Date().toISOString();
+            if (data.error) setStatus(data.error + " — showing last trades that loaded.", true);
+            else setStatus("Futures updated from delayed last trade (" + priced + " contracts).");
+            usedLive = true;
+          }
         }
-      } catch (e) { /* fall through */ }
+      } catch (e) { /* fall through to browser Yahoo fetch */ }
       if (!usedLive) {
-        await updateFromYahoo();
-        setStatus("Futures updated from delayed Yahoo quotes.");
+        const res = await updateFromYahoo();
+        const when = res.asOf ? String(res.asOf).replace("T", " ").slice(0, 16) + " UTC" : "";
+        setStatus("Updated " + res.ok + "/" + res.tried + " contracts from Yahoo last trade" + (when ? " · " + when : "") + " (delayed ~10–20 min).");
       }
       save();
       refresh({ reread: false, forms: false });
     } catch (e) {
-      setStatus("Could not reach a quote feed. Type strip prices by hand.", true);
+      setStatus(String(e && e.message ? e.message : e) + " You can still type strip prices by hand.", true);
     } finally {
       btn.disabled = false;
     }
