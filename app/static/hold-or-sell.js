@@ -744,15 +744,12 @@
       return;
     }
 
-    // Header: location name on top spanning both columns, then Hist / Actual under it
-    let head = "<tr><th class='l' rowspan='2'>Time period</th>";
+    // Header: location name sits over the Actual (entry) column; Hist is the read-only neighbor
+    let head = "<tr><th class='l'>Time period</th>";
     locs.forEach((loc) => {
       const color = LOC_COLORS[loc] || "#666";
-      head += `<th class="loc" colspan="2"><span class="loc-dot" style="background:${color}"></span>${loc}</th>`;
-    });
-    head += "</tr><tr>";
-    locs.forEach(() => {
-      head += "<th class='sub'>Historical ¢</th><th class='sub'>Actual ¢</th>";
+      head += "<th class='sub'>Hist ¢</th>";
+      head += `<th class="loc"><span class="loc-dot" style="background:${color}"></span>${loc}<span class="loc-sub">Actual ¢</span></th>`;
     });
     head += "</tr>";
     if (thead) thead.innerHTML = head;

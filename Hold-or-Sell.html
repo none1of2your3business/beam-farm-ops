@@ -146,8 +146,40 @@
   }
   .qchip strong { font-size: 0.82rem; }
   .qchip select { padding: 4px 6px; }
-  .table-wrap { overflow-x: auto; max-height: 520px; }
+  .table-wrap { overflow-x: auto; max-height: 520px; -webkit-overflow-scrolling: touch; }
   .basis-mobile { display: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+  th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #d7e4db; white-space: nowrap; }
+  th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 700; }
+  td:first-child, th:first-child, td.l, th.l { text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }
+  thead th { position: sticky; top: 0; background: #f3f8f4; z-index: 2; }
+  thead th:first-child { z-index: 3; }
+  th.loc {
+    background: #e8f2ea; color: var(--ink); border-bottom: 2px solid var(--accent);
+    border-left: 1px solid rgba(13, 107, 56, 0.18);
+    font-family: var(--display); font-size: 1.05rem; font-weight: 700;
+    text-transform: none; letter-spacing: -0.01em; padding: 8px 10px 6px;
+    text-align: center; min-width: 7.2rem; vertical-align: bottom;
+  }
+  th.loc .loc-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  th.loc .loc-sub {
+    display: block; margin-top: 2px;
+    font-family: inherit; font-size: 0.65rem; font-weight: 650;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+  }
+  th.sub {
+    font-size: 0.68rem; font-weight: 650; background: #f3f8f4; color: var(--muted);
+    vertical-align: bottom; min-width: 4.4rem;
+    border-left: 1px solid rgba(13, 107, 56, 0.18);
+  }
+  td.act-on { background: #e5f6ea; }
+  td.hist { color: var(--muted); border-left: 1px solid rgba(13, 107, 56, 0.18); }
+  td input.basis { width: 76px; text-align: right; padding: 5px 6px; font-weight: 600; }
+  tr.now td { background: #fff7e0; }
+  tr.now td:first-child { background: #fff7e0; }
   .bm-pin {
     position: sticky; top: 0; z-index: 40;
     display: none; align-items: center; gap: 10px;
@@ -184,35 +216,6 @@
   .bm-act { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
   .bm-act span { font-size: 0.68rem; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
   .bm-act input.basis { width: 88px; text-align: right; padding: 7px 8px; font-weight: 700; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
-  th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #d7e4db; white-space: nowrap; }
-  th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 700; }
-  td:first-child, th:first-child, td.l, th.l { text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }
-  thead th { position: sticky; top: 0; background: #f3f8f4; z-index: 2; }
-  thead tr:first-child th { top: 0; }
-  thead tr:nth-child(2) th { top: 40px; }
-  thead th:first-child { z-index: 3; }
-  th.loc {
-    background: #e8f2ea; color: var(--ink); border-bottom: 1px solid var(--line);
-    border-left: 2px solid rgba(13, 107, 56, 0.22);
-    font-family: var(--display); font-size: 1.05rem; font-weight: 700;
-    text-transform: none; letter-spacing: -0.01em; padding: 10px 8px;
-  }
-  th.loc .loc-dot {
-    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    margin-right: 6px; vertical-align: middle;
-  }
-  th.sub {
-    font-size: 0.68rem; font-weight: 650; background: #f3f8f4;
-  }
-  thead tr:nth-child(2) th.sub:nth-child(odd) {
-    border-left: 2px solid rgba(13, 107, 56, 0.22);
-  }
-  tr.now td { background: #fff7e0; }
-  tr.now td:first-child { background: #fff7e0; }
-  td input.basis { width: 76px; text-align: right; padding: 5px 6px; font-weight: 600; }
-  td.hist { color: var(--muted); }
-  td.act-on { background: #e5f6ea; }
   .footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin-top: 8px; }
   .status { font-size: 0.82rem; color: var(--muted); }
   .status.err { color: var(--bad); }
@@ -256,11 +259,8 @@
   @media (max-width: 760px) {
     .grid-2, .carry-grid, .winners-grid, .store-cmp { grid-template-columns: 1fr; }
     .rate-box { grid-column: span 1; }
-    .table-wrap.basis-desktop { display: none; }
-    .basis-mobile { display: block; }
     .hint-desktop { display: none; }
     .hint-mobile { display: block; }
-    .bm-pin.on { display: flex; }
   }
   .hint-mobile { display: none; }
 </style>
@@ -372,8 +372,8 @@
         <h2 style="margin:0;font-size:1.15rem">Actual basis entry</h2>
         <span class="pill">Actual replaces historical for that window only</span>
       </div>
-      <p class="hint hint-desktop">Location names sit over each column pair (Historical ¢ | Actual ¢). Enter ¢/bu under Actual; leave blank to keep historical.</p>
-      <p class="hint hint-mobile">Each elevator is its own block. The location name stays pinned at the top while you scroll and type Actual ¢.</p>
+      <p class="hint hint-desktop">Each location name sits over its Actual ¢ column — type there. Hist ¢ is seasonal history. Leave Actual blank to keep historical.</p>
+      <p class="hint hint-mobile">Scroll sideways if needed. The location name is the header over the box you type in.</p>
       <div class="quarters" id="quarters"></div>
       <div class="table-wrap basis-desktop">
         <table id="basisTable">
@@ -1155,15 +1155,12 @@ window.HOLD_SELL_DATA = {"generated":"2026-08-16T13:11:04Z","source":"Grain_Basi
       return;
     }
 
-    // Header: location name on top spanning both columns, then Hist / Actual under it
-    let head = "<tr><th class='l' rowspan='2'>Time period</th>";
+    // Header: location name sits over the Actual (entry) column; Hist is the read-only neighbor
+    let head = "<tr><th class='l'>Time period</th>";
     locs.forEach((loc) => {
       const color = LOC_COLORS[loc] || "#666";
-      head += `<th class="loc" colspan="2"><span class="loc-dot" style="background:${color}"></span>${loc}</th>`;
-    });
-    head += "</tr><tr>";
-    locs.forEach(() => {
-      head += "<th class='sub'>Historical ¢</th><th class='sub'>Actual ¢</th>";
+      head += "<th class='sub'>Hist ¢</th>";
+      head += `<th class="loc"><span class="loc-dot" style="background:${color}"></span>${loc}<span class="loc-sub">Actual ¢</span></th>`;
     });
     head += "</tr>";
     if (thead) thead.innerHTML = head;
