@@ -29,6 +29,8 @@
     visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
     trucking: defaultTrucking(),
     chartBoth: false,
+    storeDays: 90,
+    storeBestAny: false,
     grain: {},
     actual: {},
     carry: {
@@ -46,6 +48,8 @@
       state.crop = saved.crop || state.crop;
       state.visible = { ...state.visible, ...(saved.visible || {}) };
       if (saved.chartBoth != null) state.chartBoth = !!saved.chartBoth;
+      if (saved.storeDays != null && Number.isFinite(Number(saved.storeDays))) state.storeDays = Number(saved.storeDays);
+      if (saved.storeBestAny != null) state.storeBestAny = !!saved.storeBestAny;
       state.grain = saved.grain || {};
       state.actual = saved.actual || {};
       // migrate old actualNow into actual keys
@@ -95,6 +99,7 @@
     try {
       localStorage.setItem(LS, JSON.stringify({
         crop: state.crop, visible: state.visible, trucking: state.trucking, chartBoth: state.chartBoth,
+        storeDays: state.storeDays, storeBestAny: state.storeBestAny,
         grain: state.grain, actual: state.actual,
         carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
       }));
@@ -437,13 +442,38 @@
     el.innerHTML =
       card("Best net basis", bestBasis, (v) => cents(v, 1)) +
       card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
-    renderStorePick();
   }
 
-  function cropStoreSnapshot(crop) {
+  function pointDays(p) {
+    return p.isNow ? 0 : Math.max(0, Math.round((p.date - today()) / 86400000));
+  }
+
+  function findBestCapped(metric, maxDays) {
+    const cap = maxDays == null || !Number.isFinite(maxDays) ? Infinity : Math.max(0, maxDays);
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const d = pointDays(p);
+        if (d > cap) return;
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key, days: d };
+        }
+      });
+    });
+    return best;
+  }
+
+  function cropStoreSnapshot(crop, maxDays) {
     return withCrop(crop, () => {
-      const bestCash = findBest("cash");
-      const bestBasis = findBest("netBasis");
+      const bestCash = findBestCapped("cash", maxDays);
+      const bestBasis = findBestCapped("netBasis", maxDays);
       const points = timeline();
       const nowPt = points.find((p) => p.isNow) || points[0];
       const locs = activeLocs();
@@ -470,67 +500,89 @@
     });
   }
 
-  function renderStorePick() {
-    const el = document.getElementById("storePick");
-    if (!el) return;
-    const corn = cropStoreSnapshot("corn");
-    const soy = cropStoreSnapshot("soybeans");
-
-    function fmtBest(best, kind) {
-      if (!best) return "—";
-      const v = kind === "cash" ? money(best.value, 2) + "/bu" : cents(best.value, 1);
-      return v + " · " + best.loc + " · " + best.label;
-    }
-    function fmtGain(g, kind) {
-      if (g == null || !Number.isFinite(g)) return "—";
-      if (kind === "cash") return (g >= 0 ? "+" : "") + money(g, 2) + "/bu vs sell now";
-      return (g >= 0 ? "+" : "") + g.toFixed(1) + "¢ vs sell now";
-    }
-
+  function pickStoreWinner(corn, soy) {
     let winner = null;
     if (corn.cashGain != null && soy.cashGain != null) winner = corn.cashGain >= soy.cashGain ? corn : soy;
     else if (corn.cashGain != null) winner = corn;
     else if (soy.cashGain != null) winner = soy;
-
+    const other = winner ? (winner.crop === "corn" ? soy : corn) : null;
     let why = "Need futures and basis on both crops to compare.";
     if (winner) {
-      const other = winner.crop === "corn" ? soy : corn;
       const wGain = winner.cashGain;
-      const oGain = other.cashGain;
+      const oGain = other && other.cashGain;
       const later = winner.bestCash && !winner.bestCash.isNow;
       if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
-        why = "Neither crop pays to store after trucking and hold costs — selling now beats holding both.";
+        why = "Neither crop pays to store after costs — sell now beats holding both.";
       } else if (later && winner.bestCash) {
-        const extra = (wGain - (oGain || 0));
-        why = winner.label + " stores better: holding to " + winner.bestCash.loc + " / " + winner.bestCash.label
-          + " adds " + money(wGain, 2) + "/bu vs selling now"
-          + (oGain != null ? ", " + money(Math.abs(extra), 2) + "/bu more than " + other.label.toLowerCase() + "." : ".");
+        why = winner.label + " at " + winner.bestCash.loc + " on " + winner.bestCash.label
+          + " (" + winner.bestCash.days + " days) adds " + money(wGain, 2) + "/bu vs selling now.";
+        if (oGain != null) why += " That is " + money(Math.abs(wGain - oGain), 2) + "/bu more than " + other.label.toLowerCase() + ".";
         if (wGain != null && wGain <= 0.005) {
-          why = winner.label + " is the less-bad store, but extra cash vs selling now is about zero after costs.";
+          why = winner.label + " is the less-bad store, but extra cash vs now is about zero after costs.";
         }
       } else {
-        why = winner.label + " wins on cash, but the best reading is already now — storing does not add money.";
+        why = winner.label + " wins, but the best cash is already now — storing does not add money.";
       }
     }
+    return { winner, why, corn, soy };
+  }
 
-    el.innerHTML = `
-      <div class="winner-lab">Most profitable crop to store</div>
-      <div class="pick-val">${winner ? winner.label : "—"}</div>
-      <p class="why">${why}</p>
-      <div class="store-cmp">
-        <article class="${winner && winner.crop === "corn" ? "on" : ""}">
-          <h3>Corn</h3>
-          <div><span>Best net basis</span><b>${fmtBest(corn.bestBasis, "basis")}</b></div>
-          <div><span>Best cash</span><b>${fmtBest(corn.bestCash, "cash")}</b></div>
-          <div><span>Store vs now</span><b>${fmtGain(corn.cashGain, "cash")}</b></div>
-        </article>
-        <article class="${winner && winner.crop === "soybeans" ? "on" : ""}">
-          <h3>Soybeans</h3>
-          <div><span>Best net basis</span><b>${fmtBest(soy.bestBasis, "basis")}</b></div>
-          <div><span>Best cash</span><b>${fmtBest(soy.bestCash, "cash")}</b></div>
-          <div><span>Store vs now</span><b>${fmtGain(soy.cashGain, "cash")}</b></div>
-        </article>
-      </div>`;
+  function renderStorePick() {
+    const daysEl = document.getElementById("storeDays");
+    const anyEl = document.getElementById("storeBestAny");
+    const windowOut = document.getElementById("storeWindowOut");
+    const anyOut = document.getElementById("storeAnyOut");
+    if (!windowOut) return;
+
+    if (daysEl && document.activeElement !== daysEl) {
+      daysEl.value = state.storeDays == null ? "" : String(state.storeDays);
+    }
+    if (anyEl) anyEl.checked = !!state.storeBestAny;
+
+    const days = num(state.storeDays);
+    const cap = days != null ? Math.max(0, days) : null;
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", cap), cropStoreSnapshot("soybeans", cap));
+
+    function resultHtml(title, pick, rangeNote) {
+      const w = pick.winner;
+      if (!w) {
+        return `<div class="winner-lab">${title}</div>
+          <div class="pick-val">—</div>
+          <p class="why">${pick.why}</p>`;
+      }
+      const when = w.bestCash ? w.bestCash.loc + " · " + w.bestCash.label + " · " + w.bestCash.days + " days" : "";
+      return `<div class="winner-lab">${title}</div>
+        <div class="pick-val">${w.label}</div>
+        <div class="meta-line">${when}</div>
+        <p class="why">${pick.why} ${rangeNote || ""}</p>`;
+    }
+
+    if (cap == null) {
+      windowOut.innerHTML = `<div class="winner-lab">Best crop in your store window</div>
+        <div class="pick-val">—</div>
+        <p class="why">Enter how many days you can store (example: 90).</p>`;
+    } else {
+      windowOut.innerHTML = resultHtml(
+        "Best crop in 0–" + cap + " days",
+        windowPick,
+        "Only windows from now through " + cap + " days are counted."
+      );
+    }
+
+    if (anyOut) {
+      if (state.storeBestAny) {
+        anyOut.hidden = false;
+        const anyPick = pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null));
+        anyOut.innerHTML = resultHtml(
+          "Best crop and time (any window)",
+          anyPick,
+          "Looks at every move window on the charts, not just your day limit."
+        );
+      } else {
+        anyOut.hidden = true;
+        anyOut.innerHTML = "";
+      }
+    }
   }
 
   function renderCarryForm() {
@@ -900,6 +952,7 @@
       renderQuarters();
       if (basis) renderBasisEntry();
       renderWinners();
+      renderStorePick();
       renderCharts();
       renderFooter();
       save();
@@ -1000,6 +1053,8 @@
       visible: state.visible,
       trucking: state.trucking,
       chartBoth: state.chartBoth,
+      storeDays: state.storeDays,
+      storeBestAny: state.storeBestAny,
       grain: state.grain,
       actual: state.actual,
       carry: state.carry,
@@ -1022,6 +1077,8 @@
     if (data.crop) state.crop = data.crop;
     if (data.visible) state.visible = { ...state.visible, ...data.visible };
     if (data.chartBoth != null) state.chartBoth = !!data.chartBoth;
+    if (data.storeDays != null && Number.isFinite(Number(data.storeDays))) state.storeDays = Number(data.storeDays);
+    if (data.storeBestAny != null) state.storeBestAny = !!data.storeBestAny;
     if (data.trucking && typeof data.trucking === "object") {
       LOC_IDS.forEach((id) => {
         const v = num(data.trucking[id]);
@@ -1162,22 +1219,21 @@
         )}
       </div>`;
 
-    const cornSnap = cropStoreSnapshot("corn");
-    const soySnap = cropStoreSnapshot("soybeans");
-    const storeEl = document.getElementById("storePick");
-    const storeWhy = storeEl ? (storeEl.querySelector(".why") || {}).textContent || "" : "";
-    const storeVal = storeEl ? (storeEl.querySelector(".pick-val") || {}).textContent || "—" : "—";
+    const daysCap = num(state.storeDays);
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", daysCap), cropStoreSnapshot("soybeans", daysCap));
+    const anyPick = state.storeBestAny
+      ? pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null))
+      : null;
+    function printPick(title, pick) {
+      if (!pick || !pick.winner) return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>`;
+      const w = pick.winner;
+      const when = w.bestCash ? `${w.bestCash.loc} · ${w.bestCash.label} · ${w.bestCash.days} days` : "";
+      return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>`;
+    }
     const storeHtml = `
       <h2>Most profitable crop to store</h2>
-      <p><strong>${esc(storeVal)}</strong> — ${esc(storeWhy)}</p>
-      <div class="grid-print">
-        <div>Corn best basis ${esc(cornSnap.bestBasis ? cents(cornSnap.bestBasis.value, 1) + " · " + cornSnap.bestBasis.loc + " · " + cornSnap.bestBasis.label : "—")}<br/>
-        Corn best cash ${esc(cornSnap.bestCash ? money(cornSnap.bestCash.value, 2) + "/bu · " + cornSnap.bestCash.loc + " · " + cornSnap.bestCash.label : "—")}<br/>
-        Store vs now ${esc(cornSnap.cashGain != null ? money(cornSnap.cashGain, 2) + "/bu" : "—")}</div>
-        <div>Soy best basis ${esc(soySnap.bestBasis ? cents(soySnap.bestBasis.value, 1) + " · " + soySnap.bestBasis.loc + " · " + soySnap.bestBasis.label : "—")}<br/>
-        Soy best cash ${esc(soySnap.bestCash ? money(soySnap.bestCash.value, 2) + "/bu · " + soySnap.bestCash.loc + " · " + soySnap.bestCash.label : "—")}<br/>
-        Store vs now ${esc(soySnap.cashGain != null ? money(soySnap.cashGain, 2) + "/bu" : "—")}</div>
-      </div>`;
+      ${printPick(daysCap != null ? "Best crop in 0–" + daysCap + " days" : "Store window", windowPick)}
+      ${anyPick ? printPick("Best crop and time (any window)", anyPick) : ""}`;
 
     const chartsHtml = `
       <h2>Charts</h2>
@@ -1269,6 +1325,24 @@
       state.chartBoth = bothEl.checked;
       save();
       refresh({ reread: false, forms: false, locs: true });
+    });
+  }
+  const storeDaysEl = document.getElementById("storeDays");
+  if (storeDaysEl) {
+    const applyDays = () => {
+      state.storeDays = num(storeDaysEl.value);
+      save();
+      renderStorePick();
+    };
+    storeDaysEl.addEventListener("input", applyDays);
+    storeDaysEl.addEventListener("change", applyDays);
+  }
+  const storeAnyEl = document.getElementById("storeBestAny");
+  if (storeAnyEl) {
+    storeAnyEl.addEventListener("change", () => {
+      state.storeBestAny = storeAnyEl.checked;
+      save();
+      renderStorePick();
     });
   }
   document.getElementById("btnUpdate").addEventListener("click", updateFutures);
