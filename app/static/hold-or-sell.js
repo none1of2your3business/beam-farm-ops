@@ -902,7 +902,7 @@
         const actualVal = state.actual[key] ?? "";
         const usingAct = num(actualVal) != null;
         html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
-        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="—" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
       });
       html += "</tr>";
     });
@@ -925,7 +925,7 @@
             <div class="bm-when">${p.label}</div>
             <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
             <label class="bm-act"><span>Actual ¢</span>
-              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="¢" title="Actual basis · ${loc} · ${p.label}" aria-label="Actual basis cents for ${loc} at ${p.label}" />
+              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" />
             </label>
           </div>`;
         });
@@ -968,7 +968,7 @@
           ? [{ axis: "y" }, { axis: "ySoy" }]
           : [{ axis: "y" }];
         const ctx = chart.ctx;
-        const boxes = [];
+        const peaks = [];
         groups.forEach((g) => {
           const scale = chart.scales[g.axis];
           if (!scale) return;
@@ -983,23 +983,69 @@
             });
           });
           if (!best) return;
-          const x = xScale.getPixelForValue(best.i);
-          const y = scale.getPixelForValue(best.v);
-          const color = best.ds.borderColor || "#0d6b38";
-          const when = (chart.data.labels || [])[best.i] || "";
-          const valTxt = kind === "basis" ? cents(best.v, 1) : money(best.v, 2) + "/bu";
-          const line1 = "High  " + valTxt;
-          const line2 = (best.ds.label || "") + (when ? " · " + when : "");
+          peaks.push({
+            x: xScale.getPixelForValue(best.i),
+            y: scale.getPixelForValue(best.v),
+            color: best.ds.borderColor || "#0d6b38",
+            line1: "High  " + (kind === "basis" ? cents(best.v, 1) : money(best.v, 2) + "/bu"),
+            line2: (best.ds.label || "") + ((chart.data.labels || [])[best.i] ? " · " + chart.data.labels[best.i] : ""),
+          });
+        });
+        if (!peaks.length) return;
+
+        const th = 36;
+        const gap = 8;
+        const canvasW = chart.width;
+        peaks.sort((a, b) => a.x - b.x);
+        peaks.forEach((p) => {
+          ctx.font = "700 11px system-ui, sans-serif";
+          const w1 = ctx.measureText(p.line1).width;
+          ctx.font = "650 10px system-ui, sans-serif";
+          const w2 = ctx.measureText(p.line2).width;
+          p.tw = Math.min(Math.max(w1, w2) + 16, Math.max(120, canvasW - 16));
+          p.lx = p.x - p.tw / 2;
+        });
+        if (peaks[0].lx < 6) peaks[0].lx = 6;
+        for (let i = 1; i < peaks.length; i++) {
+          const minL = peaks[i - 1].lx + peaks[i - 1].tw + gap;
+          if (peaks[i].lx < minL) peaks[i].lx = minL;
+        }
+        const last = peaks[peaks.length - 1];
+        if (last.lx + last.tw > canvasW - 6) {
+          last.lx = canvasW - 6 - last.tw;
+          for (let i = peaks.length - 2; i >= 0; i--) {
+            const maxL = peaks[i + 1].lx - peaks[i].tw - gap;
+            if (peaks[i].lx > maxL) peaks[i].lx = Math.max(6, maxL);
+          }
+        }
+
+        peaks.forEach((p) => {
+          const ly = Math.max(4, area.top - th - 8);
+          const color = p.color;
+          const fromX = Math.min(Math.max(p.lx + p.tw / 2, p.lx + 10), p.lx + p.tw - 10);
+          const fromY = ly + th;
+          const dx = p.x - fromX;
+          const dy = p.y - fromY;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const endX = p.x - (dx / dist) * 9;
+          const endY = p.y - (dy / dist) * 9;
+          const ang = Math.atan2(p.y - fromY, p.x - fromX);
 
           ctx.save();
           ctx.strokeStyle = color;
-          ctx.globalAlpha = 0.32;
-          ctx.setLineDash([4, 3]);
-          ctx.lineWidth = 1.5;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([]);
           ctx.beginPath();
-          ctx.moveTo(x, area.top);
-          ctx.lineTo(x, area.bottom);
+          ctx.moveTo(fromX, fromY);
+          ctx.lineTo(endX, endY);
           ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - 9 * Math.cos(ang - 0.45), p.y - 9 * Math.sin(ang - 0.45));
+          ctx.lineTo(p.x - 9 * Math.cos(ang + 0.45), p.y - 9 * Math.sin(ang + 0.45));
+          ctx.closePath();
+          ctx.fill();
           ctx.restore();
 
           ctx.save();
@@ -1007,45 +1053,27 @@
           ctx.strokeStyle = color;
           ctx.lineWidth = 2.75;
           ctx.beginPath();
-          ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
           ctx.beginPath();
           ctx.fillStyle = color;
-          ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
 
           ctx.save();
-          ctx.font = "700 11px system-ui, sans-serif";
-          const w1 = ctx.measureText(line1).width;
-          ctx.font = "650 10px system-ui, sans-serif";
-          const w2 = ctx.measureText(line2).width;
-          const tw = Math.min(Math.max(w1, w2) + 16, area.right - area.left - 8);
-          const th = 34;
-          let lx = x - tw / 2;
-          let ly = y - th - 12;
-          if (lx < area.left + 4) lx = area.left + 4;
-          if (lx + tw > area.right - 4) lx = area.right - tw - 4;
-          if (ly < area.top + 4) ly = Math.min(y + 12, area.bottom - th - 4);
-          boxes.forEach((box) => {
-            if (Math.abs(box.x - lx) < tw && Math.abs(box.y - ly) < th + 4) {
-              ly = Math.min(box.y + th + 6, area.bottom - th - 4);
-            }
-          });
-          boxes.push({ x: lx, y: ly });
-          ctx.fillStyle = "rgba(6, 20, 12, 0.9)";
-          const r = 6;
+          ctx.fillStyle = "rgba(6, 20, 12, 0.92)";
           ctx.beginPath();
-          if (ctx.roundRect) ctx.roundRect(lx, ly, tw, th, r);
-          else ctx.rect(lx, ly, tw, th);
+          if (ctx.roundRect) ctx.roundRect(p.lx, ly, p.tw, th, 6);
+          else ctx.rect(p.lx, ly, p.tw, th);
           ctx.fill();
           ctx.fillStyle = "#fff";
           ctx.font = "700 11px system-ui, sans-serif";
-          ctx.fillText(line1, lx + 8, ly + 14, tw - 16);
+          ctx.fillText(p.line1, p.lx + 8, ly + 15, p.tw - 16);
           ctx.fillStyle = "rgba(255,255,255,0.9)";
           ctx.font = "650 10px system-ui, sans-serif";
-          ctx.fillText(line2, lx + 8, ly + 27, tw - 16);
+          ctx.fillText(p.line2, p.lx + 8, ly + 28, p.tw - 16);
           ctx.restore();
         });
       },
@@ -1115,7 +1143,7 @@
       data: { labels, datasets: basisSets },
       options: {
         responsive: true, maintainAspectRatio: false,
-        layout: { padding: { top: 36 } },
+        layout: { padding: { top: 48 } },
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
@@ -1141,7 +1169,7 @@
       data: { labels, datasets: cashSets },
       options: {
         responsive: true, maintainAspectRatio: false,
-        layout: { padding: { top: 36 } },
+        layout: { padding: { top: 48 } },
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
