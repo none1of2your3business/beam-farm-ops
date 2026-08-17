@@ -512,16 +512,16 @@
       const oGain = other && other.cashGain;
       const later = winner.bestCash && !winner.bestCash.isNow;
       if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
-        why = "Neither crop pays to store after costs — sell now beats holding both.";
+        why = "Neither crop pays to store after all carry and trucking — sell now beats holding both.";
       } else if (later && winner.bestCash) {
         why = winner.label + " at " + winner.bestCash.loc + " on " + winner.bestCash.label
-          + " (" + winner.bestCash.days + " days) adds " + money(wGain, 2) + "/bu vs selling now.";
+          + " (" + winner.bestCash.days + " days) adds " + money(wGain, 2) + "/bu vs selling now, after all carry and trucking.";
         if (oGain != null) why += " That is " + money(Math.abs(wGain - oGain), 2) + "/bu more than " + other.label.toLowerCase() + ".";
         if (wGain != null && wGain <= 0.005) {
-          why = winner.label + " is the less-bad store, but extra cash vs now is about zero after costs.";
+          why = winner.label + " is the less-bad store, but extra cash vs now is about zero after all carry and trucking.";
         }
       } else {
-        why = winner.label + " wins, but the best cash is already now — storing does not add money.";
+        why = winner.label + " wins, but the best cash is already now — storing does not add money after carry and trucking.";
       }
     }
     return { winner, why, corn, soy };
@@ -1229,6 +1229,7 @@
     }
     const storeHtml = `
       <h2>Most profitable crop to store</h2>
+      <p class="lead-note">Extra cash vs selling today, after all carry and trucking costs (interest, storage, shrink, handling, and haul).</p>
       ${printPick(daysCap != null ? "Best crop in 0–" + daysCap + " days" : "Store window", windowPick)}
       ${anyPick ? printPick("Best crop and time (any window)", anyPick) : ""}`;
 
@@ -1279,6 +1280,10 @@
         We look only at locations you checked on the charts. For every move window we compute net basis and cash sale.
         Best net basis = the single highest net-basis reading. Best cash sale = the single highest cash reading.
         They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
+
+        <p><strong>Most profitable crop to store.</strong>
+        Corn vs soybeans, storing vs selling today. Extra cash is after all carry and trucking
+        (interest, storage, shrink, handling, and haul to that elevator).</p>
 
         <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
       </div>`;
