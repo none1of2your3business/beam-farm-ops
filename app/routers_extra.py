@@ -13,7 +13,7 @@ import re
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -3860,6 +3860,24 @@ def risk_carry_page(request: Request, db: Session = Depends(get_db)):
             "quote_updated": quote_updated,
         },
     )
+
+
+@router.get("/risk/hold-sell", response_class=HTMLResponse)
+def hold_sell_page(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    path = Path(__file__).resolve().parent / "static" / "hold-or-sell.html"
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@router.get("/risk/hold-sell/quotes")
+def hold_sell_quotes(request: Request, db: Session = Depends(get_db)):
+    user = _need(request, "risk")
+    if isinstance(user, RedirectResponse):
+        return user
+    payload = cme_quotes.fetch_hold_sell_quotes()
+    return JSONResponse(payload)
 
 
 @router.post("/risk/quotes")

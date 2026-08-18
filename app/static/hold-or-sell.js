@@ -1,0 +1,1811 @@
+/* Grain Marketing Decisions — net basis chart + cash sale chart + simple actual basis entry. */
+(function () {
+  const DATA = window.HOLD_SELL_DATA;
+  if (!DATA) {
+    document.body.innerHTML = "<p style='padding:2rem'>Missing hold-or-sell-data.js</p>";
+    return;
+  }
+
+  const LS = "beam.holdSell.v3";
+  const DAYS_MO = 30.4375;
+  const HORIZON_MO = 18;
+  const LOC_COLORS = {
+    Kellogg: "#0d6b38",
+    Dayton: "#c9920e",
+    Bloomingburg: "#2f4b8a",
+    Sidney: "#c23a12",
+  };
+  const LOC_IDS = ["Kellogg", "Dayton", "Bloomingburg", "Sidney"];
+  const DEFAULT_TRUCK = 0.18;
+
+  function defaultTrucking() {
+    const out = {};
+    LOC_IDS.forEach((id) => { out[id] = DEFAULT_TRUCK; });
+    return out;
+  }
+
+  const state = {
+    crop: "corn",
+    visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
+    trucking: defaultTrucking(),
+    chartBoth: false,
+    storeDays: 90,
+    storeBestAny: false,
+    storeMetric: "cash",
+    grain: {},
+    actual: {},
+    carry: {
+      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+    },
+    strip: DATA.strip,
+    history: DATA.history,
+    quoteAsOf: DATA.generated,
+  };
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS) || localStorage.getItem("beam.holdSell.v2") || "null");
+    if (saved && typeof saved === "object") {
+      state.crop = saved.crop || state.crop;
+      state.visible = { ...state.visible, ...(saved.visible || {}) };
+      if (saved.chartBoth != null) state.chartBoth = !!saved.chartBoth;
+      if (saved.storeDays != null && Number.isFinite(Number(saved.storeDays))) state.storeDays = Number(saved.storeDays);
+      if (saved.storeBestAny != null) state.storeBestAny = !!saved.storeBestAny;
+      if (saved.storeMetric === "basis" || saved.storeMetric === "cash") state.storeMetric = saved.storeMetric;
+      state.grain = saved.grain || {};
+      state.actual = saved.actual || {};
+      // migrate old actualNow into actual keys
+      if (saved.actualNow && typeof saved.actualNow === "object") {
+        Object.keys(saved.actualNow).forEach((k) => {
+          const parts = k.split("|");
+          if (parts.length === 2) {
+            const nk = parts[0] + "|" + parts[1] + "|now";
+            if (saved.actualNow[k] != null && saved.actualNow[k] !== "") state.actual[nk] = saved.actualNow[k];
+          }
+        });
+      }
+      state.carry = {
+        corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
+      };
+      // Per-location trucking (migrate old single carry.trucking if needed)
+      function parseN(v) {
+        const n = parseFloat(String(v ?? "").replace(",", ""));
+        return Number.isFinite(n) ? n : null;
+      }
+      const legacyTruck =
+        parseN(typeof saved.trucking === "number" ? saved.trucking : null) ??
+        parseN((saved.carry || {}).corn && saved.carry.corn.trucking) ??
+        parseN((saved.carry || {}).soybeans && saved.carry.soybeans.trucking) ??
+        DEFAULT_TRUCK;
+      state.trucking = defaultTrucking();
+      LOC_IDS.forEach((id) => { state.trucking[id] = legacyTruck; });
+      if (saved.trucking && typeof saved.trucking === "object") {
+        LOC_IDS.forEach((id) => {
+          const v = parseN(saved.trucking[id]);
+          if (v != null) state.trucking[id] = v;
+        });
+      }
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
+      // Keep basis/carry/trucking. Only restore a saved futures strip when it is
+      // newer than the quotes baked into this page — otherwise a failed Update
+      // would pin stale prices over a republish.
+      const bakedAt = String(DATA.generated || "");
+      const savedAt = String(saved.quoteAsOf || "");
+      if (saved.strip && savedAt && bakedAt && savedAt > bakedAt) {
+        state.strip = saved.strip;
+        if (saved.history) state.history = saved.history;
+        state.quoteAsOf = saved.quoteAsOf;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  let basisChart;
+  let cashChart;
+
+  function save() {
+    try {
+      localStorage.setItem(LS, JSON.stringify({
+        crop: state.crop, visible: state.visible, trucking: state.trucking, chartBoth: state.chartBoth,
+        storeDays: state.storeDays, storeBestAny: state.storeBestAny, storeMetric: state.storeMetric,
+        grain: state.grain, actual: state.actual,
+        carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  function truckingFor(loc) {
+    const v = num(state.trucking[loc]);
+    return v != null ? v : DEFAULT_TRUCK;
+  }
+
+  function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
+  function cropLabel() { return cropKey() === "soybeans" ? "Soybeans" : "Corn"; }
+  function stripCrop() { return cropLabel(); }
+  function carry() { return state.carry[cropKey()]; }
+
+  function withCrop(crop, fn) {
+    const prev = state.crop;
+    state.crop = crop === "soybeans" ? "soybeans" : "corn";
+    try { return fn(); }
+    finally { state.crop = prev; }
+  }
+
+  function chartCrops() {
+    return state.chartBoth ? ["corn", "soybeans"] : [cropKey()];
+  }
+
+  function unionLocs() {
+    const ids = new Set();
+    chartCrops().forEach((c) => {
+      withCrop(c, () => availableLocs().forEach((id) => ids.add(id)));
+    });
+    return LOC_IDS.filter((id) => ids.has(id));
+  }
+
+  function availableLocs() {
+    return Object.keys(DATA.locations).filter((id) => {
+      const c = DATA.locations[id][cropKey()];
+      return c && c.available && !c.hidden;
+    });
+  }
+  function activeLocs() {
+    return availableLocs().filter((id) => state.visible[id] !== false);
+  }
+  function cropBlock(loc) { return (DATA.locations[loc] || {})[cropKey()]; }
+
+  function num(v) {
+    const n = parseFloat(String(v ?? "").replace(",", ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  function money(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return "$" + n.toFixed(d);
+  }
+  function cents(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return (n > 0 ? "+" : "") + n.toFixed(d) + "¢";
+  }
+  function fmtDate(d) {
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  function ymd(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, d.getDate()); }
+  function weekU(d) {
+    const jan1 = new Date(d.getFullYear(), 0, 1);
+    const days = Math.floor((d - jan1) / 86400000);
+    return Math.floor((days + jan1.getDay()) / 7);
+  }
+  function quarterInfo(d) {
+    const q = Math.floor(d.getMonth() / 3) + 1;
+    return { year: d.getFullYear(), q, key: d.getFullYear() + "-Q" + q, label: "Q" + q + " " + d.getFullYear() };
+  }
+  function parseISO(s) {
+    if (!s) return null;
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  function today() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  }
+  function stripRows() { return (state.strip[stripCrop()] || []).slice(); }
+  function frontRow() {
+    const rows = stripRows().filter((r) => r.price != null);
+    return rows.find((r) => r.is_front) || rows[0] || null;
+  }
+  function contractForDate(d) {
+    const rows = stripRows();
+    for (const r of rows) {
+      const ltd = parseISO(r.last_trading_day);
+      if (ltd && ltd >= d) return r;
+    }
+    return rows[rows.length - 1] || null;
+  }
+
+  function histBasis(loc, d) {
+    const block = cropBlock(loc);
+    if (!block || !block.available) return null;
+    const wRow = block.weekly && block.weekly[String(weekU(d))];
+    if (wRow && wRow.avg != null && wRow.n >= 2) return wRow.avg;
+    const mRow = block.monthly && block.monthly[String(d.getMonth() + 1)];
+    return mRow && mRow.avg != null ? mRow.avg : null;
+  }
+
+  function actualKey(loc, periodKey) {
+    return cropKey() + "|" + loc + "|" + periodKey;
+  }
+
+  /** Actual replaces historical for that window only; blank reverts to historical. */
+  function usedBasis(loc, d, periodKey) {
+    const typed = num(state.actual[actualKey(loc, periodKey)]);
+    if (typed != null) return { value: typed, source: "actual", hist: histBasis(loc, d) };
+    const h = histBasis(loc, d);
+    return { value: h, source: h == null ? "none" : "seasonal", hist: h };
+  }
+
+  function markPrice(fut, basisCents) {
+    if (fut == null) return null;
+    if (carry().markMode === "futures") return fut;
+    return fut + (basisCents || 0) / 100;
+  }
+
+  function carryParts(fut, basisCents, days, loc) {
+    const c = carry();
+    const mark = markPrice(fut, basisCents) || 0;
+    const months = Math.max(0, days) / DAYS_MO;
+    const years = Math.max(0, days) / 365;
+    const interest = mark * (num(c.apr) || 0) / 100 * years;
+    const storage = (num(c.storage) || 0) * months;
+    const handlingShrink = (num(c.shrinkPct) || 0) / 100 * mark * months;
+    const moisture = days > 0 ? (num(c.extraPts) || 0) * ((num(c.shrinkFactor) || 0) / 100) * mark : 0;
+    const inout = days > 0 ? (num(c.handling) || 0) : 0;
+    const trucking = loc ? truckingFor(loc) : 0; // paid whenever you deliver; per location
+    const holdCost = interest + storage + handlingShrink + moisture + inout;
+    return {
+      mark, interest, storage, handlingShrink, moisture, inout, trucking, holdCost,
+      total: holdCost + trucking,
+      monthlyRate: (mark * (num(c.apr) || 0) / 100 / 12) + (num(c.storage) || 0) + ((num(c.shrinkPct) || 0) / 100 * mark),
+    };
+  }
+
+  function defaultGrain(qIndex) {
+    if (qIndex === 0) return "weekly";
+    if (qIndex === 1) return "bimonthly";
+    return "monthly";
+  }
+
+  function periodDates(start, end, grain) {
+    const out = [];
+    if (grain === "weekly") {
+      let d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      while (d <= end) {
+        out.push(new Date(d));
+        d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+      }
+    } else if (grain === "bimonthly") {
+      let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+      while (cur <= end) {
+        for (const day of [1, 15]) {
+          const d = new Date(cur.getFullYear(), cur.getMonth(), day);
+          if (d >= start && d <= end) out.push(d);
+        }
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      }
+    } else {
+      let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+      if (cur < start) cur = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+      if (start.getDate() <= 2) out.push(new Date(start));
+      while (cur <= end) {
+        out.push(new Date(cur));
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      }
+    }
+    return out;
+  }
+
+  function quarters() {
+    const start = today();
+    const end = addMonths(start, HORIZON_MO);
+    const list = [];
+    let cursor = new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1);
+    while (cursor <= end) {
+      const qEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 3, 0);
+      const qStart = cursor < start ? start : new Date(cursor);
+      const info = quarterInfo(qStart);
+      const clippedEnd = qEnd > end ? end : qEnd;
+      if (qStart <= clippedEnd) list.push({ ...info, start: qStart, end: clippedEnd });
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 3, 1);
+    }
+    return list;
+  }
+
+  function timeline() {
+    const now = today();
+    const qs = quarters();
+    const points = [{ date: now, key: "now", label: "Now · " + fmtDate(now), isNow: true }];
+    qs.forEach((q, qi) => {
+      const grain = state.grain[q.key] || defaultGrain(qi);
+      periodDates(q.start, q.end, grain).forEach((d) => {
+        if (ymd(d) === ymd(now)) return;
+        points.push({
+          date: d, key: ymd(d),
+          label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+          isNow: false, quarter: q,
+        });
+      });
+    });
+    return points;
+  }
+
+  /**
+   * Per location / window:
+   * - usedBasis ¢
+   * - netBasis ¢ = usedBasis − trucking¢ − holdCost¢  (everything on the basis side)
+   * - cash $ = futures + usedBasis/100 − holdCost − trucking  (sell futures + basis together)
+   */
+  function buildPoint(loc, point, nowFut) {
+    const days = point.isNow ? 0 : Math.max(0, Math.round((point.date - today()) / 86400000));
+    const b = usedBasis(loc, point.date, point.key);
+    const contract = point.isNow ? frontRow() : contractForDate(point.date);
+    const fut = contract && contract.price != null ? Number(contract.price) : null;
+    // Interest mark uses nearby + current basis for holding cost from today
+    const nowB = usedBasis(loc, today(), "now");
+    const parts = carryParts(nowFut, nowB.value, days, loc);
+    const truckC = parts.trucking * 100;
+    const holdC = parts.holdCost * 100;
+    const netBasis = b.value != null ? b.value - truckC - holdC : null;
+    const cash = (fut != null && b.value != null)
+      ? fut + b.value / 100 - parts.holdCost - parts.trucking
+      : null;
+    return {
+      ...point, loc, hist: b.hist, used: b.value, source: b.source,
+      futures: fut, netBasis, cash, truckC, holdC, costC: truckC + holdC,
+      hold$: parts.holdCost, truck$: parts.trucking,
+      interest$: parts.interest, storage$: parts.storage,
+      shrink$: parts.handlingShrink + parts.moisture, handling$: parts.inout,
+    };
+  }
+
+  function setStatus(msg, err) {
+    const el = document.getElementById("status");
+    el.textContent = msg || "";
+    el.className = "status" + (err ? " err" : "");
+  }
+
+  function renderCropSeg() {
+    const seg = document.getElementById("cropSeg");
+    seg.className = "seg " + (cropKey() === "soybeans" ? "soy" : "corn");
+    seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.crop === cropKey()));
+    const both = document.getElementById("chartBoth");
+    if (both) both.checked = !!state.chartBoth;
+  }
+
+  function renderLocs() {
+    const avail = unionLocs();
+    document.getElementById("locs").innerHTML = avail.map((id) => {
+      const on = state.visible[id] !== false;
+      return `<label class="loc ${on ? "" : "off"}">
+        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+        <strong>${id}</strong>
+      </label>`;
+    }).join("");
+    document.getElementById("locs").querySelectorAll("input[type=checkbox]").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        state.visible[inp.dataset.id] = inp.checked;
+        save();
+        refresh({ reread: false, forms: false, locs: true });
+      });
+    });
+  }
+
+  function renderTrucking() {
+    const root = document.getElementById("truckGrid");
+    if (!root) return;
+    const avail = unionLocs();
+    root.innerHTML = avail.map((id) => {
+      const truck = truckingFor(id);
+      return `<div class="truck-card">
+        <div class="name"><span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>${id}</div>
+        <label>Trucking $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
+    }).join("") || "<p class='hint'>No locations for this crop.</p>";
+    root.querySelectorAll("input.truck").forEach((inp) => {
+      const apply = () => {
+        const v = num(inp.value);
+        state.trucking[inp.dataset.truck] = v != null ? v : 0;
+        save();
+        refresh({ reread: false, forms: false });
+      };
+      inp.addEventListener("change", apply);
+      inp.addEventListener("input", apply);
+    });
+  }
+
+  function findBest(metric) {
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key };
+        }
+      });
+    });
+    return best;
+  }
+
+  function renderWinners() {
+    const el = document.getElementById("winners");
+    if (!el) return;
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function card(title, best, fmt) {
+      if (!best) {
+        return `<div class="winner">
+          <div class="winner-lab">${title}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+          <div class="winner-sub">Check a location and load futures/basis.</div>
+        </div>`;
+      }
+      const color = LOC_COLORS[best.loc] || "#666";
+      return `<div class="winner">
+        <div class="winner-lab">${title}</div>
+        <div class="winner-val">${fmt(best.value)}</div>
+        <div class="winner-meta"><span class="dot" style="background:${color}"></span>${best.loc} · ${best.label}</div>
+        <div class="winner-sub">Best ${title.toLowerCase()} among checked locations</div>
+      </div>`;
+    }
+
+    el.innerHTML =
+      card("Best net basis", bestBasis, (v) => cents(v, 1)) +
+      card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
+  }
+
+  function pointDays(p) {
+    return p.isNow ? 0 : Math.max(0, Math.round((p.date - today()) / 86400000));
+  }
+
+  function findBestCapped(metric, maxDays) {
+    const cap = maxDays == null || !Number.isFinite(maxDays) ? Infinity : Math.max(0, maxDays);
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const d = pointDays(p);
+        if (d > cap) return;
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { ...row, value: v, days: d };
+        }
+      });
+    });
+    return best;
+  }
+
+  function cropStoreSnapshot(crop, maxDays) {
+    return withCrop(crop, () => {
+      const bestCash = findBestCapped("cash", maxDays);
+      const bestBasis = findBestCapped("netBasis", maxDays);
+      const points = timeline();
+      const nowPt = points.find((p) => p.isNow) || points[0];
+      const locs = activeLocs();
+      const front = frontRow();
+      const nowFut = front && front.price != null ? Number(front.price) : null;
+      let nowCashRow = null;
+      let nowBasisRow = null;
+      locs.forEach((loc) => {
+        const row = buildPoint(loc, nowPt, nowFut);
+        if (row.cash != null && (nowCashRow == null || row.cash > nowCashRow.cash)) nowCashRow = row;
+        if (row.netBasis != null && (nowBasisRow == null || row.netBasis > nowBasisRow.netBasis)) nowBasisRow = row;
+      });
+      const nowCash = nowCashRow ? nowCashRow.cash : null;
+      const nowBasis = nowBasisRow ? nowBasisRow.netBasis : null;
+      const cashGain = (bestCash && nowCash != null) ? bestCash.value - nowCash : null;
+      const basisGain = (bestBasis && nowBasis != null) ? bestBasis.value - nowBasis : null;
+      return {
+        crop,
+        label: crop === "soybeans" ? "Soybeans" : "Corn",
+        bestCash, bestBasis, nowCashRow, nowBasisRow, nowRow: nowCashRow,
+        nowCash, nowBasis, nowLoc: nowCashRow ? nowCashRow.loc : null, cashGain, basisGain,
+      };
+    });
+  }
+
+  function signedMoney(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const mag = "$" + Math.abs(n).toFixed(d);
+    if (n < -0.0000001) return "−" + mag;
+    if (n > 0.0000001) return "+" + mag;
+    return mag;
+  }
+
+  function amt(n, d, signed) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return signed ? signedMoney(n, d) : money(n, d);
+  }
+
+  function whereLabel(row) {
+    if (!row) return "—";
+    const bits = [row.loc, row.isNow ? "Now" : row.label];
+    if (row.days) bits.push(row.days + " days");
+    return bits.filter(Boolean).join(" · ");
+  }
+
+  function basisCell(row) {
+    if (!row || row.used == null) return "—";
+    const src = row.source === "actual" ? "actual" : "hist";
+    return `${signedMoney(row.used / 100, 3)}<small>${cents(row.used, 1)} ${src}</small>`;
+  }
+
+  function carryBits(row) {
+    if (!row) return [];
+    return [
+      ["interest", row.interest$],
+      ["storage", row.storage$],
+      ["shrink", row.shrink$],
+      ["handling", row.handling$],
+    ].filter(([, v]) => v != null && Math.abs(v) > 0.00005);
+  }
+
+  function isStoreBasis() { return state.storeMetric === "basis"; }
+  function snapLater(snap) { return isStoreBasis() ? snap.bestBasis : snap.bestCash; }
+  function snapNow(snap) { return isStoreBasis() ? snap.nowBasisRow : snap.nowCashRow; }
+  function snapGain(snap) { return isStoreBasis() ? snap.basisGain : snap.cashGain; }
+  function fmtGain(n) { return isStoreBasis() ? cents(n, 1) : money(n, 2) + "/bu"; }
+
+  function snapMathHtml(snap, isWinner) {
+    if (!snap) return "";
+    const later = snapLater(snap);
+    const now = snapNow(snap);
+    const basisMode = isStoreBasis();
+    if (!later || later.value == null || !now || (basisMode ? now.netBasis == null : now.cash == null)) {
+      return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+        <p class="why">Need futures and basis for ${esc(snap.label)}.</p></article>`;
+    }
+    const same = later.isNow || (now.loc === later.loc && now.key === later.key);
+    const cols = same ? 2 : 3;
+    const laterHead = basisMode ? "Hold for basis" : "Store and sell";
+    const nowHead = "Sell now";
+    const head = same
+      ? `<tr><th></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`
+      : `<tr><th></th><th>${esc(laterHead)}<span>${esc(whereLabel(later))}</span></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`;
+
+    function cells(label, laterHtml, nowHtml, cls) {
+      if (same) return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${nowHtml}</td></tr>`;
+      return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${laterHtml}</td><td>${nowHtml}</td></tr>`;
+    }
+
+    let rows = "";
+    if (basisMode) {
+      rows += cells("Used basis", cents(later.used, 1), cents(now.used, 1));
+      rows += cells("Carry", cents(-(later.holdC || 0), 1), cents(-(now.holdC || 0), 1));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, cents(-v * 100, 1), "—", "sub");
+      });
+      rows += cells("Trucking", cents(-(later.truckC || 0), 1), cents(-(now.truckC || 0), 1));
+      rows += cells("Net basis ¢", cents(later.netBasis, 1), cents(now.netBasis, 1), "total");
+    } else {
+      rows += cells("Futures", amt(later.futures, 4, false), amt(now.futures, 4, false));
+      rows += same
+        ? `<tr><td>Basis</td><td>${basisCell(now)}</td></tr>`
+        : `<tr><td>Basis</td><td>${basisCell(later)}</td><td>${basisCell(now)}</td></tr>`;
+      rows += cells("Carry", amt(-(later.hold$ || 0), 3, true), amt(-(now.hold$ || 0), 3, true));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, amt(-v, 3, true), "—", "sub");
+      });
+      rows += cells("Trucking", amt(-(later.truck$ || 0), 3, true), amt(-(now.truck$ || 0), 3, true));
+      rows += cells("Cash $/bu", money(later.cash, 2), money(now.cash, 2), "total");
+    }
+
+    const gain = snapGain(snap);
+    const extra = same
+      ? `<p class="store-extra"><span>Extra vs now</span><b>${esc(fmtGain(0))}</b></p>`
+      : `<p class="store-extra"><span>Extra vs now</span>
+           <b>${esc(basisMode ? cents(later.netBasis, 1) : money(later.cash, 2))} − ${esc(basisMode ? cents(now.netBasis, 1) : money(now.cash, 2))} = ${esc(fmtGain(gain))}</b></p>`;
+
+    return `<article class="${isWinner ? "on" : ""}">
+      <h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+      <table class="store-math cols-${cols}">
+        <thead>${head}</thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${extra}
+    </article>`;
+  }
+
+  function storeMathHtml(pick) {
+    if (!pick || (!pick.corn && !pick.soy)) return "";
+    const w = pick.winner;
+    const formula = isStoreBasis()
+      ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+      : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
+    return `<p class="store-formula">${formula}</p>
+      <div class="store-cmp">
+        ${snapMathHtml(pick.corn, w && w.crop === "corn")}
+        ${snapMathHtml(pick.soy, w && w.crop === "soybeans")}
+      </div>`;
+  }
+
+  function pickStoreWinner(corn, soy) {
+    const g = (s) => snapGain(s);
+    let winner = null;
+    if (g(corn) != null && g(soy) != null) winner = g(corn) >= g(soy) ? corn : soy;
+    else if (g(corn) != null) winner = corn;
+    else if (g(soy) != null) winner = soy;
+    const other = winner ? (winner.crop === "corn" ? soy : corn) : null;
+    let why = "Need futures and basis on both crops to compare.";
+    if (winner) {
+      const wGain = g(winner);
+      const oGain = other ? g(other) : null;
+      const later = snapLater(winner);
+      const laterOk = later && !later.isNow;
+      const unit = isStoreBasis() ? "net basis" : "cash";
+      const nearZero = isStoreBasis() ? 0.5 : 0.005;
+      if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
+        why = "Neither crop pays to store after all carry and trucking — sell now beats holding both.";
+      } else if (laterOk) {
+        why = winner.label + " at " + later.loc + " on " + later.label
+          + " (" + later.days + " days) adds " + fmtGain(wGain) + " vs selling now, after all carry and trucking.";
+        if (oGain != null) why += " That is " + fmtGain(Math.abs(wGain - oGain)) + " more than " + other.label.toLowerCase() + ".";
+        if (wGain != null && wGain <= nearZero) {
+          why = winner.label + " is the less-bad store, but extra " + unit + " vs now is about zero after all carry and trucking.";
+        }
+      } else {
+        why = winner.label + " wins, but the best " + unit + " is already now — storing does not add money after carry and trucking.";
+      }
+    }
+    return { winner, why, corn, soy };
+  }
+
+  function renderStorePick() {
+    const daysEl = document.getElementById("storeDays");
+    const anyEl = document.getElementById("storeBestAny");
+    const windowOut = document.getElementById("storeWindowOut");
+    const anyOut = document.getElementById("storeAnyOut");
+    if (!windowOut) return;
+
+    const metricEl = document.getElementById("storeMetricSeg");
+    if (metricEl) {
+      metricEl.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.metric === (isStoreBasis() ? "basis" : "cash"));
+      });
+    }
+    const hintEl = document.getElementById("storeHint");
+    if (hintEl) {
+      hintEl.textContent = isStoreBasis()
+        ? "Compares corn vs soybeans on net basis after all carry and trucking. Extra = later net basis − now net basis."
+        : "Compares corn vs soybeans on cash after all carry and trucking. Extra = cash later − cash now.";
+    }
+
+    if (daysEl && document.activeElement !== daysEl) {
+      daysEl.value = state.storeDays == null ? "" : String(state.storeDays);
+    }
+    if (anyEl) anyEl.checked = !!state.storeBestAny;
+
+    const days = num(state.storeDays);
+    const cap = days != null ? Math.max(0, days) : null;
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", cap), cropStoreSnapshot("soybeans", cap));
+
+    function resultHtml(title, pick, rangeNote) {
+      const w = pick.winner;
+      if (!w) {
+        return `<div class="winner-lab">${title}</div>
+          <div class="pick-val">—</div>
+          <p class="why">${pick.why}</p>
+          ${storeMathHtml(pick)}`;
+      }
+      const later = w ? snapLater(w) : null;
+      const when = later ? later.loc + " · " + later.label + " · " + later.days + " days" : "";
+      return `<div class="winner-lab">${title}</div>
+        <div class="pick-val">${w.label}</div>
+        <div class="meta-line">${when}</div>
+        <p class="why">${pick.why} ${rangeNote || ""}</p>
+        ${storeMathHtml(pick)}`;
+    }
+
+    if (cap == null) {
+      windowOut.innerHTML = `<div class="winner-lab">Best crop in your store window</div>
+        <div class="pick-val">—</div>
+        <p class="why">Enter how many days you can store (example: 90).</p>`;
+    } else {
+      windowOut.innerHTML = resultHtml(
+        "Best crop in 0–" + cap + " days",
+        windowPick,
+        "Only windows from now through " + cap + " days are counted."
+      );
+    }
+
+    if (anyOut) {
+      if (state.storeBestAny) {
+        anyOut.hidden = false;
+        const anyPick = pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null));
+        anyOut.innerHTML = resultHtml(
+          "Best crop and time (any window)",
+          anyPick,
+          "Looks at every move window on the charts, not just your day limit."
+        );
+      } else {
+        anyOut.hidden = true;
+        anyOut.innerHTML = "";
+      }
+    }
+  }
+
+  function renderCarryForm() {
+    const c = carry();
+    document.getElementById("apr").value = c.apr;
+    document.getElementById("storage").value = c.storage;
+    document.getElementById("markMode").value = c.markMode;
+    document.getElementById("handling").value = c.handling;
+    document.getElementById("shrinkPct").value = c.shrinkPct;
+    document.getElementById("extraPts").value = c.extraPts;
+    document.getElementById("shrinkFactor").value = c.shrinkFactor;
+  }
+
+  function readCarryForm() {
+    const c = carry();
+    c.apr = num(document.getElementById("apr").value) ?? c.apr;
+    c.storage = num(document.getElementById("storage").value) ?? 0;
+    c.markMode = document.getElementById("markMode").value;
+    c.handling = num(document.getElementById("handling").value) ?? 0;
+    c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
+    c.extraPts = num(document.getElementById("extraPts").value) ?? 0;
+    c.shrinkFactor = num(document.getElementById("shrinkFactor").value) ?? 0;
+  }
+
+  function renderStrip() {
+    const rows = stripRows();
+    const el = document.getElementById("strip");
+    let html = "";
+    rows.forEach((r, i) => {
+      html += `<div class="month ${r.is_front ? "front" : ""}">
+        <div class="lab">${r.label}${r.is_front ? " · front" : ""}</div>
+        <input data-i="${i}" inputmode="decimal" value="${r.price != null ? Number(r.price).toFixed(4) : ""}" />
+        <em>${r.short}</em>
+      </div>`;
+      if (i < rows.length - 1) {
+        const n = rows[i + 1];
+        const sp = r.price != null && n.price != null ? (Number(n.price) - Number(r.price)) * 100 : null;
+        const cls = sp == null ? "" : sp > 0 ? "carry" : sp < 0 ? "inverse" : "";
+        const word = sp == null ? "" : sp > 0 ? "carry" : sp < 0 ? "inverse" : "flat";
+        html += `<div class="spread ${cls}"><strong>${cents(sp, 1)}</strong><span>${word}</span></div>`;
+      }
+    });
+    el.innerHTML = html || "<p class='hint'>Update futures prices to load the strip.</p>";
+    el.querySelectorAll("input").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const i = Number(inp.dataset.i);
+        const v = num(inp.value);
+        if (state.strip[stripCrop()][i]) state.strip[stripCrop()][i].price = v;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
+  function renderRate() {
+    const front = frontRow();
+    const loc = activeLocs()[0] || availableLocs()[0];
+    const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
+    const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
+    const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
+    document.getElementById("rateBox").innerHTML =
+      `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
+       <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
+       <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
+       <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
+  }
+
+  function renderQuarters() {
+    const qs = quarters();
+    document.getElementById("quarters").innerHTML = qs.map((q, i) => {
+      const g = state.grain[q.key] || defaultGrain(i);
+      return `<label class="qchip"><strong>${q.label}</strong>
+        <select data-q="${q.key}">
+          <option value="weekly" ${g === "weekly" ? "selected" : ""}>Weekly</option>
+          <option value="bimonthly" ${g === "bimonthly" ? "selected" : ""}>Bi-monthly</option>
+          <option value="monthly" ${g === "monthly" ? "selected" : ""}>Monthly</option>
+        </select></label>`;
+    }).join("");
+    document.getElementById("quarters").querySelectorAll("select").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        state.grain[sel.dataset.q] = sel.value;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
+  let basisLocObserver = null;
+
+  function setBasisLocPin(loc) {
+    const pin = document.getElementById("basisLocPin");
+    if (!pin || !loc) return;
+    const color = LOC_COLORS[loc] || "#fff";
+    pin.classList.add("on");
+    pin.innerHTML = `<span class="swatch" style="background:${color}"></span><strong>${loc}</strong><em>Actual basis</em>`;
+  }
+
+  function setupBasisLocPin(mobile) {
+    const pin = document.getElementById("basisLocPin");
+    if (!mobile || !pin) return;
+    if (basisLocObserver) {
+      basisLocObserver.disconnect();
+      basisLocObserver = null;
+    }
+    const sections = mobile.querySelectorAll(".bm-loc");
+    if (!sections.length) {
+      pin.classList.remove("on");
+      pin.innerHTML = "";
+      return;
+    }
+    setBasisLocPin(sections[0].dataset.loc);
+    if (typeof IntersectionObserver !== "undefined") {
+      basisLocObserver = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0] && visible[0].target.dataset.loc) {
+          setBasisLocPin(visible[0].target.dataset.loc);
+        }
+      }, { root: null, rootMargin: "-20% 0px -55% 0px", threshold: [0, 0.1, 0.4] });
+      sections.forEach((sec) => basisLocObserver.observe(sec));
+    }
+    mobile.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("focus", () => setBasisLocPin(inp.dataset.loc));
+    });
+  }
+
+  function bindBasisInputs(root) {
+    if (!root) return;
+    root.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const k = actualKey(inp.dataset.loc, inp.dataset.k);
+        if (String(inp.value).trim() === "") delete state.actual[k];
+        else state.actual[k] = inp.value;
+        // Mark row visually without rebuilding the whole list (keeps sticky header + scroll)
+        const row = inp.closest(".bm-row, td");
+        if (row) {
+          if (num(inp.value) != null) row.classList.add("act-on");
+          else row.classList.remove("act-on");
+        }
+        save();
+        refresh({ reread: false, forms: false, basis: false });
+      });
+    });
+  }
+
+  function renderBasisEntry() {
+    const points = timeline();
+    const locs = availableLocs();
+    const thead = document.querySelector("#basisTable thead");
+    const tb = document.getElementById("tbody");
+    const mobile = document.getElementById("basisMobile");
+
+    if (!locs.length) {
+      if (thead) thead.innerHTML = "<tr><th class='l'>Time period</th></tr>";
+      tb.innerHTML = "<tr><td class='l'>No locations for this crop.</td></tr>";
+      if (mobile) mobile.innerHTML = "<p class='hint'>No locations for this crop.</p>";
+      return;
+    }
+
+    // Header: location name sits over the Actual (entry) column; Hist is the read-only neighbor
+    let head = "<tr><th class='l'>Time period</th>";
+    locs.forEach((loc) => {
+      const color = LOC_COLORS[loc] || "#666";
+      head += "<th class='sub'>Hist ¢</th>";
+      head += `<th class="loc"><span class="loc-dot" style="background:${color}"></span>${loc}<span class="loc-sub">Actual ¢</span></th>`;
+    });
+    head += "</tr>";
+    if (thead) thead.innerHTML = head;
+
+    let html = "";
+    points.forEach((p) => {
+      html += `<tr class="${p.isNow ? "now" : ""}"><td class="l">${p.label}</td>`;
+      locs.forEach((loc) => {
+        const hist = histBasis(loc, p.date);
+        const key = actualKey(loc, p.key);
+        const actualVal = state.actual[key] ?? "";
+        const usingAct = num(actualVal) != null;
+        html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
+      });
+      html += "</tr>";
+    });
+    tb.innerHTML = html;
+    bindBasisInputs(tb);
+
+    // Mobile: sticky location pin + sticky section headers while typing
+    if (mobile) {
+      let mhtml = `<div class="bm-pin" id="basisLocPin" aria-live="polite"></div>`;
+      locs.forEach((loc) => {
+        const color = LOC_COLORS[loc] || "#666";
+        mhtml += `<section class="bm-loc" data-loc="${loc}">
+          <div class="bm-loc-head"><span class="swatch" style="background:${color}"></span>${loc}</div>`;
+        points.forEach((p) => {
+          const hist = histBasis(loc, p.date);
+          const key = actualKey(loc, p.key);
+          const actualVal = state.actual[key] ?? "";
+          const usingAct = num(actualVal) != null;
+          mhtml += `<div class="bm-row ${p.isNow ? "now" : ""} ${usingAct ? "act-on" : ""}">
+            <div class="bm-when">${p.label}</div>
+            <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
+            <label class="bm-act"><span>Actual ¢</span>
+              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" />
+            </label>
+          </div>`;
+        });
+        mhtml += "</section>";
+      });
+      mobile.innerHTML = mhtml;
+      bindBasisInputs(mobile);
+      setupBasisLocPin(mobile);
+    }
+  }
+
+  function zeroLinePlugin() {
+    return {
+      id: "zeroLine",
+      afterDraw(c) {
+        const y = c.scales.y;
+        if (!y || y.min > 0 || y.max < 0) return;
+        const yPix = y.getPixelForValue(0);
+        const { ctx: g, chartArea } = c;
+        g.save();
+        g.strokeStyle = "rgba(42,64,51,0.45)";
+        g.setLineDash([5, 4]);
+        g.beginPath();
+        g.moveTo(chartArea.left, yPix);
+        g.lineTo(chartArea.right, yPix);
+        g.stroke();
+        g.restore();
+      },
+    };
+  }
+
+  function highPointPlugin(kind) {
+    return {
+      id: "highPoint_" + kind,
+      afterDraw(chart) {
+        const xScale = chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+        const groups = (kind === "cash" && chart.scales.ySoy)
+          ? [{ axis: "y" }, { axis: "ySoy" }]
+          : [{ axis: "y" }];
+        const ctx = chart.ctx;
+        const peaks = [];
+        groups.forEach((g) => {
+          const scale = chart.scales[g.axis];
+          if (!scale) return;
+          let best = null;
+          chart.data.datasets.forEach((ds) => {
+            const axis = ds.yAxisID || "y";
+            if (axis !== g.axis) return;
+            (ds.data || []).forEach((raw, i) => {
+              const v = raw == null ? null : Number(raw);
+              if (v == null || !Number.isFinite(v)) return;
+              if (!best || v > best.v) best = { v, i, ds };
+            });
+          });
+          if (!best) return;
+          peaks.push({
+            x: xScale.getPixelForValue(best.i),
+            y: scale.getPixelForValue(best.v),
+            color: best.ds.borderColor || "#0d6b38",
+            line1: "High  " + (kind === "basis" ? cents(best.v, 1) : money(best.v, 2) + "/bu"),
+            line2: (best.ds.label || "") + ((chart.data.labels || [])[best.i] ? " · " + chart.data.labels[best.i] : ""),
+          });
+        });
+        if (!peaks.length) return;
+
+        const th = 36;
+        const gap = 8;
+        const canvasW = chart.width;
+        peaks.sort((a, b) => a.x - b.x);
+        peaks.forEach((p) => {
+          ctx.font = "700 11px system-ui, sans-serif";
+          const w1 = ctx.measureText(p.line1).width;
+          ctx.font = "650 10px system-ui, sans-serif";
+          const w2 = ctx.measureText(p.line2).width;
+          p.tw = Math.min(Math.max(w1, w2) + 16, Math.max(120, canvasW - 16));
+          p.lx = p.x - p.tw / 2;
+        });
+        if (peaks[0].lx < 6) peaks[0].lx = 6;
+        for (let i = 1; i < peaks.length; i++) {
+          const minL = peaks[i - 1].lx + peaks[i - 1].tw + gap;
+          if (peaks[i].lx < minL) peaks[i].lx = minL;
+        }
+        const last = peaks[peaks.length - 1];
+        if (last.lx + last.tw > canvasW - 6) {
+          last.lx = canvasW - 6 - last.tw;
+          for (let i = peaks.length - 2; i >= 0; i--) {
+            const maxL = peaks[i + 1].lx - peaks[i].tw - gap;
+            if (peaks[i].lx > maxL) peaks[i].lx = Math.max(6, maxL);
+          }
+        }
+
+        peaks.forEach((p) => {
+          const ly = Math.max(4, area.top - th - 8);
+          const color = p.color;
+          const fromX = Math.min(Math.max(p.lx + p.tw / 2, p.lx + 10), p.lx + p.tw - 10);
+          const fromY = ly + th;
+          const dx = p.x - fromX;
+          const dy = p.y - fromY;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const endX = p.x - (dx / dist) * 9;
+          const endY = p.y - (dy / dist) * 9;
+          const ang = Math.atan2(p.y - fromY, p.x - fromX);
+
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(fromX, fromY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - 9 * Math.cos(ang - 0.45), p.y - 9 * Math.sin(ang - 0.45));
+          ctx.lineTo(p.x - 9 * Math.cos(ang + 0.45), p.y - 9 * Math.sin(ang + 0.45));
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "#fff";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.75;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "rgba(6, 20, 12, 0.92)";
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(p.lx, ly, p.tw, th, 6);
+          else ctx.rect(p.lx, ly, p.tw, th);
+          ctx.fill();
+          ctx.fillStyle = "#fff";
+          ctx.font = "700 11px system-ui, sans-serif";
+          ctx.fillText(p.line1, p.lx + 8, ly + 15, p.tw - 16);
+          ctx.fillStyle = "rgba(255,255,255,0.9)";
+          ctx.font = "650 10px system-ui, sans-serif";
+          ctx.fillText(p.line2, p.lx + 8, ly + 28, p.tw - 16);
+          ctx.restore();
+        });
+      },
+    };
+  }
+
+  function renderCharts() {
+    if (typeof Chart === "undefined") return;
+    const points = timeline();
+    const labels = points.map((p) => p.label);
+    const both = !!state.chartBoth;
+    const crops = chartCrops();
+    const basisSets = [];
+    const cashSets = [];
+
+    crops.forEach((crop) => {
+      withCrop(crop, () => {
+        const front = frontRow();
+        const nowFut = front && front.price != null ? Number(front.price) : null;
+        const locs = activeLocs();
+        const soy = crop === "soybeans";
+        const short = soy ? "Soy" : "Corn";
+        locs.forEach((loc) => {
+          const color = LOC_COLORS[loc] || "#333";
+          const name = both ? short + " · " + loc : loc;
+          const style = {
+            label: name,
+            borderColor: color,
+            backgroundColor: color,
+            borderWidth: soy && both ? 2 : 2.25,
+            borderDash: soy && both ? [7, 4] : [],
+            pointRadius: 2.5,
+            tension: 0.2,
+            yAxisID: both && soy ? "ySoy" : "y",
+          };
+          basisSets.push({
+            ...style,
+            yAxisID: "y",
+            data: points.map((p) => buildPoint(loc, p, nowFut).netBasis),
+          });
+          cashSets.push({
+            ...style,
+            data: points.map((p) => buildPoint(loc, p, nowFut).cash),
+          });
+        });
+      });
+    });
+
+    const bctx = document.getElementById("basisChart");
+    const cctx = document.getElementById("cashChart");
+    if (basisChart) basisChart.destroy();
+    if (cashChart) cashChart.destroy();
+
+    const cashScales = both
+      ? {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Corn cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+          ySoy: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Soy cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        }
+      : {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Expected cash sale ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        };
+
+    basisChart = new Chart(bctx, {
+      type: "line",
+      data: { labels, datasets: basisSets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 48 } },
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : cents(v, 1));
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Net basis after costs (¢ / bu)" }, ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" } },
+        },
+      },
+      plugins: [zeroLinePlugin(), highPointPlugin("basis")],
+    });
+
+    cashChart = new Chart(cctx, {
+      type: "line",
+      data: { labels, datasets: cashSets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 48 } },
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : money(v, 2) + "/bu");
+              },
+            },
+          },
+        },
+        scales: cashScales,
+      },
+      plugins: [highPointPlugin("cash")],
+    });
+  }
+
+  function renderFooter() {
+    document.getElementById("footer").innerHTML =
+      "Net basis = used basis − location trucking − interest − storage − shrink. Cash sale = futures + used basis − those same costs. Actual basis overrides historical only where entered. Dayton corn-only · Sidney soybeans-only. Delayed CME — informational only.";
+    document.getElementById("asOfPill").textContent = state.quoteAsOf
+      ? ("Quotes " + String(state.quoteAsOf).replace("T", " ").slice(0, 16) + " UTC")
+      : "Quotes delayed";
+  }
+
+  function refresh(opts) {
+    try {
+      const reread = !opts || opts.reread !== false;
+      const forms = !opts || opts.forms !== false;
+      const locs = forms || (opts && opts.locs === true);
+      const basis = !opts || opts.basis !== false;
+      if (reread) readCarryForm();
+      renderCropSeg();
+      if (locs) {
+        renderLocs();
+        renderTrucking();
+      }
+      if (forms) renderCarryForm();
+      renderStrip();
+      renderRate();
+      renderQuarters();
+      if (basis) renderBasisEntry();
+      renderWinners();
+      renderStorePick();
+      renderCharts();
+      renderFooter();
+      save();
+    } catch (err) {
+      setStatus(String(err && err.message ? err.message : err), true);
+      console.error(err);
+    }
+  }
+
+  function toBu(raw, currency) {
+    if (raw == null) return null;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return null;
+    const usx = String(currency || "").toUpperCase() === "USX" || v > 40;
+    const px = usx ? v / 100 : v;
+    return Math.round(px * 10000) / 10000;
+  }
+
+  function extractJsonObjectFromText(text) {
+    if (!text) return null;
+    const trimmed = String(text).trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { return JSON.parse(trimmed); } catch (e) { /* fall through for wrapped payloads */ }
+    }
+    const marker = '{"chart"';
+    let start = text.indexOf(marker);
+    if (start < 0) start = text.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try { return JSON.parse(text.slice(start, i + 1)); } catch (e) { return null; }
+        }
+      }
+    }
+    return null;
+  }
+
+  function parseYahooChart(data) {
+    if (typeof data === "string") data = extractJsonObjectFromText(data);
+    if (data && typeof data.contents === "string") {
+      data = extractJsonObjectFromText(data.contents) || data;
+    }
+    const result = (((data || {}).chart || {}).result || [])[0];
+    if (!result) return null;
+    const meta = result.meta || {};
+    const quote = ((result.indicators || {}).quote || [])[0] || {};
+    const rawCloses = quote.close || [];
+    const timestamps = result.timestamp || [];
+    // Last trade only — never previousClose (that looks a day old).
+    let last = meta.regularMarketPrice;
+    let t = meta.regularMarketTime;
+    if (last == null) {
+      for (let i = rawCloses.length - 1; i >= 0; i -= 1) {
+        const c = Number(rawCloses[i]);
+        if (rawCloses[i] != null && Number.isFinite(c)) {
+          last = c;
+          if (timestamps[i] != null) t = timestamps[i];
+          break;
+        }
+      }
+    }
+    if (last == null) return null;
+    const closes = rawCloses.filter((c) => c != null && Number.isFinite(Number(c)));
+    const prev = meta.chartPreviousClose ?? meta.previousClose ?? (closes.length > 1 ? closes[closes.length - 2] : null);
+    const currency = meta.currency;
+    const price = toBu(last, currency);
+    const prevPx = toBu(prev, currency);
+    return {
+      price,
+      change: price != null && prevPx != null ? Math.round((price - prevPx) * 10000) / 10000 : null,
+      asOf: t ? new Date(Number(t) * 1000).toISOString() : null,
+    };
+  }
+
+  async function fetchJson(url) {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 12000) : null;
+    try {
+      const r = await fetch(url, { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
+      if (!r.ok) return null;
+      const text = await r.text();
+      if (!text) return null;
+      return extractJsonObjectFromText(text);
+    } catch (e) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function fetchYahooTicker(ticker) {
+    const bust = Date.now();
+    const symbols = [];
+    const t = String(ticker || "").trim();
+    if (t) symbols.push(t);
+    if (t.endsWith(".CBT")) symbols.push(t.slice(0, -4));
+    const paths = [];
+    symbols.forEach((sym) => {
+      const enc = encodeURIComponent(sym);
+      paths.push(`/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=false&_=${bust}`);
+      paths.push(`/v8/finance/chart/${enc}?interval=1d&range=5d&includePrePost=false&_=${bust}`);
+    });
+    // aired.sh is static HTML: Yahoo itself is CORS-blocked. r.jina.ai returns
+    // the chart JSON wrapped in text/plain with Access-Control-Allow-Origin.
+    const prefixes = [
+      "https://r.jina.ai/http://query1.finance.yahoo.com",
+      "https://r.jina.ai/https://query1.finance.yahoo.com",
+      "https://query1.finance.yahoo.com",
+      "https://query2.finance.yahoo.com",
+    ];
+    const urls = [];
+    prefixes.forEach((p) => { paths.forEach((path) => { urls.push(p + path); }); });
+    paths.slice(0, 2).forEach((path) => {
+      const yahoo = "https://query1.finance.yahoo.com" + path;
+      urls.push("https://corsproxy.io/?" + encodeURIComponent(yahoo));
+      urls.push("https://api.allorigins.win/raw?url=" + encodeURIComponent(yahoo));
+    });
+    for (const u of urls) {
+      try {
+        const data = await fetchJson(u);
+        const parsed = parseYahooChart(data);
+        if (parsed && parsed.price != null) return parsed;
+      } catch (e) { /* next */ }
+    }
+    return null;
+  }
+
+  async function mapPool(items, limit, fn) {
+    const out = new Array(items.length);
+    let i = 0;
+    async function worker() {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
+    }
+    const n = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: n }, () => worker()));
+    return out;
+  }
+
+  async function updateFromYahoo() {
+    const next = { Corn: [], Soybeans: [] };
+    let ok = 0;
+    let latestAsOf = null;
+    let tried = 0;
+    for (const crop of ["Corn", "Soybeans"]) {
+      const rows = (state.strip[crop] || DATA.strip[crop] || []).map((r) => ({ ...r }));
+      await mapPool(rows, 3, async (row) => {
+        tried += 1;
+        const q = await fetchYahooTicker(row.ticker);
+        if (q && q.price != null) {
+          row.price = q.price;
+          row.change = q.change;
+          ok += 1;
+          if (q.asOf && (!latestAsOf || q.asOf > latestAsOf)) latestAsOf = q.asOf;
+        }
+      });
+      next[crop] = rows;
+    }
+    if (ok === 0) {
+      throw new Error("Yahoo did not return any last trades. Prices on screen were left unchanged.");
+    }
+    state.strip = next;
+    state.quoteAsOf = latestAsOf || new Date().toISOString();
+    return { ok, tried, asOf: state.quoteAsOf };
+  }
+
+  async function updateFutures() {
+    const btn = document.getElementById("btnUpdate");
+    btn.disabled = true;
+    setStatus("Updating delayed CME last trades…");
+    try {
+      let usedLive = false;
+      try {
+        const r = await fetch("/risk/hold-sell/quotes", { credentials: "same-origin", cache: "no-store" });
+        const ct = (r.headers.get("content-type") || "").toLowerCase();
+        if (r.ok && ct.includes("json")) {
+          const data = await r.json();
+          const priced = ["Corn", "Soybeans"].reduce((n, crop) => n + ((data.strip || {})[crop] || []).filter((x) => x && x.price != null).length, 0);
+          if (priced > 0 && data.strip) {
+            state.strip = data.strip;
+            if (data.history && (data.history.Corn || []).length) state.history = data.history;
+            state.quoteAsOf = data.as_of || new Date().toISOString();
+            if (data.error) setStatus(data.error + " — showing last trades that loaded.", true);
+            else setStatus("Futures updated from delayed last trade (" + priced + " contracts).");
+            usedLive = true;
+          }
+        }
+      } catch (e) { /* fall through to browser Yahoo fetch */ }
+      if (!usedLive) {
+        const res = await updateFromYahoo();
+        const when = res.asOf ? String(res.asOf).replace("T", " ").slice(0, 16) + " UTC" : "";
+        setStatus("Updated " + res.ok + "/" + res.tried + " contracts from Yahoo last trade" + (when ? " · " + when : "") + " (delayed ~10–20 min).");
+      }
+      save();
+      refresh({ reread: false, forms: false });
+    } catch (e) {
+      setStatus(String(e && e.message ? e.message : e) + " You can still type strip prices by hand.", true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function downloadBlob(blob, filename) {
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function worksheetPayload() {
+    readCarryForm();
+    return {
+      version: 1,
+      tool: "Grain Marketing Decisions",
+      savedAt: new Date().toISOString(),
+      crop: state.crop,
+      visible: state.visible,
+      trucking: state.trucking,
+      chartBoth: state.chartBoth,
+      storeDays: state.storeDays,
+      storeBestAny: state.storeBestAny,
+      storeMetric: state.storeMetric,
+      grain: state.grain,
+      actual: state.actual,
+      carry: state.carry,
+      strip: state.strip,
+      history: state.history,
+      quoteAsOf: state.quoteAsOf,
+    };
+  }
+
+  function saveWorksheetFile() {
+    const payload = worksheetPayload();
+    const stamp = new Date().toISOString().slice(0, 10);
+    const name = "grain-marketing-decisions-" + cropKey() + "-" + stamp + ".json";
+    downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), name);
+    setStatus("Worksheet saved as " + name);
+  }
+
+  function applyWorksheet(data) {
+    if (!data || typeof data !== "object") throw new Error("Not a worksheet file.");
+    if (data.crop) state.crop = data.crop;
+    if (data.visible) state.visible = { ...state.visible, ...data.visible };
+    if (data.chartBoth != null) state.chartBoth = !!data.chartBoth;
+    if (data.storeDays != null && Number.isFinite(Number(data.storeDays))) state.storeDays = Number(data.storeDays);
+    if (data.storeBestAny != null) state.storeBestAny = !!data.storeBestAny;
+    if (data.storeMetric === "basis" || data.storeMetric === "cash") state.storeMetric = data.storeMetric;
+    if (data.trucking && typeof data.trucking === "object") {
+      LOC_IDS.forEach((id) => {
+        const v = num(data.trucking[id]);
+        if (v != null) state.trucking[id] = v;
+      });
+    }
+    if (data.grain) state.grain = data.grain;
+    if (data.actual) state.actual = data.actual;
+    if (data.carry) {
+      state.carry = {
+        corn: { ...state.carry.corn, ...((data.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((data.carry || {}).soybeans || {}) },
+      };
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
+    }
+    if (data.strip) state.strip = data.strip;
+    if (data.history) state.history = data.history;
+    if (data.quoteAsOf) state.quoteAsOf = data.quoteAsOf;
+    save();
+    refresh({ reread: false, forms: true });
+  }
+
+  function loadWorksheetFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result || ""));
+        applyWorksheet(data);
+        setStatus("Loaded " + (file.name || "worksheet") + ".");
+      } catch (e) {
+        setStatus("Could not load that file. Use a saved worksheet JSON.", true);
+      }
+    };
+    reader.onerror = () => setStatus("Could not read that file.", true);
+    reader.readAsText(file);
+  }
+
+  function esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function buildPrintSummaryHtml() {
+    readCarryForm();
+    const c = carry();
+    const front = frontRow();
+    const points = timeline();
+    const locs = availableLocs();
+    const active = activeLocs();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    const stamp = new Date().toLocaleString();
+
+    const kv =
+      `<div class="kv">
+        <div><span>Interest APR</span><b>${esc(c.apr)}%</b></div>
+        <div><span>Storage $/bu/mo</span><b>${esc(money(num(c.storage) || 0, 4))}</b></div>
+        <div><span>Handling $/bu</span><b>${esc(money(num(c.handling) || 0, 4))}</b></div>
+        <div><span>Shrink %/mo</span><b>${esc(c.shrinkPct)}</b></div>
+        <div><span>Extra moisture pts</span><b>${esc(c.extraPts)}</b></div>
+        <div><span>Shrink factor</span><b>${esc(c.shrinkFactor)}</b></div>
+        <div><span>Interest mark</span><b>${esc(c.markMode)}</b></div>
+        <div><span>Front futures</span><b>${esc(front ? front.label + " " + money(nowFut, 4) : "—")}</b></div>
+      </div>`;
+
+    const truckRows = locs.map((id) =>
+      `<tr><td>${esc(id)}</td><td>${esc(money(truckingFor(id), 4))}</td><td>${state.visible[id] !== false ? "On chart" : "Hidden"}</td></tr>`
+    ).join("");
+
+    // Summary windows: Now + roughly monthly samples through horizon
+    const sample = [];
+    points.forEach((p, i) => {
+      if (p.isNow || i % Math.max(1, Math.floor(points.length / 12)) === 0 || i === points.length - 1) {
+        if (!sample.find((s) => s.key === p.key)) sample.push(p);
+      }
+    });
+
+    let head = "<tr><th>Window</th>";
+    active.forEach((loc) => { head += `<th colspan="2">${esc(loc)}</th>`; });
+    head += "</tr><tr><th></th>";
+    active.forEach(() => { head += "<th>Net basis ¢</th><th>Cash $/bu</th>"; });
+    head += "</tr>";
+
+    let body = "";
+    sample.forEach((p) => {
+      body += `<tr><td>${esc(p.label)}</td>`;
+      active.forEach((loc) => {
+        const row = buildPoint(loc, p, nowFut);
+        body += `<td>${esc(row.netBasis != null ? cents(row.netBasis, 1) : "—")}</td>`;
+        body += `<td>${esc(row.cash != null ? money(row.cash, 2) : "—")}</td>`;
+      });
+      body += "</tr>";
+    });
+
+    let basisImg = "";
+    let cashImg = "";
+    try { if (basisChart) basisImg = basisChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+    try { if (cashChart) cashImg = cashChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function winnerBlock(title, best, fmt, why) {
+      if (!best) {
+        return `<div class="winner-print">
+          <div class="winner-lab">${esc(title)}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+        </div>`;
+      }
+      return `<div class="winner-print">
+        <div class="winner-lab">${esc(title)}</div>
+        <div class="winner-val">${esc(fmt(best.value))}</div>
+        <div class="winner-meta"><strong>${esc(best.loc)}</strong> at <strong>${esc(best.label)}</strong></div>
+        <div class="winner-sub">${esc(why)}</div>
+      </div>`;
+    }
+
+    const winnersHtml = `
+      <h2 class="lead">The winners</h2>
+      <p class="lead-note">These are the strongest outcomes across every checked elevator and every move window on the charts. Start here — then use the charts and numbers below to see why they won.</p>
+      <div class="grid-print winners-print">
+        ${winnerBlock(
+          "Best net basis",
+          bestBasis,
+          (v) => cents(v, 1),
+          "Highest basis left after trucking and hold costs."
+        )}
+        ${winnerBlock(
+          "Best cash sale",
+          bestCash,
+          (v) => money(v, 2) + "/bu",
+          "Highest all-in cash price after futures, basis, trucking, and hold costs."
+        )}
+      </div>`;
+
+    const daysCap = num(state.storeDays);
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", daysCap), cropStoreSnapshot("soybeans", daysCap));
+    const anyPick = state.storeBestAny
+      ? pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null))
+      : null;
+    function printPick(title, pick) {
+      if (!pick || !pick.winner) {
+        return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? snapMathHtml(pick.corn, false) + snapMathHtml(pick.soy, false) : ""}`;
+      }
+      const w = pick.winner;
+      const later = snapLater(w);
+      const when = later ? `${later.loc} · ${later.label} · ${later.days} days` : "";
+      const formula = isStoreBasis()
+        ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+        : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
+      return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>
+        <p>Scored by ${isStoreBasis() ? "net basis" : "cash"}. ${formula}</p>
+        <div class="store-cmp">
+          ${snapMathHtml(pick.corn, w.crop === "corn")}
+          ${snapMathHtml(pick.soy, w.crop === "soybeans")}
+        </div>`;
+    }
+    const storeHtml = `
+      <h2>Most profitable crop to store</h2>
+      <p class="lead-note">Extra cash vs selling today, after all carry and trucking costs (interest, storage, shrink, handling, and haul).</p>
+      ${printPick(daysCap != null ? "Best crop in 0–" + daysCap + " days" : "Store window", windowPick)}
+      ${anyPick ? printPick("Best crop and time (any window)", anyPick) : ""}`;
+
+    const chartsHtml = `
+      <h2>Charts</h2>
+      <div class="grid-print">
+        <div>
+          <h3>Net basis after costs (¢/bu)</h3>
+          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+        <div>
+          <h3>Cash sale — futures + basis ($/bu)</h3>
+          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+      </div>`;
+
+    const metricsHtml = `
+      <h2>Metrics used</h2>
+      <h3>Cost of carry</h3>
+      ${kv}
+      <h3>Trucking by location</h3>
+      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>On charts</th></tr></thead><tbody>${truckRows}</tbody></table>
+      <h3>Sample windows</h3>
+      <table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+    const explainHtml = `
+      <h2>How this is calculated (plain English)</h2>
+      <div class="explain">
+        <p><strong>Why the winners are at the top.</strong>
+        Marketing comes down to two questions: (1) where is basis strongest after your real costs, and
+        (2) where do you take home the most cash if you sell futures and basis together.
+        The winners answer those first so you do not have to dig through every line on the charts.</p>
+
+        <p><strong>Basis used.</strong>
+        For each location and each time window we use your <em>actual</em> basis if you typed one.
+        If that cell is blank, we use seasonal historical basis for that elevator and crop.</p>
+
+        <p><strong>Net basis after costs (¢/bu).</strong>
+        Start with used basis, then subtract haul cost (trucking for that elevator) and the cost of holding grain
+        (interest, storage, shrink, and handling when the sale is later than today).
+        A higher net basis means more of the posted basis is still yours after costs.</p>
+
+        <p><strong>Cash sale ($/bu).</strong>
+        Take the CME futures price for that window, add used basis, then subtract the same trucking and hold costs.
+        That is the all-in cash number if you sell both the futures and the basis at that location and time.</p>
+
+        <p><strong>How a winner is picked.</strong>
+        We look only at locations you checked on the charts. For every move window we compute net basis and cash sale.
+        Best net basis = the single highest net-basis reading. Best cash sale = the single highest cash reading.
+        They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
+
+        <p><strong>Most profitable crop to store.</strong>
+        Corn vs soybeans, storing vs selling today, scored by ${isStoreBasis() ? "net basis" : "cash"}.
+        Extra is after all carry and trucking (interest, storage, shrink, handling, and haul).
+        ${isStoreBasis()
+          ? "Math: net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+          : "Math: cash = futures + basis − carry − trucking. Extra = cash later − cash now."}</p>
+
+        <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
+      </div>`;
+
+    return `
+      <h1>Grain Marketing Decisions</h1>
+      <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
+      ${winnersHtml}
+      ${storeHtml}
+      ${chartsHtml}
+      ${metricsHtml}
+      ${explainHtml}
+    `;
+  }
+
+  function printPdfSummary() {
+    const root = document.getElementById("printRoot");
+    if (!root) return;
+    root.innerHTML = buildPrintSummaryHtml();
+    root.setAttribute("aria-hidden", "false");
+    setStatus("Print dialog: choose “Save as PDF” for a PDF summary.");
+    const cleanup = () => {
+      root.innerHTML = "";
+      root.setAttribute("aria-hidden", "true");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => window.print(), 50);
+  }
+
+  document.getElementById("cropSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    state.crop = b.dataset.crop;
+    save();
+    refresh({ reread: false, forms: true });
+  });
+  const bothEl = document.getElementById("chartBoth");
+  if (bothEl) {
+    bothEl.addEventListener("change", () => {
+      state.chartBoth = bothEl.checked;
+      save();
+      refresh({ reread: false, forms: false, locs: true });
+    });
+  }
+  const storeDaysEl = document.getElementById("storeDays");
+  if (storeDaysEl) {
+    const applyDays = () => {
+      state.storeDays = num(storeDaysEl.value);
+      save();
+      renderStorePick();
+    };
+    storeDaysEl.addEventListener("input", applyDays);
+    storeDaysEl.addEventListener("change", applyDays);
+  }
+  const storeAnyEl = document.getElementById("storeBestAny");
+  if (storeAnyEl) {
+    storeAnyEl.addEventListener("change", () => {
+      state.storeBestAny = storeAnyEl.checked;
+      save();
+      renderStorePick();
+    });
+  }
+  const storeMetricEl = document.getElementById("storeMetricSeg");
+  if (storeMetricEl) {
+    storeMetricEl.addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b || !b.dataset.metric) return;
+      state.storeMetric = b.dataset.metric === "basis" ? "basis" : "cash";
+      save();
+      renderStorePick();
+    });
+  }
+  document.getElementById("btnUpdate").addEventListener("click", updateFutures);
+  document.getElementById("btnSave").addEventListener("click", saveWorksheetFile);
+  document.getElementById("btnLoad").addEventListener("click", () => document.getElementById("fileLoad").click());
+  document.getElementById("fileLoad").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    loadWorksheetFile(f);
+    e.target.value = "";
+  });
+  document.getElementById("btnPdf").addEventListener("click", printPdfSummary);
+  ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
+    const el = document.getElementById(id);
+    el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
+    if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
+  });
+
+  refresh({ reread: false, forms: true });
+  (function loadCharts() {
+    if (typeof Chart !== "undefined") return;
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js";
+    s.async = true;
+    s.onload = function () { refresh({ reread: false, forms: false }); };
+    document.head.appendChild(s);
+  })();
+})();

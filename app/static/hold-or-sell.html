@@ -1,0 +1,2268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Grain Marketing Decisions — Corn &amp; Soybeans</title>
+<style>
+  :root {
+    --bg: #c9dff0;
+    --card: #ffffff;
+    --ink: #06140c;
+    --muted: #2a4033;
+    --line: #6f9a7c;
+    --accent: #0d6b38;
+    --accent-soft: #d7f0e1;
+    --gold: #c9920e;
+    --gold-soft: #fff4d6;
+    --soy: #2f4b8a;
+    --good: #0d6b38;
+    --bad: #b01010;
+    --clay: #c23a12;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --display: Georgia, "Times New Roman", serif;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: var(--font); color: var(--ink); background: var(--bg); min-height: 100vh; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 22px 18px 48px; }
+  h1, h2 { font-family: var(--display); }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.03em; }
+  .lede { margin: 0 0 18px; color: var(--muted); max-width: 48rem; line-height: 1.45; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .spacer { flex: 1; }
+  button, select, input {
+    font: inherit; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); padding: 8px 11px;
+  }
+  button { cursor: pointer; font-weight: 600; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.55; cursor: wait; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--card); }
+  .seg button { border: 0; border-radius: 0; background: transparent; padding: 7px 14px; }
+  .seg button.on { background: var(--ink); color: #fff; }
+  .seg.corn button.on { background: #4a3500; }
+  .seg.soy button.on { background: var(--soy); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(255,255,255,0.7); border: 1px solid var(--line); color: var(--muted); font-size: 0.8rem;
+  }
+  .card {
+    background: var(--card); border: 1px solid color-mix(in srgb, var(--line) 70%, #fff);
+    border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px;
+  }
+  .locs { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 0; }
+  .loc {
+    display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 12px; background: #f7fbf8; user-select: none;
+  }
+  .loc.off { opacity: 0.45; }
+  .loc-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .loc input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .loc .swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .truck-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 8px; }
+  .truck-card {
+    display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; background: #f7fbf8;
+  }
+  .truck-card .name { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+  .truck-card .name .swatch { width: 10px; height: 10px; border-radius: 50%; }
+  .truck-card label { font-size: 0.72rem; color: var(--muted); font-weight: 650; }
+  .truck-card input.truck { width: 100%; font-weight: 700; color: var(--ink); padding: 6px 8px; text-align: right; }
+  .winners {
+    background: linear-gradient(135deg, #e8f2ea 0%, #fff8e8 55%, #eef3fa 100%);
+    border-color: color-mix(in srgb, var(--line) 55%, #fff);
+  }
+  .winners-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .winner {
+    background: rgba(255,255,255,0.72); border: 1px solid color-mix(in srgb, var(--line) 60%, #fff);
+    border-radius: 12px; padding: 14px 16px;
+  }
+  .winner-lab { font-size: 0.78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .winner-val { font-family: var(--display); font-size: 1.85rem; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 2px; }
+  .winner-meta { font-size: 0.95rem; color: var(--ink); font-weight: 650; }
+  .winner-meta .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle;
+  }
+  .winner-sub { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+  .store-card { background: linear-gradient(135deg, #e8f2ea 0%, #fff8e8 55%, #eef3fa 100%); }
+  .store-controls {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 8px 0 14px;
+  }
+  .store-controls label.days-lab, .store-controls .days-lab {
+    display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); font-weight: 650;
+  }
+  .store-controls input#storeDays { width: 120px; font-weight: 700; font-size: 1.1rem; }
+  .store-result {
+    background: rgba(255,255,255,0.82); border: 1px solid color-mix(in srgb, var(--line) 60%, #fff);
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+    overflow-x: auto;
+  }
+  .store-result .pick-val { font-family: var(--display); font-size: 1.55rem; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 6px; }
+  .store-result .why { font-size: 0.9rem; line-height: 1.4; margin: 0 0 10px; }
+  .store-result .meta-line { font-size: 0.88rem; font-weight: 650; margin-bottom: 4px; }
+  .store-formula { font-size: 0.8rem; color: var(--muted); line-height: 1.4; margin: 0 0 10px; }
+  .store-cmp { display: grid; grid-template-columns: 1fr; gap: 10px; min-width: 0; }
+  .store-cmp article {
+    background: #f7fbf8; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; font-size: 0.86rem; min-width: 0; overflow: hidden;
+  }
+  .store-cmp article.on { outline: 2px solid var(--accent); }
+  .store-cmp h3 { margin: 0 0 8px; font-size: 1.05rem; }
+  .store-math { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .store-math th, .store-math td {
+    padding: 5px 8px; text-align: right; border-bottom: 1px dotted #d7e4db;
+    vertical-align: top; word-break: break-word;
+  }
+  .store-math th:first-child, .store-math td:first-child {
+    text-align: left; width: 22%; font-weight: 650; color: var(--muted);
+  }
+  .store-math.cols-2 th:first-child, .store-math.cols-2 td:first-child { width: 34%; }
+  .store-math th {
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em;
+    color: var(--muted); font-weight: 700; background: #eef6f0;
+  }
+  .store-math th span {
+    display: block; text-transform: none; letter-spacing: 0;
+    font-size: 0.86rem; color: var(--ink); font-weight: 700; margin-top: 3px;
+  }
+  .store-math .sub td:first-child { padding-left: 18px; font-weight: 500; }
+  .store-math .total td {
+    font-weight: 700; border-top: 1px solid var(--line); border-bottom: 0;
+    font-size: 1.02rem; padding-top: 8px;
+  }
+  .store-math small { display: block; font-size: 0.72rem; color: var(--muted); font-weight: 600; }
+  .store-extra {
+    margin: 10px 0 0; padding: 8px 10px; background: #fff; border-radius: 8px;
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 8px; flex-wrap: wrap; font-size: 0.9rem; font-weight: 650;
+  }
+  .store-extra b { font-family: var(--display); font-size: 1.15rem; font-weight: 700; }
+  .both-toggle {
+    display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line);
+    border-radius: 999px; padding: 7px 12px; background: #f7fbf8; cursor: pointer; user-select: none; font-weight: 650;
+  }
+  .both-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  .month {
+    min-width: 108px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 10px; background: #f7fbf8;
+  }
+  .month.front { outline: 2px solid var(--accent); }
+  .month .lab { font-size: 0.75rem; color: var(--muted); font-weight: 650; }
+  .month input { width: 100%; font-weight: 700; font-size: 1.05rem; padding: 4px 6px; margin: 4px 0; }
+  .month em { font-style: normal; font-size: 0.75rem; color: var(--muted); }
+  .spread {
+    min-width: 72px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 0.78rem;
+  }
+  .spread strong { font-size: 0.95rem; }
+  .spread.carry strong { color: var(--good); }
+  .spread.inverse strong { color: var(--bad); }
+  .chart-wrap { position: relative; height: 360px; }
+  .chart-wrap.tall { height: 420px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .carry-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 12px; }
+  .carry-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+  .carry-grid input, .carry-grid select { font-weight: 600; color: var(--ink); }
+  .hint { font-size: 0.78rem; color: var(--muted); line-height: 1.4; margin: 0 0 12px; }
+  .rate-box {
+    grid-column: span 4; display: flex; flex-wrap: wrap; gap: 16px;
+    background: var(--accent-soft); border-radius: 10px; padding: 10px 12px;
+  }
+  .rate-box b { font-size: 1.05rem; }
+  .quarters { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+  .qchip {
+    display: flex; align-items: center; gap: 8px; border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px 8px 6px 10px; background: #f7fbf8;
+  }
+  .qchip strong { font-size: 0.82rem; }
+  .qchip select { padding: 4px 6px; }
+  .table-wrap { overflow-x: auto; max-height: 520px; -webkit-overflow-scrolling: touch; }
+  .basis-mobile { display: none; }
+  .bm-pin {
+    position: sticky; top: 0; z-index: 40;
+    display: none; align-items: center; gap: 10px;
+    padding: 12px 14px; margin: 0 0 10px;
+    background: #0d6b38; color: #fff; border-radius: 12px;
+    box-shadow: 0 6px 18px rgba(6, 20, 12, 0.22);
+  }
+  .bm-pin.on { display: flex; }
+  .bm-pin .swatch { width: 12px; height: 12px; border-radius: 50%; background: #fff; flex: 0 0 auto; }
+  .bm-pin strong { font-family: var(--display); font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
+  .bm-pin em { margin-left: auto; font-style: normal; font-size: 0.75rem; opacity: 0.9; font-weight: 650; }
+  .bm-loc {
+    border: 1px solid var(--line); border-radius: 12px; background: #f7fbf8;
+    margin-bottom: 12px;
+  }
+  .bm-loc-head {
+    position: sticky; top: 52px; z-index: 35;
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    background: #e8f2ea; font-family: var(--display); font-size: 1.1rem; font-weight: 700;
+    border-bottom: 1px solid var(--line); border-radius: 12px 12px 0 0;
+    box-shadow: 0 1px 0 rgba(13, 107, 56, 0.12);
+  }
+  .bm-loc-head .swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .bm-row {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid #d7e4db;
+  }
+  .bm-row:last-child { border-bottom: 0; }
+  .bm-row.now { background: #fff7e0; }
+  .bm-row.act-on { background: #e5f6ea; }
+  .bm-when { font-size: 0.86rem; font-weight: 650; }
+  .bm-hist { font-size: 0.8rem; color: var(--muted); text-align: right; min-width: 4.5rem; }
+  .bm-hist span { display: block; font-size: 0.68rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.03em; }
+  .bm-act { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .bm-act span { font-size: 0.68rem; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .bm-act input.basis { width: 88px; text-align: right; padding: 7px 8px; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+  th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #d7e4db; white-space: nowrap; }
+  th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 700; }
+  td:first-child, th:first-child, td.l, th.l { text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }
+  thead th { position: sticky; top: 0; background: #f3f8f4; z-index: 2; }
+  thead th:first-child { z-index: 3; }
+  th.loc {
+    background: #e8f2ea; color: var(--ink); border-bottom: 2px solid var(--accent);
+    border-left: 1px solid rgba(13, 107, 56, 0.18);
+    font-family: var(--display); font-size: 1.05rem; font-weight: 700;
+    text-transform: none; letter-spacing: -0.01em; padding: 8px 10px 6px;
+    text-align: center; min-width: 7.2rem; vertical-align: bottom;
+  }
+  th.loc .loc-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  th.loc .loc-sub {
+    display: block; margin-top: 2px;
+    font-family: inherit; font-size: 0.65rem; font-weight: 650;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+  }
+  th.sub {
+    font-size: 0.68rem; font-weight: 650; background: #f3f8f4; color: var(--muted);
+    vertical-align: bottom; min-width: 4.4rem;
+    border-left: 1px solid rgba(13, 107, 56, 0.18);
+  }
+  tr.now td { background: #fff7e0; }
+  tr.now td:first-child { background: #fff7e0; }
+  td input.basis { width: 76px; text-align: right; padding: 5px 6px; font-weight: 600; }
+  td.hist { color: var(--muted); border-left: 1px solid rgba(13, 107, 56, 0.18); }
+  td.act-on { background: #e5f6ea; }
+  .footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin-top: 8px; }
+  .status { font-size: 0.82rem; color: var(--muted); }
+  .status.err { color: var(--bad); }
+  .toolbar-btns { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button.ghost { background: #f7fbf8; }
+  #fileLoad { display: none; }
+  #printRoot { display: none; }
+  @media print {
+    body { background: #fff; }
+    .wrap > *:not(#printRoot) { display: none !important; }
+    #printRoot { display: block !important; color: #111; }
+    #printRoot h1 { font-size: 1.6rem; margin: 0 0 4px; }
+    #printRoot .meta { color: #444; margin: 0 0 14px; font-size: 0.9rem; }
+    #printRoot h2 { font-size: 1.1rem; margin: 18px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    #printRoot h2.lead { font-size: 1.25rem; margin-top: 8px; border-bottom-color: #0d6b38; }
+    #printRoot h3 { font-size: 0.95rem; margin: 12px 0 6px; }
+    #printRoot .lead-note { font-size: 0.9rem; color: #333; margin: 0 0 10px; line-height: 1.45; }
+    #printRoot table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 10px; }
+    #printRoot th, #printRoot td { border: 1px solid #ccc; padding: 4px 6px; text-align: right; }
+    #printRoot th:first-child, #printRoot td:first-child { text-align: left; }
+    #printRoot img.chart { width: 100%; max-height: 260px; object-fit: contain; margin: 6px 0 12px; }
+    #printRoot .grid-print { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    #printRoot .winner-print {
+      border: 2px solid #0d6b38; border-radius: 8px; padding: 12px 14px; background: #f3faf5;
+      break-inside: avoid;
+    }
+    #printRoot .winner-lab { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: #355; font-weight: 700; }
+    #printRoot .winner-val { font-size: 1.7rem; font-weight: 700; margin: 4px 0; letter-spacing: -0.02em; }
+    #printRoot .winner-meta { font-size: 1rem; margin-bottom: 4px; }
+    #printRoot .winner-sub { font-size: 0.82rem; color: #444; }
+    #printRoot .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 0.85rem; }
+    #printRoot .kv div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted #ddd; padding: 2px 0; }
+    #printRoot .explain { font-size: 0.9rem; line-height: 1.5; }
+    #printRoot .explain p { margin: 0 0 10px; }
+    #printRoot .store-cmp { display: block; }
+    #printRoot .store-cmp article { border: 1px solid #ccc; padding: 8px; margin: 0 0 10px; break-inside: avoid; }
+    #printRoot .store-math th span { display: block; text-transform: none; letter-spacing: 0; font-size: 0.8rem; color: #111; }
+    #printRoot .store-extra { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; }
+    .no-print { display: none !important; }
+  }
+  @media (max-width: 980px) {
+    .grid-2, .carry-grid, .winners-grid { grid-template-columns: 1fr 1fr; }
+    .rate-box { grid-column: span 2; }
+  }
+  @media (max-width: 760px) {
+    .grid-2, .carry-grid, .winners-grid, .store-cmp { grid-template-columns: 1fr; }
+    .rate-box { grid-column: span 1; }
+    .hint-desktop { display: none; }
+    .hint-mobile { display: block; }
+  }
+  .hint-mobile { display: none; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Grain Marketing Decisions</h1>
+    <p class="lede">Pick a crop and locations. Enter actual basis where you have it — otherwise historical is used. Charts show net basis after costs, and full cash sale (futures + basis) for selling both at once.</p>
+
+    <div class="row" style="margin-bottom:14px">
+      <div class="seg" id="cropSeg">
+        <button type="button" data-crop="corn" class="on">Corn</button>
+        <button type="button" data-crop="soybeans">Soybeans</button>
+      </div>
+      <span class="pill" id="asOfPill">Quotes delayed</span>
+      <span class="status" id="status"></span>
+      <div class="spacer"></div>
+      <div class="toolbar-btns">
+        <button type="button" class="ghost" id="btnSave" title="Download your inputs as a JSON worksheet">Save worksheet</button>
+        <button type="button" class="ghost" id="btnLoad" title="Load a saved worksheet file">Load…</button>
+        <input type="file" id="fileLoad" accept="application/json,.json" />
+        <button type="button" class="ghost" id="btnPdf" title="Open a printable summary — choose Save as PDF in the print dialog">Print PDF summary</button>
+        <button type="button" class="primary" id="btnUpdate">Update futures prices</button>
+      </div>
+    </div>
+    <div id="printRoot" aria-hidden="true"></div>
+
+    <section class="card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Locations on charts</h2>
+        <span class="pill">Dayton = corn only · Sidney = soybeans only</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="both-toggle">
+          <input type="checkbox" id="chartBoth" />
+          <span>Both corn and soybeans on charts</span>
+        </label>
+        <span class="pill">Soy = dashed lines</span>
+      </div>
+      <div class="locs" id="locs"></div>
+    </section>
+
+    <section class="card winners">
+      <div class="row" style="margin-bottom:10px">
+        <h2 style="margin:0;font-size:1.15rem">Best results</h2>
+        <span class="pill">Across checked locations &amp; all move windows</span>
+      </div>
+      <div class="winners-grid" id="winners"></div>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <div class="row" style="margin-bottom:8px">
+          <h2 style="margin:0;font-size:1.15rem">Net basis after everything</h2>
+        </div>
+        <p class="hint">Used basis (actual if entered, else historical) − trucking − interest − storage − shrink. ¢/bu. Best for watching basis + hold costs.</p>
+        <div class="chart-wrap tall"><canvas id="basisChart"></canvas></div>
+      </section>
+      <section class="card">
+        <div class="row" style="margin-bottom:8px">
+          <h2 style="margin:0;font-size:1.15rem">Cash sale (futures + basis)</h2>
+        </div>
+        <p class="hint">Futures price + used basis − all carry costs − trucking. $/bu. For selling futures and basis together.</p>
+        <div class="chart-wrap tall"><canvas id="cashChart"></canvas></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="row" style="margin-bottom:8px">
+        <h2 style="margin:0;font-size:1.15rem">CME futures — 18 months</h2>
+        <span class="pill">Click a price to override</span>
+      </div>
+      <div class="strip" id="strip"></div>
+    </section>
+
+    <section class="card">
+      <div class="row" style="margin-bottom:6px">
+        <h2 style="margin:0;font-size:1.15rem">Cost of carry</h2>
+      </div>
+      <p class="hint">These feed both charts. Trucking is set per location below.</p>
+      <div class="carry-grid">
+        <label>Interest APR % / yr<input id="apr" inputmode="decimal"></label>
+        <label>Storage $/bu / month<input id="storage" inputmode="decimal"></label>
+        <label>Mark for interest
+          <select id="markMode">
+            <option value="cash">Futures + basis (cash)</option>
+            <option value="futures">Futures only</option>
+          </select>
+        </label>
+        <label>In-and-out handling $/bu<input id="handling" inputmode="decimal"></label>
+        <label>Handling / quality shrink % / mo<input id="shrinkPct" inputmode="decimal"></label>
+        <label>Extra moisture points<input id="extraPts" inputmode="decimal"></label>
+        <label>Shrink factor % / point<input id="shrinkFactor" inputmode="decimal"></label>
+        <div class="rate-box" id="rateBox"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Cost of trucking</h2>
+        <span class="pill">$/bu by elevator</span>
+      </div>
+      <p class="hint">Each location has its own haul cost. Charts and cash sale use that location’s rate.</p>
+      <div class="truck-grid" id="truckGrid"></div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Actual basis entry</h2>
+        <span class="pill">Actual replaces historical for that window only</span>
+      </div>
+      <p class="hint hint-desktop">Enter cents per bushel: a +10¢ basis is <strong>10</strong> or <strong>+10</strong>, not 0.10. Under-futures is negative (example: <strong>-25</strong>). Location names sit over the Actual ¢ column. Leave blank to keep historical.</p>
+      <p class="hint hint-mobile">Type cents/bu under the location name. +10¢ = <strong>10</strong>. −25¢ = <strong>-25</strong>. Not 0.10.</p>
+      <div class="quarters" id="quarters"></div>
+      <div class="table-wrap basis-desktop">
+        <table id="basisTable">
+          <thead></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="basis-mobile" id="basisMobile" aria-label="Actual basis by location"></div>
+    </section>
+
+    <section class="card store-card">
+      <div class="row">
+        <h2 style="margin:0;font-size:1.15rem">Most profitable crop to store</h2>
+        <span class="pill">Updates as you change inputs</span>
+      </div>
+      <p class="hint" id="storeHint">Compares corn vs soybeans on cash after all carry and trucking. Extra = cash later − cash now.</p>
+      <div class="store-controls">
+        <div>
+          <div class="days-lab" style="margin-bottom:6px">Score by</div>
+          <div class="seg" id="storeMetricSeg">
+            <button type="button" data-metric="cash" class="on">Cash $/bu</button>
+            <button type="button" data-metric="basis">Net basis ¢</button>
+          </div>
+        </div>
+        <label class="days-lab">How many days to store
+          <input id="storeDays" inputmode="numeric" placeholder="90">
+        </label>
+        <label class="both-toggle">
+          <input type="checkbox" id="storeBestAny" />
+          <span>Find best crop and time (any window)</span>
+        </label>
+      </div>
+      <div class="store-result" id="storeWindowOut"></div>
+      <div class="store-result" id="storeAnyOut" hidden></div>
+    </section>
+
+    <p class="footer" id="footer"></p>
+  </div>
+
+<script>
+window.HOLD_SELL_DATA = {"generated":"2026-08-18T16:57:30Z","source":"Grain_Basis_History.xlsx + grain_basis_history.csv \u00b7 Cargill Ohio bid sheets (Kellogg, Dayton, Bloomingburg, Sidney)","spotRange":{"corn":["2021-03-01","2026-07-14"],"soybeans":["2021-03-01","2026-07-14"]},"locations":{"Kellogg":{"id":"Kellogg","name":"Kellogg","corn":{"available":true,"thin":false,"n":323,"mergedSidneyNorth":false,"monthly":{"1":{"avg":5.88,"n":20},"2":{"avg":3.44,"n":20},"3":{"avg":-0.5,"n":20},"4":{"avg":13.95,"n":20},"5":{"avg":12.27,"n":20},"6":{"avg":13.92,"n":20},"7":{"avg":17.46,"n":20},"8":{"avg":-7.67,"n":20},"9":{"avg":-25.77,"n":20},"10":{"avg":-0.33,"n":20},"11":{"avg":0.8,"n":20},"12":{"avg":1.55,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":24,"contract":"U26"},{"window":"8/1/26 - 8/31/26","end":"2026-08-31","month":8,"year":2026,"basis":5,"contract":"U26"},{"window":"9/1/26 - 9/30/26","end":"2026-09-30","month":9,"year":2026,"basis":-17,"contract":"U26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-26,"contract":""},{"window":"11/1/26 - 11/30/26","end":"2026-11-30","month":11,"year":2026,"basis":-18,"contract":""},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":5,"contract":""},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-2,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":0,"contract":"H27"}]},"soybeans":{"available":true,"thin":false,"n":304,"mergedSidneyNorth":false,"monthly":{"1":{"avg":5.9,"n":20},"2":{"avg":-1.34,"n":20},"3":{"avg":-4.92,"n":20},"4":{"avg":8.71,"n":20},"5":{"avg":7.78,"n":20},"6":{"avg":8.86,"n":20},"7":{"avg":16.68,"n":20},"8":{"avg":-38.07,"n":20},"9":{"avg":-42.5,"n":20},"10":{"avg":-11.75,"n":20},"11":{"avg":-5.64,"n":20},"12":{"avg":0.8,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":23,"contract":"Q26"},{"window":"9/1/26 - 9/30/26","end":"2026-09-30","month":9,"year":2026,"basis":-30,"contract":"X26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-27,"contract":"X26"},{"window":"11/1/26 - 11/30/26","end":"2026-11-30","month":11,"year":2026,"basis":-17,"contract":"X26"},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":-4,"contract":"F27"},{"window":"1/1/27 - 1/31/27","end":"2027-01-31","month":1,"year":2027,"basis":1,"contract":"F27"},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-8,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":-9,"contract":"H27"},{"window":"4/1/27 - 4/30/27","end":"2027-04-30","month":4,"year":2027,"basis":-13,"contract":"K27"}]}},"Dayton":{"id":"Dayton","name":"Dayton","corn":{"available":true,"thin":false,"n":332,"mergedSidneyNorth":false,"monthly":{"1":{"avg":9.52,"n":20},"2":{"avg":10.78,"n":20},"3":{"avg":10.25,"n":20},"4":{"avg":15.9,"n":20},"5":{"avg":20.74,"n":20},"6":{"avg":30.0,"n":20},"7":{"avg":40.96,"n":20},"8":{"avg":10.0,"n":20},"9":{"avg":-21.36,"n":20},"10":{"avg":-17.5,"n":20},"11":{"avg":8.44,"n":20},"12":{"avg":9.29,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":30,"contract":"U26"},{"window":"8/1/26 - 8/31/26","end":"2026-08-31","month":8,"year":2026,"basis":20,"contract":"U26"},{"window":"9/1/26 - 9/30/26","end":"2026-09-30","month":9,"year":2026,"basis":10,"contract":"U26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-20,"contract":""},{"window":"11/1/26 - 11/30/26","end":"2026-11-30","month":11,"year":2026,"basis":-20,"contract":""},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":-5,"contract":""},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-10,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":-10,"contract":"H27"}]},"soybeans":{"available":false,"thin":true,"n":0,"mergedSidneyNorth":false,"monthly":{"1":{"avg":null,"n":0},"2":{"avg":null,"n":0},"3":{"avg":null,"n":0},"4":{"avg":null,"n":0},"5":{"avg":null,"n":0},"6":{"avg":null,"n":0},"7":{"avg":null,"n":0},"8":{"avg":null,"n":0},"9":{"avg":null,"n":0},"10":{"avg":null,"n":0},"11":{"avg":null,"n":0},"12":{"avg":null,"n":0}},"weekly":{},"latestDate":null,"latestCurve":[],"hidden":true}},"Bloomingburg":{"id":"Bloomingburg","name":"Bloomingburg","corn":{"available":true,"thin":false,"n":336,"mergedSidneyNorth":false,"monthly":{"1":{"avg":7.17,"n":20},"2":{"avg":7.0,"n":20},"3":{"avg":5.38,"n":20},"4":{"avg":13.33,"n":20},"5":{"avg":12.43,"n":20},"6":{"avg":23.84,"n":20},"7":{"avg":32.15,"n":20},"8":{"avg":9.05,"n":20},"9":{"avg":-18.55,"n":20},"10":{"avg":-20.71,"n":20},"11":{"avg":4.69,"n":20},"12":{"avg":6.0,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":15,"contract":"U26"},{"window":"8/1/26 - 8/31/26","end":"2026-08-31","month":8,"year":2026,"basis":20,"contract":"U26"},{"window":"9/1/26 - 9/30/26","end":"2026-09-30","month":9,"year":2026,"basis":10,"contract":"U26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-25,"contract":""},{"window":"11/1/26 - 11/30/26","end":"2026-11-30","month":11,"year":2026,"basis":-25,"contract":""},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":-10,"contract":""},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-15,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":-15,"contract":"H27"}]},"soybeans":{"available":true,"thin":false,"n":326,"mergedSidneyNorth":false,"monthly":{"1":{"avg":-17.83,"n":20},"2":{"avg":-15.88,"n":20},"3":{"avg":-19.03,"n":20},"4":{"avg":-8.92,"n":20},"5":{"avg":-14.91,"n":20},"6":{"avg":-5.58,"n":20},"7":{"avg":-7.96,"n":20},"8":{"avg":-32.06,"n":20},"9":{"avg":-44.11,"n":20},"10":{"avg":-32.86,"n":20},"11":{"avg":-22.65,"n":20},"12":{"avg":-16.65,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":4,"contract":"Q26"},{"window":"8/1/26 - 8/31/26","end":"2026-08-31","month":8,"year":2026,"basis":6,"contract":"Q26"},{"window":"9/1/26 - 9/30/26","end":"2026-09-30","month":9,"year":2026,"basis":-35,"contract":"X26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-45,"contract":"X26"},{"window":"11/1/26 - 11/30/26","end":"2026-11-30","month":11,"year":2026,"basis":-35,"contract":"X26"},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":-32,"contract":"F27"},{"window":"1/1/27 - 1/31/27","end":"2027-01-31","month":1,"year":2027,"basis":-30,"contract":"F27"},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-29,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":-28,"contract":"H27"},{"window":"4/1/27 - 4/30/27","end":"2027-04-30","month":4,"year":2027,"basis":-28,"contract":"K27"}]}},"Sidney":{"id":"Sidney","name":"Sidney","corn":{"available":false,"thin":true,"n":0,"mergedSidneyNorth":false,"monthly":{"1":{"avg":null,"n":0},"2":{"avg":null,"n":0},"3":{"avg":null,"n":0},"4":{"avg":null,"n":0},"5":{"avg":null,"n":0},"6":{"avg":null,"n":0},"7":{"avg":null,"n":0},"8":{"avg":null,"n":0},"9":{"avg":null,"n":0},"10":{"avg":null,"n":0},"11":{"avg":null,"n":0},"12":{"avg":null,"n":0}},"weekly":{},"latestDate":null,"latestCurve":[],"hidden":true},"soybeans":{"available":true,"thin":false,"n":329,"mergedSidneyNorth":false,"monthly":{"1":{"avg":0.7,"n":20},"2":{"avg":3.97,"n":20},"3":{"avg":1.36,"n":20},"4":{"avg":9.53,"n":20},"5":{"avg":-0.35,"n":20},"6":{"avg":10.82,"n":20},"7":{"avg":13.8,"n":20},"8":{"avg":3.42,"n":20},"9":{"avg":-27.0,"n":20},"10":{"avg":-11.71,"n":20},"11":{"avg":-13.65,"n":20},"12":{"avg":-4.45,"n":20}},"weekly":{},"latestDate":"2026-07-13","latestCurve":[{"window":"7/1/26 - 7/31/26","end":"2026-07-31","month":7,"year":2026,"basis":10,"contract":"Q26"},{"window":"10/1/26 - 10/31/26","end":"2026-10-31","month":10,"year":2026,"basis":-25,"contract":"X26"},{"window":"12/1/26 - 12/31/26","end":"2026-12-31","month":12,"year":2026,"basis":-5,"contract":"F27"},{"window":"1/1/27 - 1/31/27","end":"2027-01-31","month":1,"year":2027,"basis":-5,"contract":"F27"},{"window":"2/1/27 - 2/28/27","end":"2027-02-28","month":2,"year":2027,"basis":-5,"contract":"H27"},{"window":"3/1/27 - 3/31/27","end":"2027-03-31","month":3,"year":2027,"basis":-5,"contract":"H27"},{"window":"4/1/27 - 4/30/27","end":"2027-04-30","month":4,"year":2027,"basis":-5,"contract":"K27"}]}}},"strip":{"Corn":[{"crop":"Corn","month_code":"U","month":9,"year":2026,"label":"Sep '26","short":"U26","ticker":"ZCU26.CBT","last_trading_day":"2026-09-14","is_front":true,"price":4.6375,"change":-0.0125},{"crop":"Corn","month_code":"Z","month":12,"year":2026,"label":"Dec '26","short":"Z26","ticker":"ZCZ26.CBT","last_trading_day":"2026-12-14","is_front":false,"price":4.885,"change":-0.01},{"crop":"Corn","month_code":"H","month":3,"year":2027,"label":"Mar '27","short":"H27","ticker":"ZCH27.CBT","last_trading_day":"2027-03-12","is_front":false,"price":5.0425,"change":-0.01},{"crop":"Corn","month_code":"K","month":5,"year":2027,"label":"May '27","short":"K27","ticker":"ZCK27.CBT","last_trading_day":"2027-05-14","is_front":false,"price":5.12,"change":-0.005},{"crop":"Corn","month_code":"N","month":7,"year":2027,"label":"Jul '27","short":"N27","ticker":"ZCN27.CBT","last_trading_day":"2027-07-14","is_front":false,"price":5.15,"change":0.0},{"crop":"Corn","month_code":"U","month":9,"year":2027,"label":"Sep '27","short":"U27","ticker":"ZCU27.CBT","last_trading_day":"2027-09-14","is_front":false,"price":4.9725,"change":0.01},{"crop":"Corn","month_code":"Z","month":12,"year":2027,"label":"Dec '27","short":"Z27","ticker":"ZCZ27.CBT","last_trading_day":"2027-12-14","is_front":false,"price":5.0225,"change":0.0075},{"crop":"Corn","month_code":"H","month":3,"year":2028,"label":"Mar '28","short":"H28","ticker":"ZCH28.CBT","last_trading_day":"2028-03-14","is_front":false,"price":5.1325,"change":0.005}],"Soybeans":[{"crop":"Soybeans","month_code":"U","month":9,"year":2026,"label":"Sep '26","short":"U26","ticker":"ZSU26.CBT","last_trading_day":"2026-09-14","is_front":true,"price":12.0425,"change":0.0325},{"crop":"Soybeans","month_code":"X","month":11,"year":2026,"label":"Nov '26","short":"X26","ticker":"ZSX26.CBT","last_trading_day":"2026-11-13","is_front":false,"price":12.2075,"change":0.0475},{"crop":"Soybeans","month_code":"F","month":1,"year":2027,"label":"Jan '27","short":"F27","ticker":"ZSF27.CBT","last_trading_day":"2027-01-14","is_front":false,"price":12.355,"change":0.045},{"crop":"Soybeans","month_code":"H","month":3,"year":2027,"label":"Mar '27","short":"H27","ticker":"ZSH27.CBT","last_trading_day":"2027-03-12","is_front":false,"price":12.4175,"change":0.06},{"crop":"Soybeans","month_code":"K","month":5,"year":2027,"label":"May '27","short":"K27","ticker":"ZSK27.CBT","last_trading_day":"2027-05-14","is_front":false,"price":12.475,"change":0.07},{"crop":"Soybeans","month_code":"N","month":7,"year":2027,"label":"Jul '27","short":"N27","ticker":"ZSN27.CBT","last_trading_day":"2027-07-14","is_front":false,"price":12.515,"change":0.0725},{"crop":"Soybeans","month_code":"Q","month":8,"year":2027,"label":"Aug '27","short":"Q27","ticker":"ZSQ27.CBT","last_trading_day":"2027-08-13","is_front":false,"price":12.3525,"change":0.075},{"crop":"Soybeans","month_code":"U","month":9,"year":2027,"label":"Sep '27","short":"U27","ticker":"ZSU27.CBT","last_trading_day":"2027-09-14","is_front":false,"price":12.0,"change":0.0775},{"crop":"Soybeans","month_code":"X","month":11,"year":2027,"label":"Nov '27","short":"X27","ticker":"ZSX27.CBT","last_trading_day":"2027-11-12","is_front":false,"price":11.9175,"change":0.065},{"crop":"Soybeans","month_code":"F","month":1,"year":2028,"label":"Jan '28","short":"F28","ticker":"ZSF28.CBT","last_trading_day":"2028-01-14","is_front":false,"price":11.91,"change":-0.0475},{"crop":"Soybeans","month_code":"H","month":3,"year":2028,"label":"Mar '28","short":"H28","ticker":"ZSH28.CBT","last_trading_day":"2028-03-14","is_front":false,"price":12.01,"change":0.0675}]},"history":{"Corn":[{"date":"2025-02-17","price":4.9125},{"date":"2025-02-24","price":4.535},{"date":"2025-03-03","price":4.5525},{"date":"2025-03-10","price":4.455},{"date":"2025-03-17","price":4.6425},{"date":"2025-03-24","price":4.5325},{"date":"2025-03-31","price":4.6025},{"date":"2025-04-07","price":4.9025},{"date":"2025-04-14","price":4.8225},{"date":"2025-04-21","price":4.7875},{"date":"2025-04-28","price":4.6125},{"date":"2025-05-05","price":4.415},{"date":"2025-05-12","price":4.435},{"date":"2025-05-19","price":4.595},{"date":"2025-05-26","price":4.44},{"date":"2025-06-02","price":4.425},{"date":"2025-06-09","price":4.445},{"date":"2025-06-16","price":4.2875},{"date":"2025-06-23","price":4.175},{"date":"2025-06-30","price":4.315},{"date":"2025-07-07","price":4.03},{"date":"2025-07-14","price":4.085},{"date":"2025-07-21","price":3.995},{"date":"2025-07-28","price":3.895},{"date":"2025-08-04","price":3.8275},{"date":"2025-08-11","price":3.8375},{"date":"2025-08-18","price":3.8825},{"date":"2025-08-25","price":3.98},{"date":"2025-09-01","price":3.99},{"date":"2025-09-08","price":3.99},{"date":"2025-09-15","price":4.24},{"date":"2025-09-22","price":4.22},{"date":"2025-09-29","price":4.19},{"date":"2025-10-06","price":4.13},{"date":"2025-10-13","price":4.225},{"date":"2025-10-20","price":4.2325},{"date":"2025-10-27","price":4.315},{"date":"2025-11-03","price":4.2725},{"date":"2025-11-10","price":4.3025},{"date":"2025-11-17","price":4.255},{"date":"2025-11-24","price":4.355},{"date":"2025-12-01","price":4.3675},{"date":"2025-12-08","price":4.315},{"date":"2025-12-15","price":4.4375},{"date":"2025-12-22","price":4.5},{"date":"2025-12-29","price":4.375},{"date":"2026-01-05","price":4.4575},{"date":"2026-01-12","price":4.2475},{"date":"2026-01-19","price":4.305},{"date":"2026-01-26","price":4.2825},{"date":"2026-02-02","price":4.3025},{"date":"2026-02-09","price":4.3175},{"date":"2026-02-16","price":4.275},{"date":"2026-02-23","price":4.3875},{"date":"2026-03-02","price":4.47},{"date":"2026-03-09","price":4.525},{"date":"2026-03-16","price":4.655},{"date":"2026-03-23","price":4.62},{"date":"2026-03-30","price":4.5225},{"date":"2026-04-06","price":4.41},{"date":"2026-04-13","price":4.4875},{"date":"2026-04-20","price":4.55},{"date":"2026-04-27","price":4.6825},{"date":"2026-05-04","price":4.5625},{"date":"2026-05-11","price":4.5575},{"date":"2026-05-18","price":4.6325},{"date":"2026-05-25","price":4.4675},{"date":"2026-06-01","price":4.175},{"date":"2026-06-08","price":4.1275},{"date":"2026-06-15","price":4.175},{"date":"2026-06-22","price":4.1275},{"date":"2026-06-29","price":4.25},{"date":"2026-07-06","price":4.38},{"date":"2026-07-13","price":4.4475},{"date":"2026-07-20","price":4.6425},{"date":"2026-07-27","price":4.4075},{"date":"2026-08-03","price":4.39},{"date":"2026-08-10","price":4.59},{"date":"2026-08-14","price":4.8325}],"Soybeans":[{"date":"2025-02-17","price":10.395},{"date":"2025-02-24","price":10.115},{"date":"2025-03-03","price":10.1025},{"date":"2025-03-10","price":9.9925},{"date":"2025-03-17","price":10.0975},{"date":"2025-03-24","price":10.23},{"date":"2025-03-31","price":9.77},{"date":"2025-04-07","price":10.4275},{"date":"2025-04-14","price":10.365},{"date":"2025-04-21","price":10.4975},{"date":"2025-04-28","price":10.4875},{"date":"2025-05-05","price":10.44},{"date":"2025-05-12","price":10.5},{"date":"2025-05-19","price":10.6025},{"date":"2025-05-26","price":10.4175},{"date":"2025-06-02","price":10.5725},{"date":"2025-06-09","price":10.6975},{"date":"2025-06-16","price":10.68},{"date":"2025-06-23","price":10.2775},{"date":"2025-06-30","price":10.5625},{"date":"2025-07-07","price":10.04},{"date":"2025-07-14","price":10.2775},{"date":"2025-07-21","price":9.9875},{"date":"2025-07-28","price":9.6175},{"date":"2025-08-04","price":9.6675},{"date":"2025-08-11","price":10.2225},{"date":"2025-08-18","price":10.365},{"date":"2025-08-25","price":10.3675},{"date":"2025-09-01","price":10.065},{"date":"2025-09-08","price":10.2575},{"date":"2025-09-15","price":10.255},{"date":"2025-09-22","price":10.1375},{"date":"2025-09-29","price":10.18},{"date":"2025-10-06","price":10.0675},{"date":"2025-10-13","price":10.195},{"date":"2025-10-20","price":10.4175},{"date":"2025-10-27","price":10.9975},{"date":"2025-11-03","price":11.0175},{"date":"2025-11-10","price":11.1275},{"date":"2025-11-17","price":11.25},{"date":"2025-11-24","price":11.3775},{"date":"2025-12-01","price":11.0525},{"date":"2025-12-08","price":10.7675},{"date":"2025-12-15","price":10.4925},{"date":"2025-12-22","price":10.5875},{"date":"2025-12-29","price":10.295},{"date":"2026-01-05","price":10.485},{"date":"2026-01-12","price":10.5775},{"date":"2026-01-19","price":10.6775},{"date":"2026-01-26","price":10.6425},{"date":"2026-02-02","price":11.1525},{"date":"2026-02-09","price":11.33},{"date":"2026-02-16","price":11.375},{"date":"2026-02-23","price":11.5725},{"date":"2026-03-02","price":11.85},{"date":"2026-03-09","price":12.11},{"date":"2026-03-16","price":11.6125},{"date":"2026-03-23","price":11.5925},{"date":"2026-03-30","price":11.635},{"date":"2026-04-06","price":11.7575},{"date":"2026-04-13","price":11.6725},{"date":"2026-04-20","price":11.6375},{"date":"2026-04-27","price":11.8775},{"date":"2026-05-04","price":11.9425},{"date":"2026-05-11","price":11.77},{"date":"2026-05-18","price":11.965},{"date":"2026-05-25","price":11.8675},{"date":"2026-06-01","price":11.215},{"date":"2026-06-08","price":11.135},{"date":"2026-06-15","price":11.2275},{"date":"2026-06-22","price":11.2625},{"date":"2026-06-29","price":11.3175},{"date":"2026-07-06","price":11.965},{"date":"2026-07-13","price":12.045},{"date":"2026-07-20","price":12.48},{"date":"2026-07-27","price":11.72},{"date":"2026-08-03","price":11.565},{"date":"2026-08-10","price":11.7375},{"date":"2026-08-14","price":11.925}]},"notes":{"Dayton":"Dayton is corn-only in this tool \u2014 soybean basis is not shown.","Sidney":"Sidney is soybeans-only in this tool \u2014 corn basis is not shown.","shrink":"ISU AgDM A2-33: extra moisture shrink = extra points \u00d7 shrink factor \u00d7 price. Farm factor 1.25%; elevator 1.35\u20131.4%. Handling/storage loss typically 0.5\u20131% over a storage season (~0.08\u20130.17%/month)."}};
+
+/* Grain Marketing Decisions — net basis chart + cash sale chart + simple actual basis entry. */
+(function () {
+  const DATA = window.HOLD_SELL_DATA;
+  if (!DATA) {
+    document.body.innerHTML = "<p style='padding:2rem'>Missing hold-or-sell-data.js</p>";
+    return;
+  }
+
+  const LS = "beam.holdSell.v3";
+  const DAYS_MO = 30.4375;
+  const HORIZON_MO = 18;
+  const LOC_COLORS = {
+    Kellogg: "#0d6b38",
+    Dayton: "#c9920e",
+    Bloomingburg: "#2f4b8a",
+    Sidney: "#c23a12",
+  };
+  const LOC_IDS = ["Kellogg", "Dayton", "Bloomingburg", "Sidney"];
+  const DEFAULT_TRUCK = 0.18;
+
+  function defaultTrucking() {
+    const out = {};
+    LOC_IDS.forEach((id) => { out[id] = DEFAULT_TRUCK; });
+    return out;
+  }
+
+  const state = {
+    crop: "corn",
+    visible: { Kellogg: true, Dayton: true, Bloomingburg: true, Sidney: true },
+    trucking: defaultTrucking(),
+    chartBoth: false,
+    storeDays: 90,
+    storeBestAny: false,
+    storeMetric: "cash",
+    grain: {},
+    actual: {},
+    carry: {
+      corn: { apr: 7, storage: 0.03, shrinkPct: 0.08, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+      soybeans: { apr: 7, storage: 0.04, shrinkPct: 0.1, extraPts: 0, shrinkFactor: 1.25, handling: 0.02, markMode: "cash" },
+    },
+    strip: DATA.strip,
+    history: DATA.history,
+    quoteAsOf: DATA.generated,
+  };
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS) || localStorage.getItem("beam.holdSell.v2") || "null");
+    if (saved && typeof saved === "object") {
+      state.crop = saved.crop || state.crop;
+      state.visible = { ...state.visible, ...(saved.visible || {}) };
+      if (saved.chartBoth != null) state.chartBoth = !!saved.chartBoth;
+      if (saved.storeDays != null && Number.isFinite(Number(saved.storeDays))) state.storeDays = Number(saved.storeDays);
+      if (saved.storeBestAny != null) state.storeBestAny = !!saved.storeBestAny;
+      if (saved.storeMetric === "basis" || saved.storeMetric === "cash") state.storeMetric = saved.storeMetric;
+      state.grain = saved.grain || {};
+      state.actual = saved.actual || {};
+      // migrate old actualNow into actual keys
+      if (saved.actualNow && typeof saved.actualNow === "object") {
+        Object.keys(saved.actualNow).forEach((k) => {
+          const parts = k.split("|");
+          if (parts.length === 2) {
+            const nk = parts[0] + "|" + parts[1] + "|now";
+            if (saved.actualNow[k] != null && saved.actualNow[k] !== "") state.actual[nk] = saved.actualNow[k];
+          }
+        });
+      }
+      state.carry = {
+        corn: { ...state.carry.corn, ...((saved.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((saved.carry || {}).soybeans || {}) },
+      };
+      // Per-location trucking (migrate old single carry.trucking if needed)
+      function parseN(v) {
+        const n = parseFloat(String(v ?? "").replace(",", ""));
+        return Number.isFinite(n) ? n : null;
+      }
+      const legacyTruck =
+        parseN(typeof saved.trucking === "number" ? saved.trucking : null) ??
+        parseN((saved.carry || {}).corn && saved.carry.corn.trucking) ??
+        parseN((saved.carry || {}).soybeans && saved.carry.soybeans.trucking) ??
+        DEFAULT_TRUCK;
+      state.trucking = defaultTrucking();
+      LOC_IDS.forEach((id) => { state.trucking[id] = legacyTruck; });
+      if (saved.trucking && typeof saved.trucking === "object") {
+        LOC_IDS.forEach((id) => {
+          const v = parseN(saved.trucking[id]);
+          if (v != null) state.trucking[id] = v;
+        });
+      }
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
+      // Keep basis/carry/trucking. Only restore a saved futures strip when it is
+      // newer than the quotes baked into this page — otherwise a failed Update
+      // would pin stale prices over a republish.
+      const bakedAt = String(DATA.generated || "");
+      const savedAt = String(saved.quoteAsOf || "");
+      if (saved.strip && savedAt && bakedAt && savedAt > bakedAt) {
+        state.strip = saved.strip;
+        if (saved.history) state.history = saved.history;
+        state.quoteAsOf = saved.quoteAsOf;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  let basisChart;
+  let cashChart;
+
+  function save() {
+    try {
+      localStorage.setItem(LS, JSON.stringify({
+        crop: state.crop, visible: state.visible, trucking: state.trucking, chartBoth: state.chartBoth,
+        storeDays: state.storeDays, storeBestAny: state.storeBestAny, storeMetric: state.storeMetric,
+        grain: state.grain, actual: state.actual,
+        carry: state.carry, strip: state.strip, history: state.history, quoteAsOf: state.quoteAsOf,
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  function truckingFor(loc) {
+    const v = num(state.trucking[loc]);
+    return v != null ? v : DEFAULT_TRUCK;
+  }
+
+  function cropKey() { return state.crop === "soybeans" ? "soybeans" : "corn"; }
+  function cropLabel() { return cropKey() === "soybeans" ? "Soybeans" : "Corn"; }
+  function stripCrop() { return cropLabel(); }
+  function carry() { return state.carry[cropKey()]; }
+
+  function withCrop(crop, fn) {
+    const prev = state.crop;
+    state.crop = crop === "soybeans" ? "soybeans" : "corn";
+    try { return fn(); }
+    finally { state.crop = prev; }
+  }
+
+  function chartCrops() {
+    return state.chartBoth ? ["corn", "soybeans"] : [cropKey()];
+  }
+
+  function unionLocs() {
+    const ids = new Set();
+    chartCrops().forEach((c) => {
+      withCrop(c, () => availableLocs().forEach((id) => ids.add(id)));
+    });
+    return LOC_IDS.filter((id) => ids.has(id));
+  }
+
+  function availableLocs() {
+    return Object.keys(DATA.locations).filter((id) => {
+      const c = DATA.locations[id][cropKey()];
+      return c && c.available && !c.hidden;
+    });
+  }
+  function activeLocs() {
+    return availableLocs().filter((id) => state.visible[id] !== false);
+  }
+  function cropBlock(loc) { return (DATA.locations[loc] || {})[cropKey()]; }
+
+  function num(v) {
+    const n = parseFloat(String(v ?? "").replace(",", ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  function money(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return "$" + n.toFixed(d);
+  }
+  function cents(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return (n > 0 ? "+" : "") + n.toFixed(d) + "¢";
+  }
+  function fmtDate(d) {
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  function ymd(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, d.getDate()); }
+  function weekU(d) {
+    const jan1 = new Date(d.getFullYear(), 0, 1);
+    const days = Math.floor((d - jan1) / 86400000);
+    return Math.floor((days + jan1.getDay()) / 7);
+  }
+  function quarterInfo(d) {
+    const q = Math.floor(d.getMonth() / 3) + 1;
+    return { year: d.getFullYear(), q, key: d.getFullYear() + "-Q" + q, label: "Q" + q + " " + d.getFullYear() };
+  }
+  function parseISO(s) {
+    if (!s) return null;
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  function today() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  }
+  function stripRows() { return (state.strip[stripCrop()] || []).slice(); }
+  function frontRow() {
+    const rows = stripRows().filter((r) => r.price != null);
+    return rows.find((r) => r.is_front) || rows[0] || null;
+  }
+  function contractForDate(d) {
+    const rows = stripRows();
+    for (const r of rows) {
+      const ltd = parseISO(r.last_trading_day);
+      if (ltd && ltd >= d) return r;
+    }
+    return rows[rows.length - 1] || null;
+  }
+
+  function histBasis(loc, d) {
+    const block = cropBlock(loc);
+    if (!block || !block.available) return null;
+    const wRow = block.weekly && block.weekly[String(weekU(d))];
+    if (wRow && wRow.avg != null && wRow.n >= 2) return wRow.avg;
+    const mRow = block.monthly && block.monthly[String(d.getMonth() + 1)];
+    return mRow && mRow.avg != null ? mRow.avg : null;
+  }
+
+  function actualKey(loc, periodKey) {
+    return cropKey() + "|" + loc + "|" + periodKey;
+  }
+
+  /** Actual replaces historical for that window only; blank reverts to historical. */
+  function usedBasis(loc, d, periodKey) {
+    const typed = num(state.actual[actualKey(loc, periodKey)]);
+    if (typed != null) return { value: typed, source: "actual", hist: histBasis(loc, d) };
+    const h = histBasis(loc, d);
+    return { value: h, source: h == null ? "none" : "seasonal", hist: h };
+  }
+
+  function markPrice(fut, basisCents) {
+    if (fut == null) return null;
+    if (carry().markMode === "futures") return fut;
+    return fut + (basisCents || 0) / 100;
+  }
+
+  function carryParts(fut, basisCents, days, loc) {
+    const c = carry();
+    const mark = markPrice(fut, basisCents) || 0;
+    const months = Math.max(0, days) / DAYS_MO;
+    const years = Math.max(0, days) / 365;
+    const interest = mark * (num(c.apr) || 0) / 100 * years;
+    const storage = (num(c.storage) || 0) * months;
+    const handlingShrink = (num(c.shrinkPct) || 0) / 100 * mark * months;
+    const moisture = days > 0 ? (num(c.extraPts) || 0) * ((num(c.shrinkFactor) || 0) / 100) * mark : 0;
+    const inout = days > 0 ? (num(c.handling) || 0) : 0;
+    const trucking = loc ? truckingFor(loc) : 0; // paid whenever you deliver; per location
+    const holdCost = interest + storage + handlingShrink + moisture + inout;
+    return {
+      mark, interest, storage, handlingShrink, moisture, inout, trucking, holdCost,
+      total: holdCost + trucking,
+      monthlyRate: (mark * (num(c.apr) || 0) / 100 / 12) + (num(c.storage) || 0) + ((num(c.shrinkPct) || 0) / 100 * mark),
+    };
+  }
+
+  function defaultGrain(qIndex) {
+    if (qIndex === 0) return "weekly";
+    if (qIndex === 1) return "bimonthly";
+    return "monthly";
+  }
+
+  function periodDates(start, end, grain) {
+    const out = [];
+    if (grain === "weekly") {
+      let d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      while (d <= end) {
+        out.push(new Date(d));
+        d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+      }
+    } else if (grain === "bimonthly") {
+      let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+      while (cur <= end) {
+        for (const day of [1, 15]) {
+          const d = new Date(cur.getFullYear(), cur.getMonth(), day);
+          if (d >= start && d <= end) out.push(d);
+        }
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      }
+    } else {
+      let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+      if (cur < start) cur = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+      if (start.getDate() <= 2) out.push(new Date(start));
+      while (cur <= end) {
+        out.push(new Date(cur));
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      }
+    }
+    return out;
+  }
+
+  function quarters() {
+    const start = today();
+    const end = addMonths(start, HORIZON_MO);
+    const list = [];
+    let cursor = new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1);
+    while (cursor <= end) {
+      const qEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 3, 0);
+      const qStart = cursor < start ? start : new Date(cursor);
+      const info = quarterInfo(qStart);
+      const clippedEnd = qEnd > end ? end : qEnd;
+      if (qStart <= clippedEnd) list.push({ ...info, start: qStart, end: clippedEnd });
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 3, 1);
+    }
+    return list;
+  }
+
+  function timeline() {
+    const now = today();
+    const qs = quarters();
+    const points = [{ date: now, key: "now", label: "Now · " + fmtDate(now), isNow: true }];
+    qs.forEach((q, qi) => {
+      const grain = state.grain[q.key] || defaultGrain(qi);
+      periodDates(q.start, q.end, grain).forEach((d) => {
+        if (ymd(d) === ymd(now)) return;
+        points.push({
+          date: d, key: ymd(d),
+          label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+          isNow: false, quarter: q,
+        });
+      });
+    });
+    return points;
+  }
+
+  /**
+   * Per location / window:
+   * - usedBasis ¢
+   * - netBasis ¢ = usedBasis − trucking¢ − holdCost¢  (everything on the basis side)
+   * - cash $ = futures + usedBasis/100 − holdCost − trucking  (sell futures + basis together)
+   */
+  function buildPoint(loc, point, nowFut) {
+    const days = point.isNow ? 0 : Math.max(0, Math.round((point.date - today()) / 86400000));
+    const b = usedBasis(loc, point.date, point.key);
+    const contract = point.isNow ? frontRow() : contractForDate(point.date);
+    const fut = contract && contract.price != null ? Number(contract.price) : null;
+    // Interest mark uses nearby + current basis for holding cost from today
+    const nowB = usedBasis(loc, today(), "now");
+    const parts = carryParts(nowFut, nowB.value, days, loc);
+    const truckC = parts.trucking * 100;
+    const holdC = parts.holdCost * 100;
+    const netBasis = b.value != null ? b.value - truckC - holdC : null;
+    const cash = (fut != null && b.value != null)
+      ? fut + b.value / 100 - parts.holdCost - parts.trucking
+      : null;
+    return {
+      ...point, loc, hist: b.hist, used: b.value, source: b.source,
+      futures: fut, netBasis, cash, truckC, holdC, costC: truckC + holdC,
+      hold$: parts.holdCost, truck$: parts.trucking,
+      interest$: parts.interest, storage$: parts.storage,
+      shrink$: parts.handlingShrink + parts.moisture, handling$: parts.inout,
+    };
+  }
+
+  function setStatus(msg, err) {
+    const el = document.getElementById("status");
+    el.textContent = msg || "";
+    el.className = "status" + (err ? " err" : "");
+  }
+
+  function renderCropSeg() {
+    const seg = document.getElementById("cropSeg");
+    seg.className = "seg " + (cropKey() === "soybeans" ? "soy" : "corn");
+    seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.crop === cropKey()));
+    const both = document.getElementById("chartBoth");
+    if (both) both.checked = !!state.chartBoth;
+  }
+
+  function renderLocs() {
+    const avail = unionLocs();
+    document.getElementById("locs").innerHTML = avail.map((id) => {
+      const on = state.visible[id] !== false;
+      return `<label class="loc ${on ? "" : "off"}">
+        <span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>
+        <input type="checkbox" data-id="${id}" ${on ? "checked" : ""} />
+        <strong>${id}</strong>
+      </label>`;
+    }).join("");
+    document.getElementById("locs").querySelectorAll("input[type=checkbox]").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        state.visible[inp.dataset.id] = inp.checked;
+        save();
+        refresh({ reread: false, forms: false, locs: true });
+      });
+    });
+  }
+
+  function renderTrucking() {
+    const root = document.getElementById("truckGrid");
+    if (!root) return;
+    const avail = unionLocs();
+    root.innerHTML = avail.map((id) => {
+      const truck = truckingFor(id);
+      return `<div class="truck-card">
+        <div class="name"><span class="swatch" style="background:${LOC_COLORS[id] || "#666"}"></span>${id}</div>
+        <label>Trucking $/bu
+          <input class="truck" data-truck="${id}" inputmode="decimal" value="${truck}" placeholder="0.18" />
+        </label>
+      </div>`;
+    }).join("") || "<p class='hint'>No locations for this crop.</p>";
+    root.querySelectorAll("input.truck").forEach((inp) => {
+      const apply = () => {
+        const v = num(inp.value);
+        state.trucking[inp.dataset.truck] = v != null ? v : 0;
+        save();
+        refresh({ reread: false, forms: false });
+      };
+      inp.addEventListener("change", apply);
+      inp.addEventListener("input", apply);
+    });
+  }
+
+  function findBest(metric) {
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { value: v, loc, label: p.label, isNow: !!p.isNow, key: p.key };
+        }
+      });
+    });
+    return best;
+  }
+
+  function renderWinners() {
+    const el = document.getElementById("winners");
+    if (!el) return;
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function card(title, best, fmt) {
+      if (!best) {
+        return `<div class="winner">
+          <div class="winner-lab">${title}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+          <div class="winner-sub">Check a location and load futures/basis.</div>
+        </div>`;
+      }
+      const color = LOC_COLORS[best.loc] || "#666";
+      return `<div class="winner">
+        <div class="winner-lab">${title}</div>
+        <div class="winner-val">${fmt(best.value)}</div>
+        <div class="winner-meta"><span class="dot" style="background:${color}"></span>${best.loc} · ${best.label}</div>
+        <div class="winner-sub">Best ${title.toLowerCase()} among checked locations</div>
+      </div>`;
+    }
+
+    el.innerHTML =
+      card("Best net basis", bestBasis, (v) => cents(v, 1)) +
+      card("Best cash sale", bestCash, (v) => money(v, 2) + "/bu");
+  }
+
+  function pointDays(p) {
+    return p.isNow ? 0 : Math.max(0, Math.round((p.date - today()) / 86400000));
+  }
+
+  function findBestCapped(metric, maxDays) {
+    const cap = maxDays == null || !Number.isFinite(maxDays) ? Infinity : Math.max(0, maxDays);
+    const points = timeline();
+    const locs = activeLocs();
+    const front = frontRow();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    let best = null;
+    locs.forEach((loc) => {
+      points.forEach((p) => {
+        const d = pointDays(p);
+        if (d > cap) return;
+        const row = buildPoint(loc, p, nowFut);
+        const v = row[metric];
+        if (v == null || !Number.isFinite(v)) return;
+        if (!best || v > best.value) {
+          best = { ...row, value: v, days: d };
+        }
+      });
+    });
+    return best;
+  }
+
+  function cropStoreSnapshot(crop, maxDays) {
+    return withCrop(crop, () => {
+      const bestCash = findBestCapped("cash", maxDays);
+      const bestBasis = findBestCapped("netBasis", maxDays);
+      const points = timeline();
+      const nowPt = points.find((p) => p.isNow) || points[0];
+      const locs = activeLocs();
+      const front = frontRow();
+      const nowFut = front && front.price != null ? Number(front.price) : null;
+      let nowCashRow = null;
+      let nowBasisRow = null;
+      locs.forEach((loc) => {
+        const row = buildPoint(loc, nowPt, nowFut);
+        if (row.cash != null && (nowCashRow == null || row.cash > nowCashRow.cash)) nowCashRow = row;
+        if (row.netBasis != null && (nowBasisRow == null || row.netBasis > nowBasisRow.netBasis)) nowBasisRow = row;
+      });
+      const nowCash = nowCashRow ? nowCashRow.cash : null;
+      const nowBasis = nowBasisRow ? nowBasisRow.netBasis : null;
+      const cashGain = (bestCash && nowCash != null) ? bestCash.value - nowCash : null;
+      const basisGain = (bestBasis && nowBasis != null) ? bestBasis.value - nowBasis : null;
+      return {
+        crop,
+        label: crop === "soybeans" ? "Soybeans" : "Corn",
+        bestCash, bestBasis, nowCashRow, nowBasisRow, nowRow: nowCashRow,
+        nowCash, nowBasis, nowLoc: nowCashRow ? nowCashRow.loc : null, cashGain, basisGain,
+      };
+    });
+  }
+
+  function signedMoney(n, d) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const mag = "$" + Math.abs(n).toFixed(d);
+    if (n < -0.0000001) return "−" + mag;
+    if (n > 0.0000001) return "+" + mag;
+    return mag;
+  }
+
+  function amt(n, d, signed) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return signed ? signedMoney(n, d) : money(n, d);
+  }
+
+  function whereLabel(row) {
+    if (!row) return "—";
+    const bits = [row.loc, row.isNow ? "Now" : row.label];
+    if (row.days) bits.push(row.days + " days");
+    return bits.filter(Boolean).join(" · ");
+  }
+
+  function basisCell(row) {
+    if (!row || row.used == null) return "—";
+    const src = row.source === "actual" ? "actual" : "hist";
+    return `${signedMoney(row.used / 100, 3)}<small>${cents(row.used, 1)} ${src}</small>`;
+  }
+
+  function carryBits(row) {
+    if (!row) return [];
+    return [
+      ["interest", row.interest$],
+      ["storage", row.storage$],
+      ["shrink", row.shrink$],
+      ["handling", row.handling$],
+    ].filter(([, v]) => v != null && Math.abs(v) > 0.00005);
+  }
+
+  function isStoreBasis() { return state.storeMetric === "basis"; }
+  function snapLater(snap) { return isStoreBasis() ? snap.bestBasis : snap.bestCash; }
+  function snapNow(snap) { return isStoreBasis() ? snap.nowBasisRow : snap.nowCashRow; }
+  function snapGain(snap) { return isStoreBasis() ? snap.basisGain : snap.cashGain; }
+  function fmtGain(n) { return isStoreBasis() ? cents(n, 1) : money(n, 2) + "/bu"; }
+
+  function snapMathHtml(snap, isWinner) {
+    if (!snap) return "";
+    const later = snapLater(snap);
+    const now = snapNow(snap);
+    const basisMode = isStoreBasis();
+    if (!later || later.value == null || !now || (basisMode ? now.netBasis == null : now.cash == null)) {
+      return `<article class="${isWinner ? "on" : ""}"><h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+        <p class="why">Need futures and basis for ${esc(snap.label)}.</p></article>`;
+    }
+    const same = later.isNow || (now.loc === later.loc && now.key === later.key);
+    const cols = same ? 2 : 3;
+    const laterHead = basisMode ? "Hold for basis" : "Store and sell";
+    const nowHead = "Sell now";
+    const head = same
+      ? `<tr><th></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`
+      : `<tr><th></th><th>${esc(laterHead)}<span>${esc(whereLabel(later))}</span></th><th>${esc(nowHead)}<span>${esc(whereLabel(now))}</span></th></tr>`;
+
+    function cells(label, laterHtml, nowHtml, cls) {
+      if (same) return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${nowHtml}</td></tr>`;
+      return `<tr class="${cls || ""}"><td>${esc(label)}</td><td>${laterHtml}</td><td>${nowHtml}</td></tr>`;
+    }
+
+    let rows = "";
+    if (basisMode) {
+      rows += cells("Used basis", cents(later.used, 1), cents(now.used, 1));
+      rows += cells("Carry", cents(-(later.holdC || 0), 1), cents(-(now.holdC || 0), 1));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, cents(-v * 100, 1), "—", "sub");
+      });
+      rows += cells("Trucking", cents(-(later.truckC || 0), 1), cents(-(now.truckC || 0), 1));
+      rows += cells("Net basis ¢", cents(later.netBasis, 1), cents(now.netBasis, 1), "total");
+    } else {
+      rows += cells("Futures", amt(later.futures, 4, false), amt(now.futures, 4, false));
+      rows += same
+        ? `<tr><td>Basis</td><td>${basisCell(now)}</td></tr>`
+        : `<tr><td>Basis</td><td>${basisCell(later)}</td><td>${basisCell(now)}</td></tr>`;
+      rows += cells("Carry", amt(-(later.hold$ || 0), 3, true), amt(-(now.hold$ || 0), 3, true));
+      carryBits(same ? now : later).forEach(([lab, v]) => {
+        rows += cells(lab, amt(-v, 3, true), "—", "sub");
+      });
+      rows += cells("Trucking", amt(-(later.truck$ || 0), 3, true), amt(-(now.truck$ || 0), 3, true));
+      rows += cells("Cash $/bu", money(later.cash, 2), money(now.cash, 2), "total");
+    }
+
+    const gain = snapGain(snap);
+    const extra = same
+      ? `<p class="store-extra"><span>Extra vs now</span><b>${esc(fmtGain(0))}</b></p>`
+      : `<p class="store-extra"><span>Extra vs now</span>
+           <b>${esc(basisMode ? cents(later.netBasis, 1) : money(later.cash, 2))} − ${esc(basisMode ? cents(now.netBasis, 1) : money(now.cash, 2))} = ${esc(fmtGain(gain))}</b></p>`;
+
+    return `<article class="${isWinner ? "on" : ""}">
+      <h3>${esc(snap.label)}${isWinner ? " · winner" : ""}</h3>
+      <table class="store-math cols-${cols}">
+        <thead>${head}</thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${extra}
+    </article>`;
+  }
+
+  function storeMathHtml(pick) {
+    if (!pick || (!pick.corn && !pick.soy)) return "";
+    const w = pick.winner;
+    const formula = isStoreBasis()
+      ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+      : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
+    return `<p class="store-formula">${formula}</p>
+      <div class="store-cmp">
+        ${snapMathHtml(pick.corn, w && w.crop === "corn")}
+        ${snapMathHtml(pick.soy, w && w.crop === "soybeans")}
+      </div>`;
+  }
+
+  function pickStoreWinner(corn, soy) {
+    const g = (s) => snapGain(s);
+    let winner = null;
+    if (g(corn) != null && g(soy) != null) winner = g(corn) >= g(soy) ? corn : soy;
+    else if (g(corn) != null) winner = corn;
+    else if (g(soy) != null) winner = soy;
+    const other = winner ? (winner.crop === "corn" ? soy : corn) : null;
+    let why = "Need futures and basis on both crops to compare.";
+    if (winner) {
+      const wGain = g(winner);
+      const oGain = other ? g(other) : null;
+      const later = snapLater(winner);
+      const laterOk = later && !later.isNow;
+      const unit = isStoreBasis() ? "net basis" : "cash";
+      const nearZero = isStoreBasis() ? 0.5 : 0.005;
+      if (wGain != null && wGain <= 0 && (oGain == null || oGain <= 0)) {
+        why = "Neither crop pays to store after all carry and trucking — sell now beats holding both.";
+      } else if (laterOk) {
+        why = winner.label + " at " + later.loc + " on " + later.label
+          + " (" + later.days + " days) adds " + fmtGain(wGain) + " vs selling now, after all carry and trucking.";
+        if (oGain != null) why += " That is " + fmtGain(Math.abs(wGain - oGain)) + " more than " + other.label.toLowerCase() + ".";
+        if (wGain != null && wGain <= nearZero) {
+          why = winner.label + " is the less-bad store, but extra " + unit + " vs now is about zero after all carry and trucking.";
+        }
+      } else {
+        why = winner.label + " wins, but the best " + unit + " is already now — storing does not add money after carry and trucking.";
+      }
+    }
+    return { winner, why, corn, soy };
+  }
+
+  function renderStorePick() {
+    const daysEl = document.getElementById("storeDays");
+    const anyEl = document.getElementById("storeBestAny");
+    const windowOut = document.getElementById("storeWindowOut");
+    const anyOut = document.getElementById("storeAnyOut");
+    if (!windowOut) return;
+
+    const metricEl = document.getElementById("storeMetricSeg");
+    if (metricEl) {
+      metricEl.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.metric === (isStoreBasis() ? "basis" : "cash"));
+      });
+    }
+    const hintEl = document.getElementById("storeHint");
+    if (hintEl) {
+      hintEl.textContent = isStoreBasis()
+        ? "Compares corn vs soybeans on net basis after all carry and trucking. Extra = later net basis − now net basis."
+        : "Compares corn vs soybeans on cash after all carry and trucking. Extra = cash later − cash now.";
+    }
+
+    if (daysEl && document.activeElement !== daysEl) {
+      daysEl.value = state.storeDays == null ? "" : String(state.storeDays);
+    }
+    if (anyEl) anyEl.checked = !!state.storeBestAny;
+
+    const days = num(state.storeDays);
+    const cap = days != null ? Math.max(0, days) : null;
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", cap), cropStoreSnapshot("soybeans", cap));
+
+    function resultHtml(title, pick, rangeNote) {
+      const w = pick.winner;
+      if (!w) {
+        return `<div class="winner-lab">${title}</div>
+          <div class="pick-val">—</div>
+          <p class="why">${pick.why}</p>
+          ${storeMathHtml(pick)}`;
+      }
+      const later = w ? snapLater(w) : null;
+      const when = later ? later.loc + " · " + later.label + " · " + later.days + " days" : "";
+      return `<div class="winner-lab">${title}</div>
+        <div class="pick-val">${w.label}</div>
+        <div class="meta-line">${when}</div>
+        <p class="why">${pick.why} ${rangeNote || ""}</p>
+        ${storeMathHtml(pick)}`;
+    }
+
+    if (cap == null) {
+      windowOut.innerHTML = `<div class="winner-lab">Best crop in your store window</div>
+        <div class="pick-val">—</div>
+        <p class="why">Enter how many days you can store (example: 90).</p>`;
+    } else {
+      windowOut.innerHTML = resultHtml(
+        "Best crop in 0–" + cap + " days",
+        windowPick,
+        "Only windows from now through " + cap + " days are counted."
+      );
+    }
+
+    if (anyOut) {
+      if (state.storeBestAny) {
+        anyOut.hidden = false;
+        const anyPick = pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null));
+        anyOut.innerHTML = resultHtml(
+          "Best crop and time (any window)",
+          anyPick,
+          "Looks at every move window on the charts, not just your day limit."
+        );
+      } else {
+        anyOut.hidden = true;
+        anyOut.innerHTML = "";
+      }
+    }
+  }
+
+  function renderCarryForm() {
+    const c = carry();
+    document.getElementById("apr").value = c.apr;
+    document.getElementById("storage").value = c.storage;
+    document.getElementById("markMode").value = c.markMode;
+    document.getElementById("handling").value = c.handling;
+    document.getElementById("shrinkPct").value = c.shrinkPct;
+    document.getElementById("extraPts").value = c.extraPts;
+    document.getElementById("shrinkFactor").value = c.shrinkFactor;
+  }
+
+  function readCarryForm() {
+    const c = carry();
+    c.apr = num(document.getElementById("apr").value) ?? c.apr;
+    c.storage = num(document.getElementById("storage").value) ?? 0;
+    c.markMode = document.getElementById("markMode").value;
+    c.handling = num(document.getElementById("handling").value) ?? 0;
+    c.shrinkPct = num(document.getElementById("shrinkPct").value) ?? 0;
+    c.extraPts = num(document.getElementById("extraPts").value) ?? 0;
+    c.shrinkFactor = num(document.getElementById("shrinkFactor").value) ?? 0;
+  }
+
+  function renderStrip() {
+    const rows = stripRows();
+    const el = document.getElementById("strip");
+    let html = "";
+    rows.forEach((r, i) => {
+      html += `<div class="month ${r.is_front ? "front" : ""}">
+        <div class="lab">${r.label}${r.is_front ? " · front" : ""}</div>
+        <input data-i="${i}" inputmode="decimal" value="${r.price != null ? Number(r.price).toFixed(4) : ""}" />
+        <em>${r.short}</em>
+      </div>`;
+      if (i < rows.length - 1) {
+        const n = rows[i + 1];
+        const sp = r.price != null && n.price != null ? (Number(n.price) - Number(r.price)) * 100 : null;
+        const cls = sp == null ? "" : sp > 0 ? "carry" : sp < 0 ? "inverse" : "";
+        const word = sp == null ? "" : sp > 0 ? "carry" : sp < 0 ? "inverse" : "flat";
+        html += `<div class="spread ${cls}"><strong>${cents(sp, 1)}</strong><span>${word}</span></div>`;
+      }
+    });
+    el.innerHTML = html || "<p class='hint'>Update futures prices to load the strip.</p>";
+    el.querySelectorAll("input").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const i = Number(inp.dataset.i);
+        const v = num(inp.value);
+        if (state.strip[stripCrop()][i]) state.strip[stripCrop()][i].price = v;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
+  function renderRate() {
+    const front = frontRow();
+    const loc = activeLocs()[0] || availableLocs()[0];
+    const nowB = loc ? usedBasis(loc, today(), "now") : { value: 0 };
+    const parts = carryParts(front && front.price, nowB.value, DAYS_MO, loc);
+    const shrinkMo = (num(carry().shrinkPct) || 0) / 100 * (parts.mark || 0);
+    document.getElementById("rateBox").innerHTML =
+      `<div><div class="muted">Mark</div><b>${money(parts.mark, 4)}</b></div>
+       <div><div class="muted">Interest / mo</div><b>${money(parts.interest, 4)}</b></div>
+       <div><div class="muted">Storage / mo</div><b>${money(parts.storage, 4)}</b></div>
+       <div><div class="muted">Shrink / mo</div><b>${money(shrinkMo, 4)}</b></div>
+       <div><div class="muted">Monthly hold rate</div><b>${money(parts.monthlyRate, 4)}</b></div>`;
+  }
+
+  function renderQuarters() {
+    const qs = quarters();
+    document.getElementById("quarters").innerHTML = qs.map((q, i) => {
+      const g = state.grain[q.key] || defaultGrain(i);
+      return `<label class="qchip"><strong>${q.label}</strong>
+        <select data-q="${q.key}">
+          <option value="weekly" ${g === "weekly" ? "selected" : ""}>Weekly</option>
+          <option value="bimonthly" ${g === "bimonthly" ? "selected" : ""}>Bi-monthly</option>
+          <option value="monthly" ${g === "monthly" ? "selected" : ""}>Monthly</option>
+        </select></label>`;
+    }).join("");
+    document.getElementById("quarters").querySelectorAll("select").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        state.grain[sel.dataset.q] = sel.value;
+        save();
+        refresh({ reread: false, forms: false });
+      });
+    });
+  }
+
+  let basisLocObserver = null;
+
+  function setBasisLocPin(loc) {
+    const pin = document.getElementById("basisLocPin");
+    if (!pin || !loc) return;
+    const color = LOC_COLORS[loc] || "#fff";
+    pin.classList.add("on");
+    pin.innerHTML = `<span class="swatch" style="background:${color}"></span><strong>${loc}</strong><em>Actual basis</em>`;
+  }
+
+  function setupBasisLocPin(mobile) {
+    const pin = document.getElementById("basisLocPin");
+    if (!mobile || !pin) return;
+    if (basisLocObserver) {
+      basisLocObserver.disconnect();
+      basisLocObserver = null;
+    }
+    const sections = mobile.querySelectorAll(".bm-loc");
+    if (!sections.length) {
+      pin.classList.remove("on");
+      pin.innerHTML = "";
+      return;
+    }
+    setBasisLocPin(sections[0].dataset.loc);
+    if (typeof IntersectionObserver !== "undefined") {
+      basisLocObserver = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0] && visible[0].target.dataset.loc) {
+          setBasisLocPin(visible[0].target.dataset.loc);
+        }
+      }, { root: null, rootMargin: "-20% 0px -55% 0px", threshold: [0, 0.1, 0.4] });
+      sections.forEach((sec) => basisLocObserver.observe(sec));
+    }
+    mobile.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("focus", () => setBasisLocPin(inp.dataset.loc));
+    });
+  }
+
+  function bindBasisInputs(root) {
+    if (!root) return;
+    root.querySelectorAll("input.basis").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const k = actualKey(inp.dataset.loc, inp.dataset.k);
+        if (String(inp.value).trim() === "") delete state.actual[k];
+        else state.actual[k] = inp.value;
+        // Mark row visually without rebuilding the whole list (keeps sticky header + scroll)
+        const row = inp.closest(".bm-row, td");
+        if (row) {
+          if (num(inp.value) != null) row.classList.add("act-on");
+          else row.classList.remove("act-on");
+        }
+        save();
+        refresh({ reread: false, forms: false, basis: false });
+      });
+    });
+  }
+
+  function renderBasisEntry() {
+    const points = timeline();
+    const locs = availableLocs();
+    const thead = document.querySelector("#basisTable thead");
+    const tb = document.getElementById("tbody");
+    const mobile = document.getElementById("basisMobile");
+
+    if (!locs.length) {
+      if (thead) thead.innerHTML = "<tr><th class='l'>Time period</th></tr>";
+      tb.innerHTML = "<tr><td class='l'>No locations for this crop.</td></tr>";
+      if (mobile) mobile.innerHTML = "<p class='hint'>No locations for this crop.</p>";
+      return;
+    }
+
+    // Header: location name sits over the Actual (entry) column; Hist is the read-only neighbor
+    let head = "<tr><th class='l'>Time period</th>";
+    locs.forEach((loc) => {
+      const color = LOC_COLORS[loc] || "#666";
+      head += "<th class='sub'>Hist ¢</th>";
+      head += `<th class="loc"><span class="loc-dot" style="background:${color}"></span>${loc}<span class="loc-sub">Actual ¢</span></th>`;
+    });
+    head += "</tr>";
+    if (thead) thead.innerHTML = head;
+
+    let html = "";
+    points.forEach((p) => {
+      html += `<tr class="${p.isNow ? "now" : ""}"><td class="l">${p.label}</td>`;
+      locs.forEach((loc) => {
+        const hist = histBasis(loc, p.date);
+        const key = actualKey(loc, p.key);
+        const actualVal = state.actual[key] ?? "";
+        const usingAct = num(actualVal) != null;
+        html += `<td class="hist">${hist != null ? cents(hist, 1) : "—"}</td>`;
+        html += `<td class="${usingAct ? "act-on" : ""}"><input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" /></td>`;
+      });
+      html += "</tr>";
+    });
+    tb.innerHTML = html;
+    bindBasisInputs(tb);
+
+    // Mobile: sticky location pin + sticky section headers while typing
+    if (mobile) {
+      let mhtml = `<div class="bm-pin" id="basisLocPin" aria-live="polite"></div>`;
+      locs.forEach((loc) => {
+        const color = LOC_COLORS[loc] || "#666";
+        mhtml += `<section class="bm-loc" data-loc="${loc}">
+          <div class="bm-loc-head"><span class="swatch" style="background:${color}"></span>${loc}</div>`;
+        points.forEach((p) => {
+          const hist = histBasis(loc, p.date);
+          const key = actualKey(loc, p.key);
+          const actualVal = state.actual[key] ?? "";
+          const usingAct = num(actualVal) != null;
+          mhtml += `<div class="bm-row ${p.isNow ? "now" : ""} ${usingAct ? "act-on" : ""}">
+            <div class="bm-when">${p.label}</div>
+            <div class="bm-hist"><span>Hist</span>${hist != null ? cents(hist, 1) : "—"}</div>
+            <label class="bm-act"><span>Actual ¢</span>
+              <input class="basis" data-loc="${loc}" data-k="${p.key}" inputmode="decimal" value="${actualVal}" placeholder="+10" title="Actual basis in cents per bushel. Example: 10 or +10 for a 10¢ over basis. Not 0.10." aria-label="Actual basis cents for ${loc} at ${p.label}" />
+            </label>
+          </div>`;
+        });
+        mhtml += "</section>";
+      });
+      mobile.innerHTML = mhtml;
+      bindBasisInputs(mobile);
+      setupBasisLocPin(mobile);
+    }
+  }
+
+  function zeroLinePlugin() {
+    return {
+      id: "zeroLine",
+      afterDraw(c) {
+        const y = c.scales.y;
+        if (!y || y.min > 0 || y.max < 0) return;
+        const yPix = y.getPixelForValue(0);
+        const { ctx: g, chartArea } = c;
+        g.save();
+        g.strokeStyle = "rgba(42,64,51,0.45)";
+        g.setLineDash([5, 4]);
+        g.beginPath();
+        g.moveTo(chartArea.left, yPix);
+        g.lineTo(chartArea.right, yPix);
+        g.stroke();
+        g.restore();
+      },
+    };
+  }
+
+  function highPointPlugin(kind) {
+    return {
+      id: "highPoint_" + kind,
+      afterDraw(chart) {
+        const xScale = chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+        const groups = (kind === "cash" && chart.scales.ySoy)
+          ? [{ axis: "y" }, { axis: "ySoy" }]
+          : [{ axis: "y" }];
+        const ctx = chart.ctx;
+        const peaks = [];
+        groups.forEach((g) => {
+          const scale = chart.scales[g.axis];
+          if (!scale) return;
+          let best = null;
+          chart.data.datasets.forEach((ds) => {
+            const axis = ds.yAxisID || "y";
+            if (axis !== g.axis) return;
+            (ds.data || []).forEach((raw, i) => {
+              const v = raw == null ? null : Number(raw);
+              if (v == null || !Number.isFinite(v)) return;
+              if (!best || v > best.v) best = { v, i, ds };
+            });
+          });
+          if (!best) return;
+          peaks.push({
+            x: xScale.getPixelForValue(best.i),
+            y: scale.getPixelForValue(best.v),
+            color: best.ds.borderColor || "#0d6b38",
+            line1: "High  " + (kind === "basis" ? cents(best.v, 1) : money(best.v, 2) + "/bu"),
+            line2: (best.ds.label || "") + ((chart.data.labels || [])[best.i] ? " · " + chart.data.labels[best.i] : ""),
+          });
+        });
+        if (!peaks.length) return;
+
+        const th = 36;
+        const gap = 8;
+        const canvasW = chart.width;
+        peaks.sort((a, b) => a.x - b.x);
+        peaks.forEach((p) => {
+          ctx.font = "700 11px system-ui, sans-serif";
+          const w1 = ctx.measureText(p.line1).width;
+          ctx.font = "650 10px system-ui, sans-serif";
+          const w2 = ctx.measureText(p.line2).width;
+          p.tw = Math.min(Math.max(w1, w2) + 16, Math.max(120, canvasW - 16));
+          p.lx = p.x - p.tw / 2;
+        });
+        if (peaks[0].lx < 6) peaks[0].lx = 6;
+        for (let i = 1; i < peaks.length; i++) {
+          const minL = peaks[i - 1].lx + peaks[i - 1].tw + gap;
+          if (peaks[i].lx < minL) peaks[i].lx = minL;
+        }
+        const last = peaks[peaks.length - 1];
+        if (last.lx + last.tw > canvasW - 6) {
+          last.lx = canvasW - 6 - last.tw;
+          for (let i = peaks.length - 2; i >= 0; i--) {
+            const maxL = peaks[i + 1].lx - peaks[i].tw - gap;
+            if (peaks[i].lx > maxL) peaks[i].lx = Math.max(6, maxL);
+          }
+        }
+
+        peaks.forEach((p) => {
+          const ly = Math.max(4, area.top - th - 8);
+          const color = p.color;
+          const fromX = Math.min(Math.max(p.lx + p.tw / 2, p.lx + 10), p.lx + p.tw - 10);
+          const fromY = ly + th;
+          const dx = p.x - fromX;
+          const dy = p.y - fromY;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const endX = p.x - (dx / dist) * 9;
+          const endY = p.y - (dy / dist) * 9;
+          const ang = Math.atan2(p.y - fromY, p.x - fromX);
+
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(fromX, fromY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - 9 * Math.cos(ang - 0.45), p.y - 9 * Math.sin(ang - 0.45));
+          ctx.lineTo(p.x - 9 * Math.cos(ang + 0.45), p.y - 9 * Math.sin(ang + 0.45));
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "#fff";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.75;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "rgba(6, 20, 12, 0.92)";
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(p.lx, ly, p.tw, th, 6);
+          else ctx.rect(p.lx, ly, p.tw, th);
+          ctx.fill();
+          ctx.fillStyle = "#fff";
+          ctx.font = "700 11px system-ui, sans-serif";
+          ctx.fillText(p.line1, p.lx + 8, ly + 15, p.tw - 16);
+          ctx.fillStyle = "rgba(255,255,255,0.9)";
+          ctx.font = "650 10px system-ui, sans-serif";
+          ctx.fillText(p.line2, p.lx + 8, ly + 28, p.tw - 16);
+          ctx.restore();
+        });
+      },
+    };
+  }
+
+  function renderCharts() {
+    if (typeof Chart === "undefined") return;
+    const points = timeline();
+    const labels = points.map((p) => p.label);
+    const both = !!state.chartBoth;
+    const crops = chartCrops();
+    const basisSets = [];
+    const cashSets = [];
+
+    crops.forEach((crop) => {
+      withCrop(crop, () => {
+        const front = frontRow();
+        const nowFut = front && front.price != null ? Number(front.price) : null;
+        const locs = activeLocs();
+        const soy = crop === "soybeans";
+        const short = soy ? "Soy" : "Corn";
+        locs.forEach((loc) => {
+          const color = LOC_COLORS[loc] || "#333";
+          const name = both ? short + " · " + loc : loc;
+          const style = {
+            label: name,
+            borderColor: color,
+            backgroundColor: color,
+            borderWidth: soy && both ? 2 : 2.25,
+            borderDash: soy && both ? [7, 4] : [],
+            pointRadius: 2.5,
+            tension: 0.2,
+            yAxisID: both && soy ? "ySoy" : "y",
+          };
+          basisSets.push({
+            ...style,
+            yAxisID: "y",
+            data: points.map((p) => buildPoint(loc, p, nowFut).netBasis),
+          });
+          cashSets.push({
+            ...style,
+            data: points.map((p) => buildPoint(loc, p, nowFut).cash),
+          });
+        });
+      });
+    });
+
+    const bctx = document.getElementById("basisChart");
+    const cctx = document.getElementById("cashChart");
+    if (basisChart) basisChart.destroy();
+    if (cashChart) cashChart.destroy();
+
+    const cashScales = both
+      ? {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Corn cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+          ySoy: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Soy cash ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        }
+      : {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Expected cash sale ($ / bu)" }, ticks: { callback: (v) => "$" + Number(v).toFixed(2) } },
+        };
+
+    basisChart = new Chart(bctx, {
+      type: "line",
+      data: { labels, datasets: basisSets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 48 } },
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : cents(v, 1));
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Move window" } },
+          y: { title: { display: true, text: "Net basis after costs (¢ / bu)" }, ticks: { callback: (v) => (v > 0 ? "+" : "") + v + "¢" } },
+        },
+      },
+      plugins: [zeroLinePlugin(), highPointPlugin("basis")],
+    });
+
+    cashChart = new Chart(cctx, {
+      type: "line",
+      data: { labels, datasets: cashSets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 48 } },
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label(item) {
+                const v = item.parsed.y;
+                return " " + item.dataset.label + ": " + (v == null ? "—" : money(v, 2) + "/bu");
+              },
+            },
+          },
+        },
+        scales: cashScales,
+      },
+      plugins: [highPointPlugin("cash")],
+    });
+  }
+
+  function renderFooter() {
+    document.getElementById("footer").innerHTML =
+      "Net basis = used basis − location trucking − interest − storage − shrink. Cash sale = futures + used basis − those same costs. Actual basis overrides historical only where entered. Dayton corn-only · Sidney soybeans-only. Delayed CME — informational only.";
+    document.getElementById("asOfPill").textContent = state.quoteAsOf
+      ? ("Quotes " + String(state.quoteAsOf).replace("T", " ").slice(0, 16) + " UTC")
+      : "Quotes delayed";
+  }
+
+  function refresh(opts) {
+    try {
+      const reread = !opts || opts.reread !== false;
+      const forms = !opts || opts.forms !== false;
+      const locs = forms || (opts && opts.locs === true);
+      const basis = !opts || opts.basis !== false;
+      if (reread) readCarryForm();
+      renderCropSeg();
+      if (locs) {
+        renderLocs();
+        renderTrucking();
+      }
+      if (forms) renderCarryForm();
+      renderStrip();
+      renderRate();
+      renderQuarters();
+      if (basis) renderBasisEntry();
+      renderWinners();
+      renderStorePick();
+      renderCharts();
+      renderFooter();
+      save();
+    } catch (err) {
+      setStatus(String(err && err.message ? err.message : err), true);
+      console.error(err);
+    }
+  }
+
+  function toBu(raw, currency) {
+    if (raw == null) return null;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return null;
+    const usx = String(currency || "").toUpperCase() === "USX" || v > 40;
+    const px = usx ? v / 100 : v;
+    return Math.round(px * 10000) / 10000;
+  }
+
+  function extractJsonObjectFromText(text) {
+    if (!text) return null;
+    const trimmed = String(text).trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { return JSON.parse(trimmed); } catch (e) { /* fall through for wrapped payloads */ }
+    }
+    const marker = '{"chart"';
+    let start = text.indexOf(marker);
+    if (start < 0) start = text.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try { return JSON.parse(text.slice(start, i + 1)); } catch (e) { return null; }
+        }
+      }
+    }
+    return null;
+  }
+
+  function parseYahooChart(data) {
+    if (typeof data === "string") data = extractJsonObjectFromText(data);
+    if (data && typeof data.contents === "string") {
+      data = extractJsonObjectFromText(data.contents) || data;
+    }
+    const result = (((data || {}).chart || {}).result || [])[0];
+    if (!result) return null;
+    const meta = result.meta || {};
+    const quote = ((result.indicators || {}).quote || [])[0] || {};
+    const rawCloses = quote.close || [];
+    const timestamps = result.timestamp || [];
+    // Last trade only — never previousClose (that looks a day old).
+    let last = meta.regularMarketPrice;
+    let t = meta.regularMarketTime;
+    if (last == null) {
+      for (let i = rawCloses.length - 1; i >= 0; i -= 1) {
+        const c = Number(rawCloses[i]);
+        if (rawCloses[i] != null && Number.isFinite(c)) {
+          last = c;
+          if (timestamps[i] != null) t = timestamps[i];
+          break;
+        }
+      }
+    }
+    if (last == null) return null;
+    const closes = rawCloses.filter((c) => c != null && Number.isFinite(Number(c)));
+    const prev = meta.chartPreviousClose ?? meta.previousClose ?? (closes.length > 1 ? closes[closes.length - 2] : null);
+    const currency = meta.currency;
+    const price = toBu(last, currency);
+    const prevPx = toBu(prev, currency);
+    return {
+      price,
+      change: price != null && prevPx != null ? Math.round((price - prevPx) * 10000) / 10000 : null,
+      asOf: t ? new Date(Number(t) * 1000).toISOString() : null,
+    };
+  }
+
+  async function fetchJson(url) {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 12000) : null;
+    try {
+      const r = await fetch(url, { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
+      if (!r.ok) return null;
+      const text = await r.text();
+      if (!text) return null;
+      return extractJsonObjectFromText(text);
+    } catch (e) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function fetchYahooTicker(ticker) {
+    const bust = Date.now();
+    const symbols = [];
+    const t = String(ticker || "").trim();
+    if (t) symbols.push(t);
+    if (t.endsWith(".CBT")) symbols.push(t.slice(0, -4));
+    const paths = [];
+    symbols.forEach((sym) => {
+      const enc = encodeURIComponent(sym);
+      paths.push(`/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=false&_=${bust}`);
+      paths.push(`/v8/finance/chart/${enc}?interval=1d&range=5d&includePrePost=false&_=${bust}`);
+    });
+    // aired.sh is static HTML: Yahoo itself is CORS-blocked. r.jina.ai returns
+    // the chart JSON wrapped in text/plain with Access-Control-Allow-Origin.
+    const prefixes = [
+      "https://r.jina.ai/http://query1.finance.yahoo.com",
+      "https://r.jina.ai/https://query1.finance.yahoo.com",
+      "https://query1.finance.yahoo.com",
+      "https://query2.finance.yahoo.com",
+    ];
+    const urls = [];
+    prefixes.forEach((p) => { paths.forEach((path) => { urls.push(p + path); }); });
+    paths.slice(0, 2).forEach((path) => {
+      const yahoo = "https://query1.finance.yahoo.com" + path;
+      urls.push("https://corsproxy.io/?" + encodeURIComponent(yahoo));
+      urls.push("https://api.allorigins.win/raw?url=" + encodeURIComponent(yahoo));
+    });
+    for (const u of urls) {
+      try {
+        const data = await fetchJson(u);
+        const parsed = parseYahooChart(data);
+        if (parsed && parsed.price != null) return parsed;
+      } catch (e) { /* next */ }
+    }
+    return null;
+  }
+
+  async function mapPool(items, limit, fn) {
+    const out = new Array(items.length);
+    let i = 0;
+    async function worker() {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
+    }
+    const n = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: n }, () => worker()));
+    return out;
+  }
+
+  async function updateFromYahoo() {
+    const next = { Corn: [], Soybeans: [] };
+    let ok = 0;
+    let latestAsOf = null;
+    let tried = 0;
+    for (const crop of ["Corn", "Soybeans"]) {
+      const rows = (state.strip[crop] || DATA.strip[crop] || []).map((r) => ({ ...r }));
+      await mapPool(rows, 3, async (row) => {
+        tried += 1;
+        const q = await fetchYahooTicker(row.ticker);
+        if (q && q.price != null) {
+          row.price = q.price;
+          row.change = q.change;
+          ok += 1;
+          if (q.asOf && (!latestAsOf || q.asOf > latestAsOf)) latestAsOf = q.asOf;
+        }
+      });
+      next[crop] = rows;
+    }
+    if (ok === 0) {
+      throw new Error("Yahoo did not return any last trades. Prices on screen were left unchanged.");
+    }
+    state.strip = next;
+    state.quoteAsOf = latestAsOf || new Date().toISOString();
+    return { ok, tried, asOf: state.quoteAsOf };
+  }
+
+  async function updateFutures() {
+    const btn = document.getElementById("btnUpdate");
+    btn.disabled = true;
+    setStatus("Updating delayed CME last trades…");
+    try {
+      let usedLive = false;
+      try {
+        const r = await fetch("/risk/hold-sell/quotes", { credentials: "same-origin", cache: "no-store" });
+        const ct = (r.headers.get("content-type") || "").toLowerCase();
+        if (r.ok && ct.includes("json")) {
+          const data = await r.json();
+          const priced = ["Corn", "Soybeans"].reduce((n, crop) => n + ((data.strip || {})[crop] || []).filter((x) => x && x.price != null).length, 0);
+          if (priced > 0 && data.strip) {
+            state.strip = data.strip;
+            if (data.history && (data.history.Corn || []).length) state.history = data.history;
+            state.quoteAsOf = data.as_of || new Date().toISOString();
+            if (data.error) setStatus(data.error + " — showing last trades that loaded.", true);
+            else setStatus("Futures updated from delayed last trade (" + priced + " contracts).");
+            usedLive = true;
+          }
+        }
+      } catch (e) { /* fall through to browser Yahoo fetch */ }
+      if (!usedLive) {
+        const res = await updateFromYahoo();
+        const when = res.asOf ? String(res.asOf).replace("T", " ").slice(0, 16) + " UTC" : "";
+        setStatus("Updated " + res.ok + "/" + res.tried + " contracts from Yahoo last trade" + (when ? " · " + when : "") + " (delayed ~10–20 min).");
+      }
+      save();
+      refresh({ reread: false, forms: false });
+    } catch (e) {
+      setStatus(String(e && e.message ? e.message : e) + " You can still type strip prices by hand.", true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function downloadBlob(blob, filename) {
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function worksheetPayload() {
+    readCarryForm();
+    return {
+      version: 1,
+      tool: "Grain Marketing Decisions",
+      savedAt: new Date().toISOString(),
+      crop: state.crop,
+      visible: state.visible,
+      trucking: state.trucking,
+      chartBoth: state.chartBoth,
+      storeDays: state.storeDays,
+      storeBestAny: state.storeBestAny,
+      storeMetric: state.storeMetric,
+      grain: state.grain,
+      actual: state.actual,
+      carry: state.carry,
+      strip: state.strip,
+      history: state.history,
+      quoteAsOf: state.quoteAsOf,
+    };
+  }
+
+  function saveWorksheetFile() {
+    const payload = worksheetPayload();
+    const stamp = new Date().toISOString().slice(0, 10);
+    const name = "grain-marketing-decisions-" + cropKey() + "-" + stamp + ".json";
+    downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), name);
+    setStatus("Worksheet saved as " + name);
+  }
+
+  function applyWorksheet(data) {
+    if (!data || typeof data !== "object") throw new Error("Not a worksheet file.");
+    if (data.crop) state.crop = data.crop;
+    if (data.visible) state.visible = { ...state.visible, ...data.visible };
+    if (data.chartBoth != null) state.chartBoth = !!data.chartBoth;
+    if (data.storeDays != null && Number.isFinite(Number(data.storeDays))) state.storeDays = Number(data.storeDays);
+    if (data.storeBestAny != null) state.storeBestAny = !!data.storeBestAny;
+    if (data.storeMetric === "basis" || data.storeMetric === "cash") state.storeMetric = data.storeMetric;
+    if (data.trucking && typeof data.trucking === "object") {
+      LOC_IDS.forEach((id) => {
+        const v = num(data.trucking[id]);
+        if (v != null) state.trucking[id] = v;
+      });
+    }
+    if (data.grain) state.grain = data.grain;
+    if (data.actual) state.actual = data.actual;
+    if (data.carry) {
+      state.carry = {
+        corn: { ...state.carry.corn, ...((data.carry || {}).corn || {}) },
+        soybeans: { ...state.carry.soybeans, ...((data.carry || {}).soybeans || {}) },
+      };
+      delete state.carry.corn.trucking;
+      delete state.carry.soybeans.trucking;
+    }
+    if (data.strip) state.strip = data.strip;
+    if (data.history) state.history = data.history;
+    if (data.quoteAsOf) state.quoteAsOf = data.quoteAsOf;
+    save();
+    refresh({ reread: false, forms: true });
+  }
+
+  function loadWorksheetFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result || ""));
+        applyWorksheet(data);
+        setStatus("Loaded " + (file.name || "worksheet") + ".");
+      } catch (e) {
+        setStatus("Could not load that file. Use a saved worksheet JSON.", true);
+      }
+    };
+    reader.onerror = () => setStatus("Could not read that file.", true);
+    reader.readAsText(file);
+  }
+
+  function esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function buildPrintSummaryHtml() {
+    readCarryForm();
+    const c = carry();
+    const front = frontRow();
+    const points = timeline();
+    const locs = availableLocs();
+    const active = activeLocs();
+    const nowFut = front && front.price != null ? Number(front.price) : null;
+    const stamp = new Date().toLocaleString();
+
+    const kv =
+      `<div class="kv">
+        <div><span>Interest APR</span><b>${esc(c.apr)}%</b></div>
+        <div><span>Storage $/bu/mo</span><b>${esc(money(num(c.storage) || 0, 4))}</b></div>
+        <div><span>Handling $/bu</span><b>${esc(money(num(c.handling) || 0, 4))}</b></div>
+        <div><span>Shrink %/mo</span><b>${esc(c.shrinkPct)}</b></div>
+        <div><span>Extra moisture pts</span><b>${esc(c.extraPts)}</b></div>
+        <div><span>Shrink factor</span><b>${esc(c.shrinkFactor)}</b></div>
+        <div><span>Interest mark</span><b>${esc(c.markMode)}</b></div>
+        <div><span>Front futures</span><b>${esc(front ? front.label + " " + money(nowFut, 4) : "—")}</b></div>
+      </div>`;
+
+    const truckRows = locs.map((id) =>
+      `<tr><td>${esc(id)}</td><td>${esc(money(truckingFor(id), 4))}</td><td>${state.visible[id] !== false ? "On chart" : "Hidden"}</td></tr>`
+    ).join("");
+
+    // Summary windows: Now + roughly monthly samples through horizon
+    const sample = [];
+    points.forEach((p, i) => {
+      if (p.isNow || i % Math.max(1, Math.floor(points.length / 12)) === 0 || i === points.length - 1) {
+        if (!sample.find((s) => s.key === p.key)) sample.push(p);
+      }
+    });
+
+    let head = "<tr><th>Window</th>";
+    active.forEach((loc) => { head += `<th colspan="2">${esc(loc)}</th>`; });
+    head += "</tr><tr><th></th>";
+    active.forEach(() => { head += "<th>Net basis ¢</th><th>Cash $/bu</th>"; });
+    head += "</tr>";
+
+    let body = "";
+    sample.forEach((p) => {
+      body += `<tr><td>${esc(p.label)}</td>`;
+      active.forEach((loc) => {
+        const row = buildPoint(loc, p, nowFut);
+        body += `<td>${esc(row.netBasis != null ? cents(row.netBasis, 1) : "—")}</td>`;
+        body += `<td>${esc(row.cash != null ? money(row.cash, 2) : "—")}</td>`;
+      });
+      body += "</tr>";
+    });
+
+    let basisImg = "";
+    let cashImg = "";
+    try { if (basisChart) basisImg = basisChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+    try { if (cashChart) cashImg = cashChart.toBase64Image("image/png", 1); } catch (e) { /* ignore */ }
+
+    const bestBasis = findBest("netBasis");
+    const bestCash = findBest("cash");
+
+    function winnerBlock(title, best, fmt, why) {
+      if (!best) {
+        return `<div class="winner-print">
+          <div class="winner-lab">${esc(title)}</div>
+          <div class="winner-val">—</div>
+          <div class="winner-meta">No result yet</div>
+        </div>`;
+      }
+      return `<div class="winner-print">
+        <div class="winner-lab">${esc(title)}</div>
+        <div class="winner-val">${esc(fmt(best.value))}</div>
+        <div class="winner-meta"><strong>${esc(best.loc)}</strong> at <strong>${esc(best.label)}</strong></div>
+        <div class="winner-sub">${esc(why)}</div>
+      </div>`;
+    }
+
+    const winnersHtml = `
+      <h2 class="lead">The winners</h2>
+      <p class="lead-note">These are the strongest outcomes across every checked elevator and every move window on the charts. Start here — then use the charts and numbers below to see why they won.</p>
+      <div class="grid-print winners-print">
+        ${winnerBlock(
+          "Best net basis",
+          bestBasis,
+          (v) => cents(v, 1),
+          "Highest basis left after trucking and hold costs."
+        )}
+        ${winnerBlock(
+          "Best cash sale",
+          bestCash,
+          (v) => money(v, 2) + "/bu",
+          "Highest all-in cash price after futures, basis, trucking, and hold costs."
+        )}
+      </div>`;
+
+    const daysCap = num(state.storeDays);
+    const windowPick = pickStoreWinner(cropStoreSnapshot("corn", daysCap), cropStoreSnapshot("soybeans", daysCap));
+    const anyPick = state.storeBestAny
+      ? pickStoreWinner(cropStoreSnapshot("corn", null), cropStoreSnapshot("soybeans", null))
+      : null;
+    function printPick(title, pick) {
+      if (!pick || !pick.winner) {
+        return `<p><strong>${esc(title)}</strong> — ${esc(pick ? pick.why : "—")}</p>${pick ? snapMathHtml(pick.corn, false) + snapMathHtml(pick.soy, false) : ""}`;
+      }
+      const w = pick.winner;
+      const later = snapLater(w);
+      const when = later ? `${later.loc} · ${later.label} · ${later.days} days` : "";
+      const formula = isStoreBasis()
+        ? "Net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+        : "Cash = futures + basis − carry − trucking. Extra = cash later − cash now.";
+      return `<p><strong>${esc(title)}: ${esc(w.label)}</strong> ${esc(when)}<br/>${esc(pick.why)}</p>
+        <p>Scored by ${isStoreBasis() ? "net basis" : "cash"}. ${formula}</p>
+        <div class="store-cmp">
+          ${snapMathHtml(pick.corn, w.crop === "corn")}
+          ${snapMathHtml(pick.soy, w.crop === "soybeans")}
+        </div>`;
+    }
+    const storeHtml = `
+      <h2>Most profitable crop to store</h2>
+      <p class="lead-note">Extra cash vs selling today, after all carry and trucking costs (interest, storage, shrink, handling, and haul).</p>
+      ${printPick(daysCap != null ? "Best crop in 0–" + daysCap + " days" : "Store window", windowPick)}
+      ${anyPick ? printPick("Best crop and time (any window)", anyPick) : ""}`;
+
+    const chartsHtml = `
+      <h2>Charts</h2>
+      <div class="grid-print">
+        <div>
+          <h3>Net basis after costs (¢/bu)</h3>
+          ${basisImg ? `<img class="chart" src="${basisImg}" alt="Net basis chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+        <div>
+          <h3>Cash sale — futures + basis ($/bu)</h3>
+          ${cashImg ? `<img class="chart" src="${cashImg}" alt="Cash sale chart" />` : "<p>Chart unavailable</p>"}
+        </div>
+      </div>`;
+
+    const metricsHtml = `
+      <h2>Metrics used</h2>
+      <h3>Cost of carry</h3>
+      ${kv}
+      <h3>Trucking by location</h3>
+      <table><thead><tr><th>Location</th><th>Trucking $/bu</th><th>On charts</th></tr></thead><tbody>${truckRows}</tbody></table>
+      <h3>Sample windows</h3>
+      <table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+    const explainHtml = `
+      <h2>How this is calculated (plain English)</h2>
+      <div class="explain">
+        <p><strong>Why the winners are at the top.</strong>
+        Marketing comes down to two questions: (1) where is basis strongest after your real costs, and
+        (2) where do you take home the most cash if you sell futures and basis together.
+        The winners answer those first so you do not have to dig through every line on the charts.</p>
+
+        <p><strong>Basis used.</strong>
+        For each location and each time window we use your <em>actual</em> basis if you typed one.
+        If that cell is blank, we use seasonal historical basis for that elevator and crop.</p>
+
+        <p><strong>Net basis after costs (¢/bu).</strong>
+        Start with used basis, then subtract haul cost (trucking for that elevator) and the cost of holding grain
+        (interest, storage, shrink, and handling when the sale is later than today).
+        A higher net basis means more of the posted basis is still yours after costs.</p>
+
+        <p><strong>Cash sale ($/bu).</strong>
+        Take the CME futures price for that window, add used basis, then subtract the same trucking and hold costs.
+        That is the all-in cash number if you sell both the futures and the basis at that location and time.</p>
+
+        <p><strong>How a winner is picked.</strong>
+        We look only at locations you checked on the charts. For every move window we compute net basis and cash sale.
+        Best net basis = the single highest net-basis reading. Best cash sale = the single highest cash reading.
+        They can be different locations or different dates — basis strength and full cash price are not always the same decision.</p>
+
+        <p><strong>Most profitable crop to store.</strong>
+        Corn vs soybeans, storing vs selling today, scored by ${isStoreBasis() ? "net basis" : "cash"}.
+        Extra is after all carry and trucking (interest, storage, shrink, handling, and haul).
+        ${isStoreBasis()
+          ? "Math: net basis = used basis − carry − trucking. Extra = later net basis − now net basis."
+          : "Math: cash = futures + basis − carry − trucking. Extra = cash later − cash now."}</p>
+
+        <p class="meta">Informational only — delayed quotes, seasonal history, and your typed assumptions. Not a trade recommendation.</p>
+      </div>`;
+
+    return `
+      <h1>Grain Marketing Decisions</h1>
+      <p class="meta">${esc(cropLabel())} · Printed ${esc(stamp)} · Quotes ${esc(state.quoteAsOf || "delayed")}</p>
+      ${winnersHtml}
+      ${storeHtml}
+      ${chartsHtml}
+      ${metricsHtml}
+      ${explainHtml}
+    `;
+  }
+
+  function printPdfSummary() {
+    const root = document.getElementById("printRoot");
+    if (!root) return;
+    root.innerHTML = buildPrintSummaryHtml();
+    root.setAttribute("aria-hidden", "false");
+    setStatus("Print dialog: choose “Save as PDF” for a PDF summary.");
+    const cleanup = () => {
+      root.innerHTML = "";
+      root.setAttribute("aria-hidden", "true");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => window.print(), 50);
+  }
+
+  document.getElementById("cropSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    state.crop = b.dataset.crop;
+    save();
+    refresh({ reread: false, forms: true });
+  });
+  const bothEl = document.getElementById("chartBoth");
+  if (bothEl) {
+    bothEl.addEventListener("change", () => {
+      state.chartBoth = bothEl.checked;
+      save();
+      refresh({ reread: false, forms: false, locs: true });
+    });
+  }
+  const storeDaysEl = document.getElementById("storeDays");
+  if (storeDaysEl) {
+    const applyDays = () => {
+      state.storeDays = num(storeDaysEl.value);
+      save();
+      renderStorePick();
+    };
+    storeDaysEl.addEventListener("input", applyDays);
+    storeDaysEl.addEventListener("change", applyDays);
+  }
+  const storeAnyEl = document.getElementById("storeBestAny");
+  if (storeAnyEl) {
+    storeAnyEl.addEventListener("change", () => {
+      state.storeBestAny = storeAnyEl.checked;
+      save();
+      renderStorePick();
+    });
+  }
+  const storeMetricEl = document.getElementById("storeMetricSeg");
+  if (storeMetricEl) {
+    storeMetricEl.addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b || !b.dataset.metric) return;
+      state.storeMetric = b.dataset.metric === "basis" ? "basis" : "cash";
+      save();
+      renderStorePick();
+    });
+  }
+  document.getElementById("btnUpdate").addEventListener("click", updateFutures);
+  document.getElementById("btnSave").addEventListener("click", saveWorksheetFile);
+  document.getElementById("btnLoad").addEventListener("click", () => document.getElementById("fileLoad").click());
+  document.getElementById("fileLoad").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    loadWorksheetFile(f);
+    e.target.value = "";
+  });
+  document.getElementById("btnPdf").addEventListener("click", printPdfSummary);
+  ["apr", "storage", "markMode", "handling", "shrinkPct", "extraPts", "shrinkFactor"].forEach((id) => {
+    const el = document.getElementById(id);
+    el.addEventListener("change", () => { readCarryForm(); save(); refresh({ reread: false, forms: false }); });
+    if (el.tagName === "INPUT") el.addEventListener("input", () => { readCarryForm(); refresh({ reread: false, forms: false }); });
+  });
+
+  refresh({ reread: false, forms: true });
+  (function loadCharts() {
+    if (typeof Chart !== "undefined") return;
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js";
+    s.async = true;
+    s.onload = function () { refresh({ reread: false, forms: false }); };
+    document.head.appendChild(s);
+  })();
+})();
+</script>
+</body>
+</html>

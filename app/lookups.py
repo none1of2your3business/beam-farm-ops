@@ -121,6 +121,7 @@ HUB_LISTS: dict[str, dict] = {
             {"href": "/risk", "label": "Board"},
             {"href": "/risk/contracts", "label": "Contracts"},
             {"href": "/risk/carry", "label": "Carry cost"},
+            {"href": "/risk/hold-sell", "label": "Grain decisions"},
             {"href": "/risk/contracts/add", "label": "Add contract"},
             {"href": "/risk/contracts/roll", "label": "Roll contract"},
             {"href": "/risk/settings", "label": "Risk settings"},
