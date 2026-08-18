@@ -88,9 +88,16 @@
       }
       delete state.carry.corn.trucking;
       delete state.carry.soybeans.trucking;
-      if (saved.strip) state.strip = saved.strip;
-      if (saved.history) state.history = saved.history;
-      if (saved.quoteAsOf) state.quoteAsOf = saved.quoteAsOf;
+      // Keep basis/carry/trucking. Only restore a saved futures strip when it is
+      // newer than the quotes baked into this page — otherwise a failed Update
+      // would pin stale prices over a republish.
+      const bakedAt = String(DATA.generated || "");
+      const savedAt = String(saved.quoteAsOf || "");
+      if (saved.strip && savedAt && bakedAt && savedAt > bakedAt) {
+        state.strip = saved.strip;
+        if (saved.history) state.history = saved.history;
+        state.quoteAsOf = saved.quoteAsOf;
+      }
     }
   } catch (e) { /* ignore */ }
 
@@ -1233,23 +1240,69 @@
     return Math.round(px * 10000) / 10000;
   }
 
+  function extractJsonObjectFromText(text) {
+    if (!text) return null;
+    const trimmed = String(text).trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { return JSON.parse(trimmed); } catch (e) { /* fall through for wrapped payloads */ }
+    }
+    const marker = '{"chart"';
+    let start = text.indexOf(marker);
+    if (start < 0) start = text.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try { return JSON.parse(text.slice(start, i + 1)); } catch (e) { return null; }
+        }
+      }
+    }
+    return null;
+  }
+
   function parseYahooChart(data) {
+    if (typeof data === "string") data = extractJsonObjectFromText(data);
     if (data && typeof data.contents === "string") {
-      try { data = JSON.parse(data.contents); } catch (e) { return null; }
+      data = extractJsonObjectFromText(data.contents) || data;
     }
     const result = (((data || {}).chart || {}).result || [])[0];
     if (!result) return null;
     const meta = result.meta || {};
     const quote = ((result.indicators || {}).quote || [])[0] || {};
-    const closes = (quote.close || []).filter((c) => c != null && Number.isFinite(Number(c)));
+    const rawCloses = quote.close || [];
+    const timestamps = result.timestamp || [];
+    // Last trade only — never previousClose (that looks a day old).
     let last = meta.regularMarketPrice;
-    if (last == null && closes.length) last = closes[closes.length - 1];
+    let t = meta.regularMarketTime;
+    if (last == null) {
+      for (let i = rawCloses.length - 1; i >= 0; i -= 1) {
+        const c = Number(rawCloses[i]);
+        if (rawCloses[i] != null && Number.isFinite(c)) {
+          last = c;
+          if (timestamps[i] != null) t = timestamps[i];
+          break;
+        }
+      }
+    }
     if (last == null) return null;
+    const closes = rawCloses.filter((c) => c != null && Number.isFinite(Number(c)));
     const prev = meta.chartPreviousClose ?? meta.previousClose ?? (closes.length > 1 ? closes[closes.length - 2] : null);
     const currency = meta.currency;
     const price = toBu(last, currency);
     const prevPx = toBu(prev, currency);
-    const t = meta.regularMarketTime;
     return {
       price,
       change: price != null && prevPx != null ? Math.round((price - prevPx) * 10000) / 10000 : null,
@@ -1258,13 +1311,19 @@
   }
 
   async function fetchJson(url) {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) return null;
-    const ct = (r.headers.get("content-type") || "").toLowerCase();
-    const text = await r.text();
-    if (!text) return null;
-    if (ct.includes("html") && text.trim().startsWith("<")) return null;
-    try { return JSON.parse(text); } catch (e) { return null; }
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 12000) : null;
+    try {
+      const r = await fetch(url, { cache: "no-store", signal: ctrl ? ctrl.signal : undefined });
+      if (!r.ok) return null;
+      const text = await r.text();
+      if (!text) return null;
+      return extractJsonObjectFromText(text);
+    } catch (e) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async function fetchYahooTicker(ticker) {
@@ -1273,18 +1332,26 @@
     const t = String(ticker || "").trim();
     if (t) symbols.push(t);
     if (t.endsWith(".CBT")) symbols.push(t.slice(0, -4));
-    const charts = [];
+    const paths = [];
     symbols.forEach((sym) => {
       const enc = encodeURIComponent(sym);
-      charts.push(`https://query2.finance.yahoo.com/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=true&_=${bust}`);
-      charts.push(`https://query1.finance.yahoo.com/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=true&_=${bust}`);
-      charts.push(`https://query2.finance.yahoo.com/v8/finance/chart/${enc}?interval=1d&range=5d&_=${bust}`);
+      paths.push(`/v8/finance/chart/${enc}?interval=1m&range=1d&includePrePost=false&_=${bust}`);
+      paths.push(`/v8/finance/chart/${enc}?interval=1d&range=5d&includePrePost=false&_=${bust}`);
     });
+    // aired.sh is static HTML: Yahoo itself is CORS-blocked. r.jina.ai returns
+    // the chart JSON wrapped in text/plain with Access-Control-Allow-Origin.
+    const prefixes = [
+      "https://r.jina.ai/http://query1.finance.yahoo.com",
+      "https://r.jina.ai/https://query1.finance.yahoo.com",
+      "https://query1.finance.yahoo.com",
+      "https://query2.finance.yahoo.com",
+    ];
     const urls = [];
-    charts.forEach((url) => {
-      urls.push(url);
-      urls.push("https://corsproxy.io/?" + encodeURIComponent(url));
-      urls.push("https://api.allorigins.win/raw?url=" + encodeURIComponent(url));
+    prefixes.forEach((p) => { paths.forEach((path) => { urls.push(p + path); }); });
+    paths.slice(0, 2).forEach((path) => {
+      const yahoo = "https://query1.finance.yahoo.com" + path;
+      urls.push("https://corsproxy.io/?" + encodeURIComponent(yahoo));
+      urls.push("https://api.allorigins.win/raw?url=" + encodeURIComponent(yahoo));
     });
     for (const u of urls) {
       try {
@@ -1317,7 +1384,7 @@
     let tried = 0;
     for (const crop of ["Corn", "Soybeans"]) {
       const rows = (state.strip[crop] || DATA.strip[crop] || []).map((r) => ({ ...r }));
-      await mapPool(rows, 4, async (row) => {
+      await mapPool(rows, 3, async (row) => {
         tried += 1;
         const q = await fetchYahooTicker(row.ticker);
         if (q && q.price != null) {

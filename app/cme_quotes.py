@@ -343,6 +343,57 @@ def _parse_chart_payload(data: dict[str, Any], ticker: str) -> Optional[dict[str
         return None
 
 
+def _extract_json_payload(text: str) -> Any:
+    """Parse JSON, including Yahoo chart JSON wrapped in jina.ai markdown."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    start = raw.find('{"chart"')
+    if start < 0:
+        start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    end = None
+    for i, ch in enumerate(raw[start:], start):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end is None:
+        return None
+    try:
+        return json.loads(raw[start:end])
+    except Exception:
+        return None
+
+
+def _jina_wrap(url: str) -> str:
+    if "r.jina.ai" in url:
+        return url
+    target = url.replace("https://", "http://", 1) if url.startswith("https://") else url
+    return "https://r.jina.ai/" + target
+
+
 def _http_get_json(url: str, *, timeout: float = 20.0) -> tuple[int, Any]:
     """GET JSON. Prefer curl_cffi (Chrome TLS) — plain httpx often gets Yahoo 429s."""
     headers = {
@@ -350,41 +401,58 @@ def _http_get_json(url: str, *, timeout: float = 20.0) -> tuple[int, Any]:
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    try:
-        from curl_cffi import requests as creq
 
-        r = creq.get(url, headers=headers, impersonate="chrome", timeout=timeout)
-        status = int(getattr(r, "status_code", 0) or 0)
-        if status != 200:
-            return status, None
+    def _try(url_: str) -> tuple[int, Any]:
         try:
-            return status, r.json()
-        except Exception:
-            return status, None
-    except Exception:
-        pass
-    try:
-        import httpx
+            from curl_cffi import requests as creq
 
-        with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
-            r = client.get(url)
-            if r.status_code != 200:
-                return r.status_code, None
-            return r.status_code, r.json()
-    except Exception:
-        pass
-    try:
-        import urllib.request
-
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            status = getattr(resp, "status", 200) or 200
-            body = resp.read().decode("utf-8", errors="ignore")
+            r = creq.get(url_, headers=headers, impersonate="chrome", timeout=timeout)
+            status = int(getattr(r, "status_code", 0) or 0)
             if status != 200:
                 return status, None
-            return status, json.loads(body)
-    except Exception:
-        return 0, None
+            payload = _extract_json_payload(getattr(r, "text", "") or "")
+            if payload is not None:
+                return status, payload
+            try:
+                return status, r.json()
+            except Exception:
+                return status, None
+        except Exception:
+            pass
+        try:
+            import httpx
+
+            with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
+                r = client.get(url_)
+                if r.status_code != 200:
+                    return r.status_code, None
+                payload = _extract_json_payload(r.text or "")
+                return r.status_code, payload
+        except Exception:
+            pass
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(url_, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                status = getattr(resp, "status", 200) or 200
+                body = resp.read().decode("utf-8", errors="ignore")
+                if status != 200:
+                    return status, None
+                return status, _extract_json_payload(body)
+        except Exception:
+            return 0, None
+
+    status, data = _try(url)
+    if data is not None:
+        return status, data
+    if "r.jina.ai" not in url:
+        jstatus, jdata = _try(_jina_wrap(url))
+        if jdata is not None:
+            return jstatus, jdata
+        if jstatus:
+            return jstatus, None
+    return status, None
 
 
 def _parse_yahoo_quote_html(html: str, ticker: str) -> Optional[dict[str, Any]]:
@@ -679,18 +747,14 @@ def fetch_nearby_quotes(max_seconds: float = 90.0) -> dict[str, Any]:
 
 def _weekly_history(ticker: str) -> list[dict[str, Any]]:
     """18 months of weekly nearby closes from Yahoo chart (delayed)."""
-    import urllib.request
-
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?interval=1wk&range=18mo"
     )
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 BeamFarmOps/hold-sell"}
-    )
     try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            data = json.loads(resp.read().decode())
+        status, data = _http_get_json(url, timeout=18.0)
+        if status != 200 or not data:
+            return []
         res = (data.get("chart") or {}).get("result") or []
         if not res:
             return []
